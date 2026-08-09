@@ -67,7 +67,10 @@ export function mergeCommands(
 }
 
 /**
- * 前缀过滤(case-insensitive); 与 F1 spec 对齐 —— 不做 fuzzy match, 只做 startsWith。
+ * 包含过滤(case-insensitive); 精确匹配优先,其次是前缀匹配,最后是普通包含匹配。
+ *
+ * `/`、`$` 两类命令都复用这套筛选，输入命令中间的关键词也能命中，
+ * 与 `@` 资源面板的搜索体验保持一致。
  */
 export function filterSlashCommands(
   commands: UnifiedCommand[],
@@ -76,7 +79,15 @@ export function filterSlashCommands(
 ): UnifiedCommand[] {
   const q = query.trim().toLowerCase();
   const filtered = q
-    ? commands.filter((c) => c.name.toLowerCase().startsWith(q))
+    ? commands
+        .map((command, index) => {
+          const name = command.name.toLowerCase();
+          const rank = name === q ? 0 : name.startsWith(q) ? 1 : name.includes(q) ? 2 : -1;
+          return { command, index, rank };
+        })
+        .filter((entry) => entry.rank >= 0)
+        .sort((a, b) => a.rank - b.rank || a.index - b.index)
+        .map((entry) => entry.command)
     : commands;
   return filtered.length > limit ? filtered.slice(0, limit) : filtered;
 }
@@ -85,12 +96,13 @@ export function filterSlashCommands(
  * 拉三路 IPC, 合并成 UnifiedCommand[]。
  *
  * - 任何一路失败按空列表处理(已在 main 端做 try/catch + 返回 success:false), 不阻塞 palette。
- * - workingDir 为空时不发起 agent-skill 扫描(没意义), 但 desktop / agent-builtin 仍然返回。
+ * - workingDir 为空时 Claude 仍扫描全局 skills。
+ * - SSH remote 由 opts.skipAgentSkills 显式禁用扫描,避免读取控制端本机 skills。
  */
 export async function loadAllCommands(
   agentKind: AgentKind,
   workingDir: string | null | undefined,
-  opts?: { forceReload?: boolean },
+  opts?: { forceReload?: boolean; skipAgentSkills?: boolean },
   deviceId?: string,
 ): Promise<UnifiedCommand[]> {
   const api = window.electronAPI.maker;
@@ -108,14 +120,19 @@ export async function loadAllCommands(
       ? (window.electronAPI.deviceLink.invoke(deviceId, 'maker:list-agent-commands', [agentKind]) as Promise<CmdRes>)
       : api.listAgentCommands(agentKind)
   ).catch(() => ({ success: false }));
-  const skillP: Promise<SkillRes> = workingDir
+  const shouldLoadSkills = !opts?.skipAgentSkills;
+  const skillParams = {
+    ...(workingDir ? { workingDir } : {}),
+    ...(opts?.forceReload !== undefined ? { forceReload: opts.forceReload } : {}),
+  };
+  const skillP: Promise<SkillRes> = shouldLoadSkills
     ? (
         deviceId
           ? (window.electronAPI.deviceLink.invoke(deviceId, 'maker:list-agent-skills', [
               agentKind,
-              { workingDir, forceReload: opts?.forceReload },
+              skillParams,
             ]) as Promise<SkillRes>)
-          : api.listAgentSkills(agentKind, { workingDir, forceReload: opts?.forceReload })
+          : api.listAgentSkills(agentKind, skillParams)
       ).catch(() => ({ success: false }))
     : Promise.resolve({ success: true, skills: [] });
 

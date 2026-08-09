@@ -81,13 +81,33 @@ describe('createResponsesChatHandler', () => {
     ) as typeof fetch;
     const handler = createResponsesChatHandler({
       upstreamBase: 'https://provider.example/gateway?tenant=acme',
-      chatCompletionsPath: '/infer?stream=1',
+      chatCompletionsPath: '/infer?stream=1&next=%2fadmin',
       buildHeaders: async () => ({}),
     }, { fetchImpl });
     const res = new FakeResponse();
     await handler.handle({ parsedBody: { model: 'm', input: 'hi' }, res: res as never });
     expect(fetchImpl).toHaveBeenCalledWith(
-      'https://provider.example/gateway/infer?tenant=acme&stream=1',
+      'https://provider.example/gateway/infer?tenant=acme&stream=1&next=%2fadmin',
+      expect.anything(),
+    );
+  });
+
+  it('trims a long trailing-slash run in linear time before applying the chat path', async () => {
+    const fetchImpl = vi.fn(async () =>
+      streamResponse([
+        { id: 'chat_1', choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ]),
+    ) as typeof fetch;
+    const handler = createResponsesChatHandler({
+      upstreamBase: `https://provider.example/v1${'/'.repeat(4_096)}`,
+      buildHeaders: async () => ({}),
+    }, { fetchImpl });
+    const res = new FakeResponse();
+
+    await handler.handle({ parsedBody: { model: 'm', input: 'hi' }, res: res as never });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://provider.example/v1/chat/completions',
       expect.anything(),
     );
   });
@@ -98,8 +118,14 @@ describe('createResponsesChatHandler', () => {
     ['a raw non-ASCII chat path', 'https://provider.example/v1', '/café'],
     ['a control character in the chat path', 'https://provider.example/v1', '/chat\u007f'],
     ['a backslash in the chat path', 'https://provider.example/v1', '/v1\\chat'],
+    ['a dot segment in the chat path', 'https://provider.example/v1', '/../admin'],
+    ['an encoded dot segment in the chat path', 'https://provider.example/v1', '/%2e%2e/admin'],
+    ['an encoded slash in the chat path', 'https://provider.example/v1', '/%2e%2e%2fadmin'],
+    ['an encoded backslash in the chat path', 'https://provider.example/v1', '/safe%5Cpart'],
+    ['a WHATWG-normalized character in the chat path', 'https://provider.example/v1', '/a<b'],
     ['an incomplete percent escape', 'https://provider.example/v1', '/chat%2'],
     ['an invalid percent escape', 'https://provider.example/v1', '/%ZZ'],
+    ['an oversized chat path', 'https://provider.example/v1', `/${'a'.repeat(2_048)}`],
   ])('reports %s as configuration failure before fetching', async (_case, upstreamBase, chatCompletionsPath) => {
     const fetchImpl = vi.fn() as unknown as typeof fetch;
     const buildHeaders = vi.fn(async () => ({ authorization: 'Bearer secret' }));
@@ -116,6 +142,62 @@ describe('createResponsesChatHandler', () => {
     expect(res.chunks.join('')).toContain('invalid_upstream_config');
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(buildHeaders).not.toHaveBeenCalled();
+  });
+
+  it('posts image_url content by default without logging image data', async () => {
+    const imageUrl = 'data:image/png;base64,SECRET_IMAGE_DATA';
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toMatchObject({
+        model: 'kimi-k3',
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: 'describe' },
+            { type: 'image_url', image_url: { url: imageUrl } },
+          ],
+        }],
+      });
+      return streamResponse([
+        { id: 'chat_image', model: 'kimi-k3', choices: [{ delta: { content: 'done' }, finish_reason: 'stop' }] },
+      ]);
+    }) as typeof fetch;
+    const handler = createResponsesChatHandler({
+      upstreamBase: 'https://api.moonshot.cn/v1',
+      buildHeaders: async () => ({ authorization: 'Bearer secret' }),
+      capabilities: { imageInput: 'image_url' },
+    }, { fetchImpl, logger });
+    const res = new FakeResponse();
+
+    await handler.handle({
+      parsedBody: {
+        model: 'kimi-k3',
+        input: [{
+          type: 'message',
+          role: 'user',
+          content: [
+            { type: 'input_text', text: 'describe' },
+            { type: 'input_image', image_url: imageUrl },
+          ],
+        }],
+      },
+      res: res as never,
+    });
+
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(res.status).toBe(200);
+    const logCalls = [
+      ...logger.debug.mock.calls,
+      ...logger.info.mock.calls,
+      ...logger.warn.mock.calls,
+      ...logger.error.mock.calls,
+    ];
+    expect(JSON.stringify(logCalls)).not.toContain('SECRET_IMAGE_DATA');
   });
 
   it('accepts a final SSE data event without a trailing newline', async () => {
@@ -242,5 +324,121 @@ describe('createResponsesChatHandler', () => {
     expect(order).toEqual(['callback', 'response']);
     expect(res.status).toBe(429);
     expect(res.chunks.join('')).toContain('slow down');
+  });
+
+  it('translates non-streaming Chat JSON into a non-streaming Responses response', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      id: 'chat_json',
+      model: 'real-model',
+      choices: [{
+        message: { role: 'assistant', content: 'hello' },
+        finish_reason: 'stop',
+      }],
+      usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 },
+    }), { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch;
+    const handler = createResponsesChatHandler({
+      upstreamBase: 'https://provider.example/v1',
+      buildHeaders: async () => ({}),
+    }, { fetchImpl });
+    const res = new FakeResponse();
+    await handler.handle({
+      parsedBody: { model: 'm', input: 'hi', stream: false },
+      res: res as never,
+    });
+    const response = JSON.parse(res.chunks.join('')) as {
+      status: string;
+      output: Array<{ type: string; content?: Array<{ text: string }> }>;
+      usage: { total_tokens: number };
+    };
+    expect(res.status).toBe(200);
+    expect(response.status).toBe('completed');
+    expect(response.output[0].content?.[0].text).toBe('hello');
+    expect(response.usage.total_tokens).toBe(3);
+  });
+
+  it('returns only the terminal Responses object when a non-streaming request receives SSE', async () => {
+    const fetchImpl = vi.fn(async () => streamResponse([
+      { id: 'chat_sse_json', choices: [{ delta: { content: 'hello ' } }] },
+      { id: 'chat_sse_json', choices: [{ delta: { content: 'world' } }] },
+      { id: 'chat_sse_json', choices: [{ delta: {}, finish_reason: 'stop' }] },
+    ])) as typeof fetch;
+    const handler = createResponsesChatHandler({
+      upstreamBase: 'https://provider.example/v1',
+      buildHeaders: async () => ({}),
+    }, { fetchImpl });
+    const res = new FakeResponse();
+    await handler.handle({
+      parsedBody: { model: 'm', input: 'hi', stream: false },
+      res: res as never,
+    });
+    const response = JSON.parse(res.chunks.join('')) as {
+      status: string;
+      output: Array<{ type: string; content?: Array<{ text: string }> }>;
+    };
+    expect(res.status).toBe(200);
+    expect(response.status).toBe('completed');
+    expect(response.output.find((item) => item.type === 'message')?.content?.[0]?.text).toBe('hello world');
+    expect(res.chunks.join('')).not.toContain('response.output_text.delta');
+  });
+
+  it('adapts a JSON response even when a streaming provider ignores stream=true', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      id: 'chat_json',
+      choices: [{ message: { role: 'assistant', content: 'hello' }, finish_reason: 'stop' }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch;
+    const handler = createResponsesChatHandler({
+      upstreamBase: 'https://provider.example/v1',
+      buildHeaders: async () => ({}),
+    }, { fetchImpl });
+    const res = new FakeResponse();
+    await handler.handle({
+      parsedBody: { model: 'm', input: 'hi' },
+      res: res as never,
+    });
+    expect(res.status).toBe(200);
+    expect(res.chunks.join('')).toContain('event: response.completed');
+  });
+
+  it('cancels an oversized non-SSE body after parsing the bounded JSON prefix', async () => {
+    const json = JSON.stringify({
+      id: 'chat_bounded',
+      choices: [{ message: { role: 'assistant', content: 'bounded' }, finish_reason: 'stop' }],
+    });
+    const encoder = new TextEncoder();
+    const padding = new Uint8Array(1024 * 1024).fill(0x20);
+    let paddingChunks = 0;
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(json));
+      },
+      pull(controller) {
+        paddingChunks += 1;
+        if (paddingChunks <= 17) controller.enqueue(padding);
+        else controller.close();
+      },
+      cancel,
+    });
+    const fetchImpl = vi.fn(async () => new Response(body, {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch;
+    const handler = createResponsesChatHandler({
+      upstreamBase: 'https://provider.example/v1',
+      buildHeaders: async () => ({}),
+    }, { fetchImpl });
+    const res = new FakeResponse();
+
+    await handler.handle({
+      parsedBody: { model: 'm', input: 'hi', stream: false },
+      res: res as never,
+    });
+
+    const response = JSON.parse(res.chunks.join('')) as {
+      output: Array<{ content?: Array<{ text?: string }> }>;
+    };
+    expect(res.status).toBe(200);
+    expect(response.output[0].content?.[0].text).toBe('bounded');
+    expect(cancel).toHaveBeenCalledOnce();
   });
 });

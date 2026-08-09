@@ -145,6 +145,7 @@ export interface SessionLike {
       origin?: SendOrigin;
       planMode?: boolean;
       onAccepted?: () => void | Promise<void>;
+      onDispatching?: () => void;
       signal?: AbortSignal;
     },
   ): Promise<SessionSendResult>;
@@ -176,10 +177,18 @@ export interface GoalControllerDeps {
    * goal 设了却发不出第一轮"的关键。
    */
   ensureSession(sessionId: string): Promise<SessionLike | undefined>;
-  /** 发下一轮前落实运行中登记的 deferred agent switch,并 bootstrap 新 live session。 */
-  applyPendingAgentSwitch?: (sessionId: string) => Promise<void>;
+  /**
+   * 锁住本 session、落实 deferred agent switch 并 bootstrap 新 live session。
+   * 调用方在重新读取 live session 且 Session.send 返回后执行 release。
+   */
+  acquirePendingAgentSwitch?: (sessionId: string) => Promise<() => void>;
   /** ← maker-ipc/register.isSessionInTurn(main 侧 turn 活跃跟踪)。 */
   isSessionInTurn(sessionId: string): boolean;
+  /**
+   * 清除目标时中断由 GoalController 发起的当前 turn。生产环境接到 input coordinator
+   * 的 Stop 边界，以便 vendor abort、输入队列和迟到终态事件一起收口。
+   */
+  stopActiveGoalTurn(sessionId: string): void;
   beforeDispatchUserTurn?: (sessionId: string) => void | Promise<void>;
   onUndispatchedUserTurn?: (sessionId: string) => void;
   /** 状态变化广播到 renderer(→ GOAL_STATUS_CHANGED);goal=null 表示已清除。 */
@@ -226,5 +235,8 @@ export interface GoalControllerDeps {
    * 持久化一条 goal 提示记录(注入 createMessage,role:'assistant' + agentMeta.goalNotice)。
    * 目前用于 usageLimited 到点自动续跑时落一条"用量已恢复,继续目标"。
    */
-  persistGoalNotice?: (sessionId: string, kind: 'usage-resumed') => Promise<void>;
+  persistGoalNotice?: (
+    sessionId: string,
+    kind: 'usage-resumed' | 'capacity-resumed',
+  ) => Promise<void>;
 }

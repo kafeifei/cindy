@@ -4,6 +4,7 @@ import type {
   Logger,
   Maker,
   McpProvider,
+  McpProviderContext,
   Session,
   SessionSendOptions,
   SessionSendResult,
@@ -11,7 +12,10 @@ import type {
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  __testing,
+  authorizeSendToLeadCaller,
   createOrcaWorkerBridgeMcpProvider,
+  SEND_TO_LEAD_TOOL_DESCRIPTION,
   type OrcaBridgeMcpDeps,
   type OrcaWorkerLink,
 } from '../orca-bridge-mcp';
@@ -49,7 +53,7 @@ interface CreateSessionOpts {
   parentSessionId?: string;
   resumeSessionId?: string;
   userPrompt?: string;
-  providerId?: string;
+  providerId?: string | null;
   vendorOptions?: Record<string, unknown>;
 }
 
@@ -253,7 +257,11 @@ function makeProvider(opts?: {
 function getServer(provider: McpProvider, ctx: Record<string, unknown>) {
   const toClaudeSdkConfig = provider.toClaudeSdkConfig;
   if (!toClaudeSdkConfig) throw new Error('expected SDK MCP provider');
-  const config = toClaudeSdkConfig(ctx as never) as { type?: string; instance?: unknown } | null;
+  const config = toClaudeSdkConfig({
+    mcpCallerKind: 'root',
+    mcpCallerAttested: true,
+    ...ctx,
+  } as never) as { type?: string; instance?: unknown } | null;
   if (config?.type !== 'sdk') throw new Error('expected sdk MCP config');
   return config.instance as unknown as FakeMcpServer;
 }
@@ -266,6 +274,111 @@ function parseToolJson(result: unknown): Record<string, unknown> {
 }
 
 describe('orca_worker_bridge MCP helpers', () => {
+  it('keeps the caller policy and model-only report contract concise', () => {
+    expect(authorizeSendToLeadCaller({
+      agentKind: 'codex',
+      workingDir: '/repo',
+      mcpCallerKind: 'root',
+      mcpCallerAttested: true,
+    })).toEqual({ ok: true });
+    expect(SEND_TO_LEAD_TOOL_DESCRIPTION).toContain('direct reporting channel to the Lead');
+    expect(SEND_TO_LEAD_TOOL_DESCRIPTION).toContain('Native subagents are internal helpers');
+    expect(SEND_TO_LEAD_TOOL_DESCRIPTION).toContain('return findings to the Worker instead of calling this tool');
+    expect(SEND_TO_LEAD_TOOL_DESCRIPTION).toContain('Call once per turn');
+    expect(SEND_TO_LEAD_TOOL_DESCRIPTION).toContain('final report or one blocking question');
+    expect(SEND_TO_LEAD_TOOL_DESCRIPTION).toContain('After a question, stop and wait for send_to_worker');
+    expect(SEND_TO_LEAD_TOOL_DESCRIPTION).toContain('do not send progress');
+    expect(SEND_TO_LEAD_TOOL_DESCRIPTION).not.toContain('root Orca Worker');
+    expect(SEND_TO_LEAD_TOOL_DESCRIPTION.length).toBeLessThan(700);
+  });
+
+  it.each([
+    ['descendant', true, 'NESTED_AGENT_NOT_ALLOWED'],
+    ['unknown', true, 'CALLER_PROVENANCE_REQUIRED'],
+    ['root', false, 'CALLER_PROVENANCE_REQUIRED'],
+  ] as const)('rejects %s/attested=%s before every send side effect', async (
+    mcpCallerKind,
+    mcpCallerAttested,
+    expectedCode,
+  ) => {
+    const lead = makeSession('lead-1');
+    const workerLink: OrcaWorkerLink = {
+      workerId: 'worker-1',
+      workflowId: 'workflow-1',
+      workerSessionId: 'worker-session-1',
+      leadSessionId: 'lead-1',
+      leadSession: {
+        sessionId: 'lead-1',
+        agentKind: 'claude-code',
+        workingDir: '/repo',
+        model: 'claude-opus-4-7',
+      },
+    };
+    const getWorkerLink = vi.fn(async () => workerLink);
+    const dispatchInterAgentMessage = vi.fn();
+    const { createSessionCalls, maker, persisted, statusUpdates } = makeProvider({
+      activeSessions: { 'lead-1': lead },
+      workerLink,
+    });
+    const provider = createOrcaWorkerBridgeMcpProvider({
+      getMaker: () => maker as unknown as Maker,
+      logger: makeLogger(),
+      persistUserMessage: async (sessionId, message) => {
+        persisted.push({ sessionId, content: message.content });
+      },
+      wireSession: () => undefined,
+      dispatchInterAgentMessage,
+      orcaTeamStore: {
+        getWorkerLink,
+        async updateWorkerStatus(workerId, status) {
+          statusUpdates.push({ workerId, status });
+        },
+      },
+    });
+    const runtimeContext: McpProviderContext = {
+      agentKind: 'codex',
+      workingDir: '/repo',
+      sessionId: 'worker-session-1',
+      mcpCallerKind,
+      mcpCallerAttested,
+      vendorOptions: {
+        orcaRole: 'worker',
+        orcaWorkerId: 'worker-1',
+        orcaWorkerSessionId: 'worker-session-1',
+      },
+    };
+    const server = getServer(provider, {
+      agentKind: 'codex',
+      workingDir: '/repo',
+      getSessionContext: () => runtimeContext,
+    });
+
+    expect(parseToolJson(await server._registeredTools.read_lead.handler({
+      worker_id: 'worker-1',
+    }))).toMatchObject({ lead_session_id: 'lead-1' });
+    const lookupCount = getWorkerLink.mock.calls.length;
+    __testing.setAutoBridgePending('worker-1', true);
+
+    try {
+      expect(expectToolError(await server._registeredTools.send_to_lead.handler({
+        worker_id: 'forged-worker-id',
+        message: 'partial child result',
+      }))).toMatchObject({ code: expectedCode });
+      expect(getWorkerLink).toHaveBeenCalledTimes(lookupCount);
+      expect(dispatchInterAgentMessage).not.toHaveBeenCalled();
+      expect(createSessionCalls).toEqual([]);
+      expect(persisted).toEqual([]);
+      expect(statusUpdates).toEqual([]);
+      expect(lead.sent).toEqual([]);
+      expect(__testing.hasAutoBridgePending('worker-1')).toBe(true);
+      expect(parseToolJson(await server._registeredTools.lead_status.handler({
+        worker_id: 'worker-1',
+      }))).toMatchObject({ lead_session_id: 'lead-1' });
+    } finally {
+      __testing.clearAutoBridgeState('worker-1');
+    }
+  });
+
   function makeWorkerBridgeLeadHarness(lead: FakeSession) {
     const logger = makeLogger();
     const workerLink: OrcaWorkerLink = {
@@ -367,6 +480,29 @@ describe('orca_worker_bridge MCP helpers', () => {
     expect(statusUpdates).toEqual([]);
   });
 
+  it('does not retain settled auto-bridge state after send_to_lead succeeds', async () => {
+    const lead = makeSession('lead-1');
+    const { server } = makeWorkerBridgeLeadHarness(lead);
+    __testing.clearAutoBridgeState('worker-1');
+
+    try {
+      const result = await server._registeredTools.send_to_lead.handler({
+        worker_id: 'worker-1',
+        message: 'completed work',
+      });
+
+      expect(parseToolJson(result)).toMatchObject({
+        ok: true,
+        worker_id: 'worker-1',
+        lead_session_id: 'lead-1',
+      });
+      expect(__testing.hasAutoBridgePending('worker-1')).toBe(false);
+      expect(__testing.autoBridgeStateCount()).toBe(0);
+    } finally {
+      __testing.clearAutoBridgeState('worker-1');
+    }
+  });
+
   it('hydrates lead provider route before cold send_to_lead creates the lead session', async () => {
     const order: string[] = [];
     const hydrateSessionRoute = vi.fn(async (sessionId: string, providerId: string | null) => {
@@ -433,6 +569,258 @@ describe('orca_worker_bridge MCP helpers', () => {
     expect(createSessionCalls[0]).toMatchObject({ id: 'lead-1', providerId: 'anthropic' });
     expect(wired).toEqual(['lead-1']);
     expect(order).toEqual(['hydrate:lead-1:anthropic', 'create:lead-1:anthropic']);
+  });
+
+  it('preserves a persisted null Pi providerId when cold rehydrating the lead', async () => {
+    const workerLink: OrcaWorkerLink = {
+      workerId: 'worker-1', workflowId: 'workflow-1', workerSessionId: 'worker-session-1', leadSessionId: 'lead-1',
+      leadSession: { sessionId: 'lead-1', agentKind: 'pi', workingDir: '/repo', model: 'gpt-5', providerId: null },
+    };
+    const { createSessionCalls, maker } = makeProvider({ workerLink });
+    const provider = createOrcaWorkerBridgeMcpProvider({
+      getMaker: () => maker as unknown as Maker, logger: makeLogger() as never,
+      persistUserMessage: async () => {}, wireSession: () => {},
+      orcaTeamStore: { async getWorkerLink() { return workerLink; }, async updateWorkerStatus() {} },
+    });
+    const server = getServer(provider, {
+      agentKind: 'pi', workingDir: '/repo',
+      vendorOptions: { orcaRole: 'worker', orcaWorkerId: 'worker-1', orcaWorkerSessionId: 'worker-session-1' },
+    });
+
+    await server._registeredTools.send_to_lead.handler({ worker_id: 'worker-1', message: 'hello lead' });
+
+    expect(createSessionCalls).toHaveLength(1);
+    expect(createSessionCalls[0]).toMatchObject({ id: 'lead-1', agentKind: 'pi', providerId: null });
+  });
+
+  it('carries lead remoteHostId into rehydration createSession (remote worker → inactive remote lead)', async () => {
+    // codex-connector P1 回归:远端 worker send_to_lead 且 lead 不活跃 (关闭 /
+    // app 重启) 时, 持久化快照必须把 remoteHostId 带进 createSession — 缺失
+    // 会以远端 workingDir 在本机重建 (workdir check 失败 / 建出错误的本地
+    // session), 而不是在 SSH 主机上重连 lead。
+    const workerLink: OrcaWorkerLink = {
+      workerId: 'worker-1',
+      workflowId: 'workflow-1',
+      workerSessionId: 'worker-session-1',
+      leadSessionId: 'lead-1',
+      leadSession: {
+        sessionId: 'lead-1',
+        agentKind: 'claude-code',
+        workingDir: '/remote/repo',
+        model: 'claude-opus-4-7',
+        providerId: 'anthropic',
+        remoteHostId: 'host-remote-1',
+      },
+    };
+    const { createSessionCalls, maker } = makeProvider({ workerLink });
+    const provider = createOrcaWorkerBridgeMcpProvider({
+      getMaker: () => maker as unknown as Maker,
+      logger: makeLogger() as never,
+      persistUserMessage: async () => {},
+      wireSession: () => {},
+      orcaTeamStore: {
+        async getWorkerLink() {
+          return workerLink;
+        },
+        async updateWorkerStatus() {},
+      },
+    });
+    const server = getServer(provider, {
+      agentKind: 'claude-code',
+      workingDir: '/remote/repo',
+      vendorOptions: {
+        orcaRole: 'worker',
+        orcaWorkerId: 'worker-1',
+        orcaWorkerSessionId: 'worker-session-1',
+      },
+    });
+
+    const result = await server._registeredTools.send_to_lead.handler({
+      worker_id: 'worker-1',
+      message: 'hello remote lead',
+    });
+
+    expect(parseToolJson(result)).toMatchObject({ ok: true, lead_session_id: 'lead-1' });
+    expect(createSessionCalls).toHaveLength(1);
+    expect(createSessionCalls[0]).toMatchObject({ id: 'lead-1', remoteHostId: 'host-remote-1' });
+    // R6 P2:未注入 ensureRemoteSessionStart (老宿主 / no-op) 时按 false 保守
+    // 处理 — 记忆开关必须经宿主 preflight 归一化后才允许开。
+    expect(createSessionCalls[0]).toMatchObject({ makerMemoryEnabled: false });
+  });
+
+  it('runs the injected remote preflight before rehydrating an inactive remote lead', async () => {
+    // codex-connector R17 P1 回归:bridge 直调 core createSession 不经
+    // maker-ipc, 远端 preflight (SSH 重连 / agent install / MCP 注入) 必须
+    // 由 deps.ensureRemoteSessionStart 补齐并先于 createSession — 缺失时
+    // app 重启后 worker 回报在 SSH 未重连 / 无协同 MCP 的状态重建 lead。
+    const order: string[] = [];
+    const workerLink: OrcaWorkerLink = {
+      workerId: 'worker-1',
+      workflowId: 'workflow-1',
+      workerSessionId: 'worker-session-1',
+      leadSessionId: 'lead-1',
+      leadSession: {
+        sessionId: 'lead-1',
+        agentKind: 'claude-code',
+        workingDir: '/remote/repo',
+        model: 'claude-opus-4-7',
+        providerId: 'anthropic',
+        remoteHostId: 'host-remote-1',
+      },
+    };
+    const base = makeProvider({ workerLink });
+    const maker = {
+      ...base.maker,
+      async createSession(o: CreateSessionOpts) {
+        order.push('create');
+        return base.maker.createSession(o);
+      },
+    };
+    const ensureSpy = vi.fn(async () => {
+      order.push('ensure');
+    });
+    const provider = createOrcaWorkerBridgeMcpProvider({
+      getMaker: () => maker as unknown as Maker,
+      logger: makeLogger() as never,
+      persistUserMessage: async () => {},
+      wireSession: () => {},
+      ensureRemoteSessionStart: ensureSpy,
+      orcaTeamStore: {
+        async getWorkerLink() {
+          return workerLink;
+        },
+        async updateWorkerStatus() {},
+      },
+    });
+    const server = getServer(provider, {
+      agentKind: 'claude-code',
+      workingDir: '/remote/repo',
+      vendorOptions: {
+        orcaRole: 'worker',
+        orcaWorkerId: 'worker-1',
+        orcaWorkerSessionId: 'worker-session-1',
+      },
+    });
+
+    const result = await server._registeredTools.send_to_lead.handler({
+      worker_id: 'worker-1',
+      message: 'hello remote lead',
+    });
+
+    expect(parseToolJson(result)).toMatchObject({ ok: true });
+    expect(ensureSpy).toHaveBeenCalledWith({
+      sessionId: 'lead-1',
+      agentKind: 'claude-code',
+      remoteHostId: 'host-remote-1',
+      workingDir: '/remote/repo',
+    });
+    expect(order).toEqual(['ensure', 'create']);
+    // preflight 返回 void (老宿主形态) → 记忆保守关闭。
+    expect(base.createSessionCalls[0]).toMatchObject({ makerMemoryEnabled: false });
+  });
+
+  it('applies the preflight-normalized Maker Memory flag to remote rehydration (R6 P2)', async () => {
+    // SSH remote 与 IPC create/send 同语义:全局开着时远端 rehydrate 不再
+    // 硬编码 false;开关值 = 宿主 preflight 归一化 (backfill + stale-bridge
+    // 钳制) 后回传的结果。
+    const workerLink: OrcaWorkerLink = {
+      workerId: 'worker-1',
+      workflowId: 'workflow-1',
+      workerSessionId: 'worker-session-1',
+      leadSessionId: 'lead-1',
+      leadSession: {
+        sessionId: 'lead-1',
+        agentKind: 'claude-code',
+        workingDir: '/remote/repo',
+        model: 'claude-opus-4-7',
+        providerId: 'anthropic',
+        remoteHostId: 'host-remote-1',
+      },
+    };
+    const { createSessionCalls, maker } = makeProvider({ workerLink });
+    const provider = createOrcaWorkerBridgeMcpProvider({
+      getMaker: () => maker as unknown as Maker,
+      logger: makeLogger() as never,
+      persistUserMessage: async () => {},
+      wireSession: () => {},
+      ensureRemoteSessionStart: async () => ({ makerMemoryEnabled: true }),
+      orcaTeamStore: {
+        async getWorkerLink() {
+          return workerLink;
+        },
+        async updateWorkerStatus() {},
+      },
+    });
+    const server = getServer(provider, {
+      agentKind: 'claude-code',
+      workingDir: '/remote/repo',
+      vendorOptions: {
+        orcaRole: 'worker',
+        orcaWorkerId: 'worker-1',
+        orcaWorkerSessionId: 'worker-session-1',
+      },
+    });
+
+    const result = await server._registeredTools.send_to_lead.handler({
+      worker_id: 'worker-1',
+      message: 'hello remote lead',
+    });
+
+    expect(parseToolJson(result)).toMatchObject({ ok: true });
+    expect(createSessionCalls[0]).toMatchObject({
+      id: 'lead-1',
+      remoteHostId: 'host-remote-1',
+      makerMemoryEnabled: true,
+    });
+  });
+
+  it('does not run the remote preflight when rehydrating a local lead', async () => {
+    // 本地 lead (无 remoteHostId) 不触发 preflight — 回调只对远端有意义。
+    const workerLink: OrcaWorkerLink = {
+      workerId: 'worker-1',
+      workflowId: 'workflow-1',
+      workerSessionId: 'worker-session-1',
+      leadSessionId: 'lead-1',
+      leadSession: {
+        sessionId: 'lead-1',
+        agentKind: 'claude-code',
+        workingDir: '/repo',
+        model: 'claude-opus-4-7',
+        providerId: 'anthropic',
+      },
+    };
+    const { maker } = makeProvider({ workerLink });
+    const ensureSpy = vi.fn(async () => {});
+    const provider = createOrcaWorkerBridgeMcpProvider({
+      getMaker: () => maker as unknown as Maker,
+      logger: makeLogger() as never,
+      persistUserMessage: async () => {},
+      wireSession: () => {},
+      ensureRemoteSessionStart: ensureSpy,
+      orcaTeamStore: {
+        async getWorkerLink() {
+          return workerLink;
+        },
+        async updateWorkerStatus() {},
+      },
+    });
+    const server = getServer(provider, {
+      agentKind: 'claude-code',
+      workingDir: '/repo',
+      vendorOptions: {
+        orcaRole: 'worker',
+        orcaWorkerId: 'worker-1',
+        orcaWorkerSessionId: 'worker-session-1',
+      },
+    });
+
+    const result = await server._registeredTools.send_to_lead.handler({
+      worker_id: 'worker-1',
+      message: 'hello local lead',
+    });
+
+    expect(parseToolJson(result)).toMatchObject({ ok: true });
+    expect(ensureSpy).not.toHaveBeenCalled();
   });
 
   it('hydrates lead provider route even when send_to_lead reuses an active lead', async () => {
@@ -579,6 +967,55 @@ describe('orca_worker_bridge MCP helpers', () => {
     });
     expect(persisted).toHaveLength(1);
     expect(statusUpdates).toEqual([{ workerId: 'worker-1', status: 'done' }]);
+  });
+
+  it('read_lead and lead_status stay running across claim-bearing continuation boundaries', async () => {
+    const lead = makeSession('lead-1');
+    const { server } = makeWorkerBridgeLeadHarness(lead);
+
+    await server._registeredTools.send_to_lead.handler({
+      worker_id: 'worker-1',
+      message: 'continue the lead turn',
+    });
+    lead.emit({
+      type: 'text',
+      data: { text: 'First segment', isFinal: false },
+    } as AgentEvent);
+    lead.emit({
+      type: 'status',
+      data: { status: 'Done', isRunning: false },
+      turnContinuationId: 1,
+    } as AgentEvent);
+    lead.emit({
+      type: 'done',
+      data: { result: 'First segment result' },
+      turnContinuationId: 1,
+    } as AgentEvent);
+
+    expect(parseToolJson(await server._registeredTools.read_lead.handler({
+      worker_id: 'worker-1',
+    }))).toMatchObject({
+      status: 'running',
+      result: 'First segment result',
+    });
+    expect(parseToolJson(await server._registeredTools.lead_status.handler({
+      worker_id: 'worker-1',
+    }))).toMatchObject({ status: 'running' });
+
+    lead.emit({
+      type: 'done',
+      data: { result: 'Final lead result' },
+    } as AgentEvent);
+
+    expect(parseToolJson(await server._registeredTools.read_lead.handler({
+      worker_id: 'worker-1',
+    }))).toMatchObject({
+      status: 'done',
+      result: 'Final lead result',
+    });
+    expect(parseToolJson(await server._registeredTools.lead_status.handler({
+      worker_id: 'worker-1',
+    }))).toMatchObject({ status: 'done' });
   });
 
   it('send_to_lead accepted false does not persist success or mark done', async () => {
@@ -879,6 +1316,8 @@ describe('orca_worker_bridge MCP helpers', () => {
         agentKind: 'codex',
         workingDir: '/repo',
         sessionId: 'other-session',
+        mcpCallerKind: 'root',
+        mcpCallerAttested: true,
         vendorOptions: {
           orcaRole: 'worker',
           orcaWorkerId: 'worker-1',

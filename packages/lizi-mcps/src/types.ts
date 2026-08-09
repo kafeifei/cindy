@@ -125,6 +125,33 @@ export interface FeishuBotMcpHostDeps {
   logger?: LiziMcpLogger;
 }
 
+export interface WechatBotSendMessageResult {
+  ok: boolean;
+  messageId?: string;
+  reason?: string;
+}
+
+export interface WechatBotSendFileResult {
+  ok: boolean;
+  messageId?: string;
+  reason?: string;
+}
+
+/** Host bridge for the personal WeChat proactive-message MCP. */
+export interface WechatBotMcpHostDeps {
+  getActivePeerIdForSession(
+    sessionId: string | undefined,
+  ): Promise<string | null> | string | null;
+  getMostRecentPeerId(): Promise<string | null> | string | null;
+  sendMessage(peerId: string, text: string): Promise<WechatBotSendMessageResult>;
+  sendFile(
+    peerId: string,
+    absPath: string,
+    displayName?: string,
+  ): Promise<WechatBotSendFileResult>;
+  logger?: LiziMcpLogger;
+}
+
 // ── cindy_slack(Slack 网关工具, 2026-07 并轨 hook 通道) ──────────────────────
 
 /** Slack 网关工具的结构化错误(hook-control manager 定义的同构形状)。 */
@@ -374,6 +401,12 @@ export interface ContactsMcpDeps {
     items: import('@cindy/maker-core').SystemContactWriteItem[],
   ) => Promise<import('@cindy/maker-core').SystemContactWriteResult[]>;
   /**
+   * 系统通讯录回写的单批上限(host 侧 writeSystemContacts 一次能接收的最大条数)。
+   * 只接受 1..200 的整数, 缺省 200(host 硬限制);非法值/超限回退 200。
+   * 测试注入小值可省去大量建卡开销, 仍能验证分批边界。
+   */
+  systemWriteBatchSize?: number;
+  /**
    * write/manage 类工具成功后的变更通知(host 注入, 用于广播 renderer 刷新)。
    * MCP 直写同进程 store 不经 IPC 层, 没有这个回调 UI 就收不到 agent 侧变更。
    */
@@ -418,6 +451,7 @@ export type LiziMcpId =
   | 'browser'
   | 'computer'
   | 'cindy_feishu_bot'
+  | 'cindy_wechat'
   | 'cindy_slack'
   | 'cindy_scheduler'
   | 'cindy_ssh'
@@ -460,11 +494,15 @@ export type ControlResult<T extends object = object, E extends string = never> =
  * adding a new vendor (e.g. 'gemini') without updating this union will cause
  * LLM tool calls to fail zod enum validation.
  */
-export type ControlWorkerAgent = 'claude-code' | 'codex';
+export type ControlWorkerAgent = 'claude-code' | 'codex' | 'pi';
 
 /** Browser automation MCP host deps. Core browser execution is injected by host. */
 export interface BrowserMcpDeps {
   getRuntime(): BrowserControlRuntime;
+  /** Whether the active backend accepts managed resource downloads. */
+  supportsResourceDownloads?(): boolean;
+  /** Whether the active backend accepts semantic element queries. */
+  supportsSemanticQueries?(): boolean;
   logger?: LiziMcpLogger;
   /**
    * Optional L2 (user-local) recipe layer. The host scans userData, parses with
@@ -691,9 +729,27 @@ export interface AndroidMcpDeps {
   logger?: LiziMcpLogger;
 }
 
+export type LiziMcpCallerKind = 'root' | 'descendant' | 'unknown';
+
 export interface LiziMcpSessionContext {
   agentKind: string;
   workingDir: string;
+  /**
+   * 当前 tool-call 的权威 session ctx accessor。
+   *
+   * Claude in-process 路径返回闭包绑定的当前 session；Codex / Pi bridge
+   * 路径从请求作用域恢复当前 session。只要提供了本 accessor，它就是唯一可信
+   * 来源：返回 undefined 表示本次调用无法确认归属，调用方必须 fail closed，
+   * 不能再回落到构建 server 时捕获的 ctx 或环境中的其它 AsyncLocalStorage store。
+   */
+  getSessionContext?: () => LiziMcpSessionContext | undefined;
+  /**
+   * SSH remote 会话的 host id (本地会话缺省)。workingDir 此时是远端机器上的
+   * 路径字符串 — cindy_memory 等按 workdir 分区的工具必须用
+   * buildMemoryScopeKey(workingDir, remoteHostId) 定位 store, 不得把远端路径
+   * 直接当本地键 (会与本地同名路径互串)。
+   */
+  remoteHostId?: string;
   vendorOptions?: Record<string, unknown>;
   /**
    * Business 层 session id (host 在 createSession 时通过 opts.id 注入, maker-core
@@ -706,6 +762,17 @@ export interface LiziMcpSessionContext {
    * ctx 时，标准范式是工具直接返业务错误码 (如 LEAD_NOT_SUPPORTED) 而不是抛异常。
    */
   sessionId?: string;
+  /**
+   * 当前内存 Session 实例的唯一代号。business sessionId 在重建后可能复用，
+   * 权限读取方用本字段阻断旧 MCP 请求借用新实例权限。宿主可将它作为
+   * opaque route identity 放进 harness 的本地 MCP URL；不得把它暴露成
+   * 模型或插件可控的工具参数。
+   */
+  sessionInstanceId?: string;
+  /** Host-owned caller provenance; never sourced from model tool arguments. */
+  mcpCallerKind?: LiziMcpCallerKind;
+  /** True only when the harness bridge has installed provenance enforcement. */
+  mcpCallerAttested?: boolean;
 }
 
 export interface CodexHttpMcpConfig {

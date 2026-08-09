@@ -137,6 +137,32 @@ describe('native e2e environment', () => {
     );
   });
 
+  it('keeps the mock host capable of exercising the native worktree two-step flow', () => {
+    const mockHost = readFileSync(resolve(process.cwd(), 'scripts/mock-device-link-host.mjs'), 'utf8');
+
+    for (const channel of [
+      'maker:get-new-maker-defaults',
+      'maker:apply-new-maker-worktree-pref',
+      'worktree:detect-cwd',
+      'worktree:list-branches',
+      'worktree:suggest-name',
+      'worktree:create',
+      'worktree:discard-precreated',
+    ]) {
+      expect(mockHost).toContain(`case '${channel}':`);
+    }
+    expect(mockHost).toContain("const MOCK_WORKTREE_BRANCHES = ['main', 'feature/mobile-worktree', 'release/mobile'];");
+    expect(mockHost).toContain('supportsRecoveryKeyDiscard: true');
+    expect(mockHost).toContain('branches: [...mockWorktree.branches]');
+    expect(mockHost).toContain('current: mockWorktree.currentBranch');
+    expect(mockHost).toContain("path: path.join(normalizedBaseRepo, '.cindy-worktrees', name)");
+    expect(mockHost).toContain('branch: `xdt/${name}`');
+    expect(mockHost).toContain('sourceBranch,');
+    expect(mockHost).toContain('worktreePath: claimedWorktree?.meta.path ?? null');
+    expect(mockHost).toContain("throw mockIpcError('PRECONDITION_FAILED', '会话已认领该 worktree，拒绝补偿回收')");
+    expect(mockHost).toContain('return { discarded: true, branchDeleted: true };');
+  });
+
   it('can run reconnect smoke as a self-contained local relay gate', () => {
     const packageJson = readFileSync(resolve(process.cwd(), 'package.json'), 'utf8');
     const reconnectSmoke = readFileSync(resolve(process.cwd(), 'scripts/device-link-reconnect-smoke.mjs'), 'utf8');
@@ -226,7 +252,7 @@ describe('native e2e environment', () => {
     const cleanupBody = authContext.slice(cleanupStart, authContext.indexOf('}, [', cleanupStart));
     const refreshTokenDelete = cleanupBody.indexOf('await serializeRefreshTokenMutation(() =>');
     expect(refreshTokenDelete).toBeGreaterThanOrEqual(0);
-    expect(cleanupBody).toContain('deleteSecureItem(REFRESH_TOKEN_KEY).catch(() => undefined)');
+    expect(cleanupBody).toContain('deleteSecureItem(AUTH_SESSION_KEY).catch(() => undefined)');
     expect(cleanupBody.indexOf('await clearAllMobileVoiceCredentials().catch(() => undefined);')).toBeLessThan(refreshTokenDelete);
     expect(cleanupBody.indexOf('await clearAllMobileVoiceInputHistories().catch(() => undefined);')).toBeLessThan(refreshTokenDelete);
     const logoutStart = authContext.indexOf('const logout = useCallback(async () => {');

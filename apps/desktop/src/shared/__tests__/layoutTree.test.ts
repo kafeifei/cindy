@@ -6,6 +6,7 @@ import {
   coerceLayout,
   countPanelKind,
   createDefaultLayout,
+  createDefaultLayoutPreservingGhostPanels,
   findPaneById,
   findSplitChildByPanelKind,
   insertRootSplitPane,
@@ -18,6 +19,7 @@ import {
   walkPanes,
   type Layout,
   type LayoutNode,
+  type SplitNode,
 } from '../layoutTree';
 
 /** 构造一棵最小合法树的便捷函数,测试里按需改坏它。 */
@@ -45,6 +47,47 @@ describe('createDefaultLayout', () => {
     expect(layout.sidebar.edge).toBe('left');
     const kinds = walkPanes(layout).map((p) => p.panelKind);
     expect(kinds).toEqual(['session-list', 'chat-main', 'right-tabs']);
+  });
+});
+
+describe('createDefaultLayoutPreservingGhostPanels', () => {
+  it('恢复内置默认排列时保留意识面板槽位、相对顺序与最小宽度', () => {
+    const first = insertRootSplitPane(
+      createDefaultLayout(),
+      { id: 'custom-a', panelKind: 'ghost:alpha', minWidth: 280 },
+      { index: 0, fraction: 0.25 },
+    );
+    const second = insertRootSplitPane(
+      first.layout,
+      { id: 'custom-b', panelKind: 'ghost:beta' },
+      { index: 1, fraction: 0.15 },
+    );
+    expect(first.applied).toBe(true);
+    expect(second.applied).toBe(true);
+
+    const restored = createDefaultLayoutPreservingGhostPanels(second.layout);
+    const children = (restored.content as SplitNode).children;
+    expect(children.map((child) => child.node.type === 'pane' && child.node.panelKind)).toEqual([
+      'ghost:alpha',
+      'ghost:beta',
+      'chat-main',
+      'right-tabs',
+    ]);
+    expect(children[0].node).toMatchObject({
+      id: 'ghost-alpha',
+      panelKind: 'ghost:alpha',
+      minWidth: 280,
+    });
+    expect(children[2].fraction).toBeCloseTo(children[3].fraction);
+    expect(children.reduce((sum, child) => sum + child.fraction, 0)).toBeCloseTo(1);
+    expect(validateLayout(restored)).toEqual({ ok: true });
+    expect((second.layout.content as SplitNode).children[0].node).toMatchObject({ id: 'custom-a' });
+  });
+
+  it('没有意识面板时严格返回内置默认布局', () => {
+    const current = createDefaultLayout();
+    (current.content as SplitNode).children.reverse();
+    expect(createDefaultLayoutPreservingGhostPanels(current)).toEqual(createDefaultLayout());
   });
 });
 
@@ -394,6 +437,21 @@ describe('transferSplitFraction(缝把手拖宽提交)', () => {
     const layout = createDefaultLayout(); // 0.5 / 0.5
     expect(transferSplitFraction(layout, 'root', 0, 1, 0.48).applied).toBe(false);
     expect(transferSplitFraction(layout, 'root', 0, 1, 0.4).applied).toBe(true);
+  });
+
+  it('恰好夹到 0.05 下限的转移必须放行:浮点残差不得判成非法(否则松手回弹)', () => {
+    // 调用方(缝把手)按下限夹取 amount 后,减回去会得到 0.04999999999999999 ——
+    // 裸比较 < 0.05 会整单拒绝,拖动的整段位移作废(2026-07-29 实测右栏回弹)。
+    const layout = createDefaultLayout();
+    const children = (layout.content as SplitNode).children;
+    children[0].fraction = 0.4589135021784424; // 用户现场树的 chat 份额
+    children[1].fraction = 0.5410864978215576;
+    const amount = children[0].fraction - 0.05; // 夹到下限
+    expect(children[0].fraction - amount).toBeLessThan(0.05); // 浮点残差前提成立
+    const r = transferSplitFraction(layout, 'root', 0, 1, amount);
+    expect(r.applied).toBe(true);
+    expect((r.layout.content as SplitNode).children[0].fraction).toBeCloseTo(0.05, 6);
+    expect(validateLayout(r.layout)).toEqual({ ok: true });
   });
 
   it('非法入参(amount=0 / 同下标 / 越界 / split 不存在)全部拒绝', () => {

@@ -5,11 +5,11 @@
  * ---------------------------------------------------------------------------
  * 背景:2026-07 切换会话卡顿,实测左侧列表整栏重画单次 80-96ms、每次切换连跑 3 遍。
  * 根源是行内订阅了"整张表"快照(attention Map / urgency Set 每次广播换新引用),
- * 且 SessionItem 无 memo —— 任何一个会话的状态变化都让几百行全部重渲染。
+ * 且 SessionItem 无 memo —— 任何一个任务的状态变化都让几百行全部重渲染。
  *
  * 本测试钉住修复后的三条不变量(谁改坏了这里就红):
  *   1. SessionItem 必须保持 React.memo 包裹;
- *   2. 某个会话的 attention 变化只重渲染它自己那一行,其它行不动;
+ *   2. 某个任务的 attention 变化只重渲染它自己那一行,其它行不动;
  *   3. urgency 集合内容不变时(即便上游产了新 Set 引用)任何行都不重渲染,
  *      变化时只重渲染受影响的行。
  *
@@ -18,7 +18,7 @@
  */
 
 import { createElement, Fragment } from 'react';
-import { act, cleanup, render } from '@testing-library/react';
+import { act, cleanup, createEvent, fireEvent, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -29,10 +29,15 @@ import {
   clearSessionAttention,
 } from '@/lib/sessionAttentionStore';
 import { SessionAttentionUrgencyProvider } from '../../contexts/SessionAttentionUrgencyContext';
+import { SPLIT_GROUP_SESSION_MIME } from '../../splitGroupDnd';
 
 // ── mocks:剥离与"渲染隔离"无关的重依赖,只留计数探针 ──────────────────────────
 
 const renderCounts = new Map<string, number>();
+const sessionStatusIconSource = readFileSync(
+  resolve(__dirname, '..', 'SessionStatusIcon.tsx'),
+  'utf8',
+);
 
 vi.mock('../SessionStatusIcon', () => ({
   SessionStatusIcon: ({ session }: { session: { id: string } }) => {
@@ -83,16 +88,20 @@ vi.mock('@/lib/toast', () => ({
   toast: { success: vi.fn(), warning: vi.fn(), error: vi.fn() },
 }));
 
+vi.mock('@/lib/makerChatStore', () => ({
+  makerChatStore: { ensureInitialMessages: vi.fn() },
+}));
+
 // mock 之后再 import,确保 SessionItem 拿到的是探针版依赖。
 import { SessionItem } from '../SessionItem';
 
 // ── fixtures ─────────────────────────────────────────────────────────────────
 
-function makeSession(id: string): Session {
+function makeSession(id: string, status: Session['status'] | 'idle' = 'idle'): Session {
   return {
     id,
     title: `Session ${id}`,
-    status: 'idle',
+    status,
     createdAt: '2026-07-01T00:00:00.000Z',
     updatedAt: '2026-07-01T00:00:00.000Z',
     userSendAt: '2026-07-01T00:00:00.000Z',
@@ -108,10 +117,7 @@ function makeSession(id: string): Session {
 
 const noop = () => {};
 
-function rowsElement(
-  sessions: readonly Session[],
-  urgentSessionIds: ReadonlySet<string>,
-) {
+function rowsElement(sessions: readonly Session[], urgentSessionIds: ReadonlySet<string>) {
   return createElement(SessionAttentionUrgencyProvider, {
     urgentSessionIds,
     children: createElement(
@@ -164,6 +170,93 @@ describe('SessionItem — memo 包裹', () => {
     expect(source).not.toMatch(/useSessionAttentionSnapshot\s*\(/);
     expect(source).not.toMatch(/useSessionAttentionUrgencySet\s*\(/);
     expect(source).toMatch(/useSessionAttentionKind\s*\(\s*session\.id\s*\)/);
+  });
+});
+
+describe('SessionItem — 归档视觉', () => {
+  it('标题保留正文色，并用主题感知的 Archive 图标区分归档行', () => {
+    const regularSession = makeSession('regular-session');
+    const archivedSession = makeSession('archived-session', 'archived');
+    const { container } = render(rowsElement([regularSession, archivedSession], new Set()));
+
+    const regularRow = container.querySelector('[data-session-id="regular-session"]');
+    const archivedRow = container.querySelector('[data-session-id="archived-session"]');
+
+    expect(regularRow?.className).toContain('text-foreground');
+    expect(archivedRow?.className).toContain('text-foreground');
+    expect(archivedRow?.className).not.toContain('text-[var(--sidebar-list-muted)]');
+
+    const archivedIconBranch = sessionStatusIconSource.slice(
+      sessionStatusIconSource.indexOf('{isArchived ? ('),
+      sessionStatusIconSource.indexOf(') : isOrcaLead ? ('),
+    );
+    expect(archivedIconBranch).toContain('<Archive');
+    expect(archivedIconBranch).toContain('text-[var(--sidebar-item-active-foreground)]');
+    expect(archivedIconBranch).toContain('strokeWidth={1.75}');
+    expect(archivedIconBranch).toContain('text-[var(--cmd-palette-item-meta)]');
+  });
+});
+
+describe('SessionItem — 置顶分屏拖拽', () => {
+  it('原生整行拖拽保留普通内容起手，并排除内部操作按钮', () => {
+    const pinnedSession = {
+      ...makeSession('pinned-session'),
+      pinnedAt: '2026-08-08T00:00:00.000Z',
+    };
+    const values = new Map<string, string>();
+    const dataTransfer = {
+      effectAllowed: 'none',
+      setData: (format: string, data: string) => values.set(format, data),
+    };
+    const { container } = render(
+      createElement(SessionAttentionUrgencyProvider, {
+        urgentSessionIds: new Set<string>(),
+        children: createElement(
+          'div',
+          {
+            'data-sortable-id': pinnedSession.id,
+            'data-sortable-native-dnd': 'true',
+          },
+          createElement(SessionItem, {
+            session: pinnedSession,
+            isActive: false,
+            isRunning: false,
+            hasAttentionNotification: false,
+            onClick: noop,
+            onAction: noop,
+            onRename: noop,
+            onTogglePin: noop,
+          }),
+        ),
+      }),
+    );
+
+    const row = container.querySelector<HTMLElement>('[data-session-id="pinned-session"]');
+    const title = row?.querySelector<HTMLElement>('.sidebar-title-marquee__ellipsis');
+    const actionButton = row?.querySelector<HTMLButtonElement>(
+      'button[aria-label="ccAgent.sidebar.sessionMenu.moreActions"]',
+    );
+    expect(row?.draggable).toBe(true);
+    expect(row?.querySelector('[data-split-group-drag-handle="true"]')).toBeNull();
+    expect(title).not.toBeNull();
+    expect(actionButton).not.toBeNull();
+
+    fireEvent.pointerDown(title!, { button: 0, pointerType: 'mouse' });
+    fireEvent.dragStart(row!, { dataTransfer });
+
+    expect(values.get(SPLIT_GROUP_SESSION_MIME)).toBe(pinnedSession.id);
+    expect(dataTransfer.effectAllowed).toBe('copyMove');
+
+    values.clear();
+    dataTransfer.effectAllowed = 'none';
+    fireEvent.pointerDown(actionButton!, { button: 0, pointerType: 'mouse' });
+    const blockedDragStart = createEvent.dragStart(row!, { dataTransfer });
+    const preventDefault = vi.spyOn(blockedDragStart, 'preventDefault');
+    fireEvent(row!, blockedDragStart);
+
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(values.has(SPLIT_GROUP_SESSION_MIME)).toBe(false);
+    expect(dataTransfer.effectAllowed).toBe('none');
   });
 });
 

@@ -32,9 +32,16 @@ const h = vi.hoisted(() => {
 vi.mock('electron', () => ({
   ipcMain: { handle: vi.fn() },
   BrowserWindow: { getAllWindows: h.getAllWindows },
+  // 停用轴接线让本测试的 import 链带上 model-disable-store / auth-adapters →
+  // runtime-configs:模块加载期会读 app.getPath('userData')(userDataPath 字段)。
+  // ripgrep 探测已惰性化(issue #1956),import 不再需要 getAppPath / isPackaged。
+  app: {
+    getPath: vi.fn(() => '/tmp/cindy-test-user-data'),
+  },
 }));
 
 vi.mock('../../device-link/broadcast-tap.js', () => ({
+  getSafeDataOwnerPushStamp: vi.fn(() => undefined),
   tapWindowBroadcast: h.tapWindowBroadcast,
 }));
 

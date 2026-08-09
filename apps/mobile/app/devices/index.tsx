@@ -20,6 +20,7 @@ import {
 } from 'react-native';
 import { Text, TextInput } from '@/components/AppText';
 import { DeviceLinkError, type DeviceView, type PresenceSnapshot } from '@cindy/device-link';
+import { projectDraftSessionTitle } from '@cindy/maker-shared/session-title';
 import {
   Archive,
   Check,
@@ -65,6 +66,7 @@ import { toDeviceListItems } from '@/device-link/devices';
 import {
   collectFreshPresenceDeviceIds,
   createPresenceFreshnessTracker,
+  deviceMirrorCleanupDisposition,
   markPresenceFresh,
   mergeDeviceViewsWithFreshPresence,
   patchDeviceViewsWithPresence,
@@ -78,7 +80,11 @@ import {
 } from '@/device-link/remoteStatus';
 import { withTransientRemoteRetry } from '@/device-link/remoteRetry';
 import { revokedDevicesStore, useRevokedDevices } from '@/device-link/revokedDevicesStore';
-import { remoteScheduleEventStore } from '@/scheduler/remoteScheduleEvents';
+import { useUnresponsiveDevices } from '@/device-link/unresponsiveDevicesStore';
+import {
+  remoteScheduleEventStore,
+  useRemoteScheduleMirrorInvalidations,
+} from '@/scheduler/remoteScheduleEvents';
 import {
   buildMobileHomePresentation,
   excludeOrcaWorkerSessions,
@@ -91,6 +97,7 @@ import {
   getCachedHomeListSnapshot,
   scheduleHomeListSnapshotPersist,
 } from '@/session/mobileHomeListCache';
+import { startBoundedStartupRead } from '@/session/mobileHomeStartup';
 import { serializeNewSessionDeviceOptions } from '@/session/newSession';
 import {
   buildRemoteSessionCardPreview,
@@ -117,6 +124,10 @@ import { dataPropsEqual, mapContentEqual } from '@/utils/valueEquality';
 import { useStableValue } from '@/utils/useStableValue';
 import { useMinuteNow } from '@/utils/useMinuteNow';
 import {
+  getScheduleIndexInvalidationVersion,
+  invalidateOfflineScheduleIndexFailureFor,
+  invalidateRunningSessionScheduleEntries,
+  invalidateScheduleIndexForDevice,
   loadDeviceSessionScheduleIndex,
   loadSessionScheduleIndexThrottled,
   replaceSessionScheduleIndexEntries,
@@ -145,6 +156,7 @@ const DEVICE_LIST_TIMEOUT_MS = 12_000;
 // 项目组与自动化组展开后的子列表共用同一个预览限量(设备详情页也 import 复用,避免两处漂移)。
 export const PROJECT_PREVIEW_LIMIT = 5;
 const HOME_SESSION_ROW_HEIGHT = 78;
+const HOME_SESSION_SINGLE_LINE_ROW_HEIGHT = 60;
 const CINDY_LIST_GUTTER = 20;
 const CINDY_LIST_ROW_HEIGHT = 60;
 const CINDY_LIST_ROW_GAP = 10;
@@ -184,6 +196,10 @@ export default function HomeScreen() {
   const scheduleIndexDeferRegistryRef = useRef(createScheduleIndexDeferRegistry());
   const scheduleEventVersionsRef = useRef(new Map<string, number>());
   const deviceIdentityCacheRef = useRef(createEmptyDeviceIdentityCache());
+  // A timed-out SecureStore read may still complete. Do not persist an empty/rebuilt
+  // cache until that read settles and its stored identities have been reapplied.
+  const deviceIdentityCachePersistReadyRef = useRef(false);
+  const deviceIdentityCachePersistPendingRef = useRef(false);
   // presence 补丁新鲜度:loadHome 用它判断哪些设备在 REST 快照发起后又收到过 presence-changed,
   // 避免用过期快照把它们改回离线(否则出现「会话都同步出来了、新建对话按钮却灰着」的卡死态)。
   const presenceFreshnessRef = useRef(createPresenceFreshnessTracker());
@@ -236,8 +252,18 @@ export default function HomeScreen() {
   const [pinnedCollapsed, setPinnedCollapsed] = useState(false);
   // 已展开的自动化组 key(页面级 state:SectionList 虚拟化回收行组件时展开态不丢)。
   const [expandedAutomationGroups, setExpandedAutomationGroups] = useState<string[]>([]);
-  const [deviceConnectionStates, setDeviceConnectionStates] = useState<Record<string, HomeDeviceConnectionState>>({});
+  const [rawDeviceConnectionStates, setDeviceConnectionStates] = useState<Record<string, HomeDeviceConnectionState>>({});
+  // 熔断 open(电脑端未响应)的设备复用既有 failed 渲染路径(红圈),不新增视觉:
+  // 内部态映射覆盖在 hydrate 状态之上,熔断关闭后自动回落到原状态。
+  const unresponsiveDevices = useUnresponsiveDevices();
+  const deviceConnectionStates = useMemo<Record<string, HomeDeviceConnectionState>>(() => {
+    if (unresponsiveDevices.size === 0) return rawDeviceConnectionStates;
+    const merged: Record<string, HomeDeviceConnectionState> = { ...rawDeviceConnectionStates };
+    for (const deviceId of unresponsiveDevices) merged[deviceId] = 'failed';
+    return merged;
+  }, [rawDeviceConnectionStates, unresponsiveDevices]);
   const [scheduleIndex, setScheduleIndex] = useState<Map<string, RemoteSessionScheduleInfo>>(() => new Map());
+  const scheduleMirrorInvalidations = useRemoteScheduleMirrorInvalidations();
 
   const updateDeviceConnectionState = useCallback((deviceId: string, state: HomeDeviceConnectionState) => {
     setDeviceConnectionStates((current) => updateHomeDeviceConnectionState(current, deviceId, state));
@@ -246,18 +272,33 @@ export default function HomeScreen() {
   const reconcileDeviceViews = useCallback((nextRawDevices: readonly DeviceView[]) => {
     const result = reconcileDeviceIdentities(nextRawDevices, deviceIdentityCacheRef.current);
     deviceIdentityCacheRef.current = result.cache;
-    if (result.cacheChanged) void saveDeviceIdentityCache(result.cache);
+    if (result.cacheChanged) {
+      if (deviceIdentityCachePersistReadyRef.current) void saveDeviceIdentityCache(result.cache);
+      else deviceIdentityCachePersistPendingRef.current = true;
+    }
     return result;
   }, []);
 
+  const softInvalidateDeviceMirror = useCallback((deviceId: string) => {
+    const sessionIds = remoteSessionStore.getSessions()
+      .filter((session) => session.deviceLinkDeviceId === deviceId)
+      .map((session) => session.id);
+    invalidateScheduleIndexForDevice(deviceId);
+    remoteScheduleEventStore.invalidateDeviceMirror(deviceId);
+    remoteSessionStore.markDeviceOffline(deviceId);
+    setScheduleIndex((current) => invalidateRunningSessionScheduleEntries(current, sessionIds));
+  }, []);
+
   const markDeviceOffline = useCallback((deviceId: string) => {
-    remoteSessionStore.removeDevice(deviceId);
+    // 普通离线是可恢复的传输状态:保留 session/messages,只清 live 投影并失效
+    // message marker。恢复后会话立即显示 last-known 内容,后台 reopen 再补最新窗口。
+    softInvalidateDeviceMirror(deviceId);
     setDevices((current) => {
       const next = reconcileDeviceViews(markDeviceViewsOffline(current, new Set([deviceId]))).devices;
       devicesRef.current = next;
       return next;
     });
-  }, [reconcileDeviceViews]);
+  }, [reconcileDeviceViews, softInvalidateDeviceMirror]);
 
   const refreshDeviceScheduleIndex = useCallback((
     deviceId: string,
@@ -268,12 +309,14 @@ export default function HomeScreen() {
     // 重放 1+N×listRuns 会拥塞 device-link 管道、拖慢会话打开的关键读(见 scheduleIndex 注释)。
     // force = 已读类权威信号(read / all-read 推送),必须绕过 TTL 立即重拉——否则「看完
     // 返回首页」这个最常见路径永远命中 30s 内的陈旧缓存,未读徽标清不掉(review P1)。
+    const invalidationVersion = getScheduleIndexInvalidationVersion(deviceId);
     void loadSessionScheduleIndexThrottled(
       deviceId,
       () => loadDeviceSessionScheduleIndex(deviceId, invoke),
       { force: options?.force },
     )
       .then((nextIndex) => {
+        if (getScheduleIndexInvalidationVersion(deviceId) !== invalidationVersion) return;
         setScheduleIndex((current) => replaceSessionScheduleIndexEntries(
           current,
           sessionIds,
@@ -288,9 +331,13 @@ export default function HomeScreen() {
   const hydrateDeviceSessions = useCallback(async (device: DeviceView): Promise<HydrateDeviceSessionsResult> => {
     updateDeviceConnectionState(device.deviceId, 'syncing');
     try {
-      const [list, activeSessions] = await withTransientRemoteRetry(async () => {
+      const [list, activeSessions, activeSessionSnapshotEpoch] = await withTransientRemoteRetry(async () => {
         await subscribe('device-list', device.deviceId, ['sessions']);
-        return Promise.all([
+        // Capture inside the retry callback so every maker:list-active attempt gets its own
+        // fence. A newer retry push received while this request is in flight must survive
+        // the older snapshot, while progress predating this attempt can be cleared.
+        const activeSessionSnapshotEpoch = remoteSessionStore.captureActiveSessionSnapshotEpoch();
+        const [list, activeSessions] = await Promise.all([
           invoke<RemoteSession[]>(device.deviceId, 'local-db:sessions:list', [
             LIST_LIMIT,
             remoteListStatusFilter(statusFilter),
@@ -304,6 +351,7 @@ export default function HomeScreen() {
             throw err;
           }),
         ]);
+        return [list, activeSessions, activeSessionSnapshotEpoch] as const;
       });
       const nextSessions = Array.isArray(list) ? list : [];
       remoteSessionStore.setDeviceSessions(
@@ -312,7 +360,11 @@ export default function HomeScreen() {
         nextSessions,
       );
       if (Array.isArray(activeSessions)) {
-        remoteSessionStore.setActiveSessionSnapshots(device.deviceId, activeSessions);
+        remoteSessionStore.setActiveSessionSnapshots(
+          device.deviceId,
+          activeSessions,
+          activeSessionSnapshotEpoch,
+        );
       }
       // schedule-index(1+N 个 listRuns)是次要徽标数据,延后发,避开"开 app→立刻点会话"时和会话关键读
       // 抢同一条 WS 管道(见 scheduleIndexDefer / issue #324)。home 自动化分组与名称已由 fallbackScheduleInfo
@@ -379,25 +431,48 @@ export default function HomeScreen() {
         current,
         new Set(availableRows.map((item) => item.device.deviceId)),
       ));
-      const unavailableDeviceIds = new Set(deviceRows.filter((item) => !item.canOpen).map((item) => item.device.deviceId));
-      for (const deviceId of unavailableDeviceIds) remoteSessionStore.removeDevice(deviceId);
-      // 整表对账:REST 全量清单是权威。unavailableDeviceIds 只覆盖「在清单里但不可用」,
-      // 冷启动从缓存种入、随后被解绑(完全不在清单里)的设备不会出现在其中,不对账
-      // 就成了无法消除的幽灵项;快照回写也会把它一直续进缓存。按差集清 shard。
+      // 单次 REST 快照里的 offline 只是可恢复状态,不能硬删刚同步的会话/消息;
+      // 显式关闭远控或撤权才是权限终态,继续清敏感镜像。
+      for (const item of deviceRows) {
+        const disposition = deviceMirrorCleanupDisposition(item.state);
+        if (disposition === 'soft') softInvalidateDeviceMirror(item.device.deviceId);
+        if (disposition === 'hard') {
+          invalidateScheduleIndexForDevice(item.device.deviceId);
+          remoteScheduleEventStore.clearDevice(item.device.deviceId);
+          remoteScheduleEventStore.clearDeviceMirrorInvalidation(item.device.deviceId);
+          remoteSessionStore.removeDevice(item.device.deviceId);
+        }
+      }
+      // 整表对账:REST 全量清单对“设备是否仍绑定”是权威。冷启动从缓存种入、
+      // 随后被解绑(完全不在清单里)的设备不会出现在状态分类里,按差集硬清 shard;
+      // 这与短暂 offline 不同,否则幽灵项会被快照回写无限续存。
       const knownDeviceIds = new Set(deviceRows.map((item) => item.device.deviceId));
       const ghostDeviceIds = new Set<string>();
       for (const session of remoteSessionStore.getSessions()) {
         const shardId = session.deviceLinkDeviceId;
         if (shardId && !knownDeviceIds.has(shardId)) ghostDeviceIds.add(shardId);
       }
-      for (const deviceId of ghostDeviceIds) remoteSessionStore.removeDevice(deviceId);
+      for (const deviceId of ghostDeviceIds) {
+        invalidateScheduleIndexForDevice(deviceId);
+        remoteScheduleEventStore.clearDevice(deviceId);
+        remoteScheduleEventStore.clearDeviceMirrorInvalidation(deviceId);
+        remoteSessionStore.removeDevice(deviceId);
+      }
 
       const failures: string[] = [];
       const offlineDeviceIds = new Set<string>();
       await Promise.all(availableRows.map(async (item) => {
         const result = await hydrateDeviceSessions(item.device);
         if (result.failure) failures.push(result.failure);
-        if (result.offline) offlineDeviceIds.add(item.device.deviceId);
+        if (result.offline) {
+          offlineDeviceIds.add(item.device.deviceId);
+        } else if (!result.failure) {
+          // REST + hydrate success is authoritative reachability evidence even when relay
+          // presence was not replayed on this connection. Retire any prior offline marker
+          // so unrelated device invalidations cannot re-clear this device's running badges.
+          remoteScheduleEventStore.clearDeviceMirrorInvalidation(item.device.deviceId);
+          invalidateOfflineScheduleIndexFailureFor(item.device.deviceId);
+        }
       }));
 
       // 收尾再合并一次:hydrate 阶段(可能持续数秒)里新到的 presence 补丁同样不能被覆盖掉。
@@ -426,7 +501,7 @@ export default function HomeScreen() {
     return task.finally(() => {
       if (visible) setRefreshing(false);
     });
-  }, [apiFetch, deviceIdentityCacheReady, homeCacheUserId, hydrateDeviceSessions, reconcileDeviceViews, revokedDevices]);
+  }, [apiFetch, deviceIdentityCacheReady, homeCacheUserId, hydrateDeviceSessions, reconcileDeviceViews, revokedDevices, softInvalidateDeviceMirror]);
 
   // 冷启动先画缓存:上次 loadHome 成功的设备+会话快照种入 store,先把列表画出来(消除首屏强制
   // spinner);loadHome 返回后由 setDeviceSessions / removeDevice 正常覆盖收敛。缓存为空时列表
@@ -439,13 +514,24 @@ export default function HomeScreen() {
       return;
     }
     let cancelled = false;
-    void getCachedHomeListSnapshot(homeCacheUserId)
-      .then((snapshot) => {
-        if (cancelled || lastSyncedAtRef.current !== null) return;
-        for (const device of snapshot) {
-          remoteSessionStore.hydrateDeviceSessionsIfEmpty(device.deviceId, device.deviceName, device.sessions);
-          updateDeviceConnectionState(device.deviceId, 'syncing');
-        }
+    const read = startBoundedStartupRead(
+      getCachedHomeListSnapshot(homeCacheUserId),
+      [],
+    );
+    const applySnapshot = async (snapshot: Awaited<ReturnType<typeof getCachedHomeListSnapshot>>) => {
+      await syncInFlightRef.current;
+      if (cancelled || lastSyncedAtRef.current !== null) return;
+      for (const device of snapshot) {
+        remoteSessionStore.hydrateDeviceSessionsIfEmpty(device.deviceId, device.deviceName, device.sessions);
+        updateDeviceConnectionState(device.deviceId, 'syncing');
+      }
+    };
+    void read.initial
+      .then((initial) => {
+        void applySnapshot(initial.value);
+        if (initial.timedOut) void read.completion.then((late) => {
+          if (late.ok) void applySnapshot(late.value);
+        });
       })
       .catch(() => undefined)
       .finally(() => {
@@ -458,18 +544,36 @@ export default function HomeScreen() {
 
   useEffect(() => {
     let cancelled = false;
-    void loadDeviceIdentityCache()
-      .then((cache) => {
+    const read = startBoundedStartupRead(
+      loadDeviceIdentityCache(),
+      createEmptyDeviceIdentityCache(),
+    );
+    void read.initial
+      .then(async (initial) => {
         if (cancelled) return;
-        deviceIdentityCacheRef.current = cache;
-      })
-      .finally(() => {
-        if (!cancelled) setDeviceIdentityCacheReady(true);
+        deviceIdentityCacheRef.current = initial.value;
+        deviceIdentityCachePersistReadyRef.current = !initial.timedOut;
+        setDeviceIdentityCacheReady(true);
+        if (!initial.timedOut) return;
+
+        const late = await read.completion;
+        if (cancelled) return;
+        if (late.ok) {
+          deviceIdentityCacheRef.current = late.value;
+          deviceIdentityCachePersistReadyRef.current = true;
+          const reconciled = reconcileDeviceViews(devicesRef.current);
+          devicesRef.current = reconciled.devices;
+          if (reconciled.viewsChanged) setDevices(reconciled.devices);
+          return;
+        }
+
+        deviceIdentityCachePersistReadyRef.current = true;
+        if (deviceIdentityCachePersistPendingRef.current) void saveDeviceIdentityCache(deviceIdentityCacheRef.current);
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [reconcileDeviceViews]);
 
   // 冷启动恢复上次的首页视图偏好(设备筛选 + 按项目分组);用户已手动操作过则不覆盖。
   useEffect(() => {
@@ -495,6 +599,15 @@ export default function HomeScreen() {
       registry.cancelAll();
     };
   }, []);
+
+  useEffect(() => {
+    if (scheduleMirrorInvalidations.size === 0) return;
+    const invalidatedDeviceIds = new Set(scheduleMirrorInvalidations.keys());
+    const sessionIds = remoteSessionStore.getSessions()
+      .filter((session) => !!session.deviceLinkDeviceId && invalidatedDeviceIds.has(session.deviceLinkDeviceId))
+      .map((session) => session.id);
+    setScheduleIndex((current) => invalidateRunningSessionScheduleEntries(current, sessionIds));
+  }, [scheduleMirrorInvalidations]);
 
   useEffect(() => remoteScheduleEventStore.subscribe(() => {
     const deviceIds = new Set<string>();
@@ -778,8 +891,10 @@ export default function HomeScreen() {
       selectedDeviceId,
       sessions: homeSessions,
       statusFilter,
+      // 未起名会话的显示文案:共享层不兜中文串,由这里给已解析的 i18n 值。
+      unnamedLabel: t('session.menu.unnamedTitle'),
     }),
-    [deviceModels, liveActivityIndex, messagePreviewIndex, pendingInteractionIndex, scheduleIndex, selectedDeviceId, homeSessions, statusFilter],
+    [deviceModels, liveActivityIndex, messagePreviewIndex, pendingInteractionIndex, scheduleIndex, selectedDeviceId, homeSessions, statusFilter, t],
   );
   const sections = useMemo(
     () => buildHomeSections(home, groupByProject, pinnedCollapsed),
@@ -816,9 +931,9 @@ export default function HomeScreen() {
     setRestoredDeviceName(null);
     void saveHomeViewPreferences({ selectedDevice: null });
   }, [home.deviceFilters, home.selectedDeviceId, initialHomeSettled, selectedDeviceId]);
-  // 连接层失败原因(鉴权失效/被顶号/超限/版本不符)比请求级 error 更根因:非 online 时优先展示。
-  const activeConnectionIssue = status !== 'online' ? connectionIssue : null;
-  const showConnectionRow = !!connectionError || status !== 'online';
+  // 连接层失败原因比请求级 error 更根因:unstable 在 online 时也需保持可见。
+  const activeConnectionIssue = status !== 'online' || connectionIssue?.kind === 'unstable' ? connectionIssue : null;
+  const showConnectionRow = !!connectionError || status !== 'online' || connectionIssue?.kind === 'unstable';
   const connectionTone = activeConnectionIssue
     ? 'off'
     : connectionError ? 'muted' : status === 'online' ? 'ready' : status === 'connecting' ? 'busy' : 'off';
@@ -1022,7 +1137,10 @@ export default function HomeScreen() {
     if (!session) return;
     if (action === 'delete') {
       // 菜单不再展示会话标题(2026-07-07 产品反馈),删除确认在这里带上标题作上下文。
-      const title = session.title?.trim() || t('devices.list.untitled');
+      // 哨兵先过投影,与列表行显示同一个串:否则确认框里写着 "New Maker",用户在列表上
+      // 看到的却是「未命名任务」,对不上自己要删的是哪条。
+      const title = projectDraftSessionTitle(session.title, t('session.menu.unnamedTitle')).trim()
+        || t('devices.list.untitled');
       Alert.alert(t('devices.list.alert.deleteTitle'), t('devices.list.alert.deleteMessage', { title }), [
         { style: 'cancel', text: t('devices.common.cancel') },
         { onPress: () => runSwipeAction(session, 'delete'), style: 'destructive', text: t('devices.common.delete') },
@@ -1031,7 +1149,9 @@ export default function HomeScreen() {
     }
     if (action === 'rename') {
       pendingSheetActionRef.current = () => {
-        setRenameSessionDraft(session.title ?? '');
+        // 预填也走投影:输入框里不能出现内部哨兵。用户不改直接确定时,
+        // confirmRenameSession 的「没改就不落库」判据会把它挡掉(见那里的注释)。
+        setRenameSessionDraft(projectDraftSessionTitle(session.title, t('session.menu.unnamedTitle')));
         setRenameSessionTarget(session);
       };
       return;
@@ -1055,7 +1175,10 @@ export default function HomeScreen() {
     const title = renameSessionDraft.trim();
     if (!target || !title) return;
     setRenameSessionTarget(null);
+    // 「没改就不落库」要同时比原始标题**和**预填的投影值:未起名会话预填的是本地化兜底
+    // 文案,只比原始标题会把这个文案写进 DB,哨兵被毁 → 自动起名永久跳过该会话。
     if (title === (target.title ?? '')) return;
+    if (title === projectDraftSessionTitle(target.title, t('session.menu.unnamedTitle'))) return;
     void patchHomeSession(target, { title }).catch((err: unknown) => {
       Alert.alert(t('devices.list.alert.renameFailed'), humanizeRemoteError(err));
     });
@@ -2192,6 +2315,9 @@ function HomeSessionRowInner({
   const preview = group
     ? automationGroupPreview(item, group.sessionCount, t)
     : buildRemoteSessionCardPreview(item, { running });
+  // 零消息会话没有摘要。此时不要保留双行列表的空白第二行；但定时任务与置顶
+  // 标记仍占用右下状态槽，因此继续使用双行布局。
+  const showPreviewLine = !!preview?.trim() || showSchedule || showPinned;
   // 组行点击语义对齐桌面版侧边栏:收起且有需关注内容(未读运行 / 待处理)时,点行直接打开
   // 该看的那条会话(共享层 primary:运行中 > 有未读 > 最新);想展开点行首箭头(独立热区)。
   // 无需关注内容或已展开时,点行仍是展开 / 收起。
@@ -2224,6 +2350,7 @@ function HomeSessionRowInner({
         style={({ pressed }) => [
           styles.sessionListRow,
           cindyList && styles.sessionListRowCindy,
+          !showPreviewLine && styles.sessionListRowSingleLine,
           cindyList && inOutlinedGroup && styles.sessionListRowOutlinedGroup,
           cindyList && inOutlinedGroup && groupEnd && styles.sessionListRowOutlinedGroupEnd,
           standaloneCindyCard && styles.sessionListRowCindyCard,
@@ -2258,7 +2385,11 @@ function HomeSessionRowInner({
             )}
           </Pressable>
         ) : null}
-        <View style={[styles.sessionIconCell, cindyList && styles.sessionIconCellCindy]}>
+        <View style={[
+          styles.sessionIconCell,
+          cindyList && styles.sessionIconCellCindy,
+          !showPreviewLine && styles.sessionIconCellSingleLine,
+        ]}>
           <SessionStatusMark
             active={running || attention}
             item={item}
@@ -2310,30 +2441,32 @@ function HomeSessionRowInner({
               </View>
             )}
           </View>
-          <View style={[styles.sessionPreviewRow, cindyList && styles.sessionPreviewRowCindy]}>
-            <Text
-              ellipsizeMode="tail"
-              numberOfLines={1}
-              style={[styles.sessionPreview, cindyList && styles.sessionPreviewCindy]}
-              testID={`home.sessionRowPreview.${item.session.id}`}
-            >
-              {preview}
-            </Text>
-            {showSchedule || showPinned ? (
-              // 组行与单次自动化会话行同款标记:Timer 放右下(时间下方的尾部图标位),
-              // 行首保留正常的会话状态图标(primary 运行的 vendor / 运行态)。
-              <View style={[styles.sessionTrailingIcons, cindyList && styles.sessionTrailingIconsCindy]}>
-                {showSchedule ? (
-                  <AutomationTimerIcon
-                    paused={scheduleStopped}
-                    size={cindyList ? iconSize.xs : iconSize.lg}
-                    testID={`home.sessionAutomationTimer.${item.session.id}`}
-                  />
-                ) : null}
-                {showPinned ? <Pin color={colors.textTertiary} size={cindyList ? iconSize.xs : iconSize.lg} strokeWidth={iconStroke.thin} /> : null}
-              </View>
-            ) : null}
-          </View>
+          {showPreviewLine ? (
+            <View style={[styles.sessionPreviewRow, cindyList && styles.sessionPreviewRowCindy]}>
+              <Text
+                ellipsizeMode="tail"
+                numberOfLines={1}
+                style={[styles.sessionPreview, cindyList && styles.sessionPreviewCindy]}
+                testID={`home.sessionRowPreview.${item.session.id}`}
+              >
+                {preview}
+              </Text>
+              {showSchedule || showPinned ? (
+                // 组行与单次自动化会话行同款标记:Timer 放右下(时间下方的尾部图标位),
+                // 行首保留正常的会话状态图标(primary 运行的 vendor / 运行态)。
+                <View style={[styles.sessionTrailingIcons, cindyList && styles.sessionTrailingIconsCindy]}>
+                  {showSchedule ? (
+                    <AutomationTimerIcon
+                      paused={scheduleStopped}
+                      size={cindyList ? iconSize.xs : iconSize.lg}
+                      testID={`home.sessionAutomationTimer.${item.session.id}`}
+                    />
+                  ) : null}
+                  {showPinned ? <Pin color={colors.textTertiary} size={cindyList ? iconSize.xs : iconSize.lg} strokeWidth={iconStroke.thin} /> : null}
+                </View>
+              ) : null}
+            </View>
+          ) : null}
         </View>
       </Pressable>
       {group && groupExpanded ? (
@@ -2652,7 +2785,7 @@ function readBooleanField(value: unknown, key: string): boolean {
 }
 
 function isClaudeCodeAgentKind(agentKind: string): boolean {
-  return agentKind !== 'codex';
+  return agentKind === 'cc' || agentKind === 'claude-code';
 }
 
 function homeConnectionTitle(status: 'online' | 'connecting' | 'stopped', t: TFunction): string {
@@ -3023,6 +3156,9 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     height: CINDY_LIST_ROW_HEIGHT,
     paddingLeft: 18,
   },
+  sessionListRowSingleLine: {
+    height: HOME_SESSION_SINGLE_LINE_ROW_HEIGHT,
+  },
   sessionListRowCindyCard: {
     borderColor: colors.border,
     borderRadius: radius.container,
@@ -3122,6 +3258,10 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   sessionIconCellCindy: {
     paddingTop: 14,
     width: iconSize.md,
+  },
+  sessionIconCellSingleLine: {
+    justifyContent: 'center',
+    paddingTop: 0,
   },
   sessionGroupChevronCell: {
     // 自动化组行行首的展开箭头列:与项目组行首 chevron 对齐(尺寸 22、次级色),

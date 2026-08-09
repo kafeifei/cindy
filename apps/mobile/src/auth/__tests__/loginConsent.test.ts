@@ -139,7 +139,13 @@ describe('login.tsx 接线(源码断言)', () => {
     // 发码点(phone + 邮箱个人行)与社交圆钮为实际发起点,必须过门
     expect(loginSource).toMatch(/requireConsent\(\(\) =>[\s\S]{0,200}?kind: 'phone'/);
     expect(loginSource).toMatch(/requireConsent\(\(\) =>[\s\S]{0,240}?kind: 'email'/);
-    expect(loginSource).toMatch(/requireConsent\(\(\) =>[\s\S]{0,200}?provider: 'apple'/);
+    const appleStart = loginSource.indexOf("label={loginText('apple')}");
+    const appleEnd = loginSource.indexOf('testID="login.appleButton"', appleStart);
+    expect(appleStart).toBeGreaterThan(0);
+    expect(appleEnd).toBeGreaterThan(appleStart);
+    const appleBlock = loginSource.slice(appleStart, appleEnd);
+    expect(appleBlock).toContain('requireConsent(() =>');
+    expect(appleBlock).toContain("provider: 'apple'");
   });
 
   it('企业 SSO 入口豁免:ssoEntryButton onPress 不过 requireConsent', () => {
@@ -232,5 +238,10 @@ describe('LoginSkinControls 接线(源码断言)', () => {
     expect(controlsSource).toContain('login.overlaySecondaryPressed');
     // 弹窗 = stage 内全屏遮罩 + 680×380 设计坐标系整层缩放(与登录组同口径)
     expect(controlsSource).toMatch(/LOGIN_CONSENT_DIALOG[\s\S]*transform: \[\{ scale \}\]/);
+    // 区域确认与协议确认共用设计标准正文 26/40，不允许按文案临时缩字号。
+    expect(controlsSource).toContain('fontSize={D.body.font}');
+    expect(controlsSource).toContain('lineHeight={D.body.lineHeight}');
+    expect(controlsSource).not.toContain('compactBody');
+    expect(loginSource).not.toContain('compactBody');
   });
 });

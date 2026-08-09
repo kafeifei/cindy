@@ -18,6 +18,10 @@
  * 然后 `app.exit(<code>)` 强制退出。`will-quit` / `quit` 事件不会触发——任何
  * 真正必须执行的清理都必须注册到这里, 而不是挂 `will-quit`。
  *
+ * shutdown 开始时同步布防外部硬杀 watchdog (armShutdownHardKillWatchdog):
+ * disposer 挂死、事件循环被 sync 代码阻塞、甚至 app.exit 在 native teardown
+ * 挂死 (JS 已死) 时, 由 detached 外部进程在宽限期后 kill -9 补刀, 保证退出有界。
+ *
  * installQuitHandler() 同时把以下入口都收到这条 disposer chain:
  *
  *   - app.on('before-quit')             —— 用户/代码主动退出 (Cmd+Q / 关窗 / app.quit)
@@ -29,6 +33,8 @@
  * 真硬崩 (segfault / kill -9) JS 层无能为力, 这里覆盖不到; 子进程靠 stdin EOF 自死。
  */
 
+import { spawn } from 'node:child_process';
+
 import { app, BrowserWindow, session } from 'electron';
 
 import {
@@ -39,6 +45,7 @@ import {
 } from './logger';
 import { noteQuitDisposersCompleted, noteShutdownBegin } from './startup-diagnostics';
 import { isGhostSandboxWebContentsId } from './cindy-brain/runtime/electronSandboxAdapter';
+import { isRsbNativePopupWebContentsId } from './rsb-browser-bridge/native-popup-surfaces';
 
 /**
  * 瞬时网络错误的 wire payload (main → renderer)。code 永远存在 (Node 的 ErrnoException
@@ -141,13 +148,31 @@ export async function runQuitDisposers(timeoutMs = 2000): Promise<void> {
   }
 
   // ── Phase 3: post-async ──────────────────────────────────────────────────
+  // 返回 Promise 的 disposer 同样纳入 timeoutMs 预算 (逐个 race, 串行语义不变)。
+  // 此前这里是无界 await —— 生产实证: 单个挂死的 post-async disposer 就能让
+  // "runQuitDisposers completed" 永远打不出来, 进程卡在退出路径上不死。
   for (const d of registry.filter((x) => x.phase === 'post-async')) {
     try {
       const ret = d.fn();
       if (ret && typeof (ret as Promise<unknown>).then === 'function') {
-        await (ret as Promise<unknown>).catch((err) =>
+        const settled = (ret as Promise<unknown>).catch((err) =>
           log.error(`post-async disposer "${d.name}" threw`, err),
         );
+        let timer: NodeJS.Timeout | undefined;
+        let timedOut = false;
+        await Promise.race([
+          settled,
+          new Promise<void>((resolve) => {
+            timer = setTimeout(() => {
+              timedOut = true;
+              resolve();
+            }, timeoutMs);
+          }),
+        ]);
+        clearTimeout(timer);
+        if (timedOut) {
+          log.warn(`post-async disposer "${d.name}" timed out after ${timeoutMs}ms — continuing`);
+        }
       }
     } catch (err) {
       log.error(`post-async disposer "${d.name}" threw`, err);
@@ -155,9 +180,196 @@ export async function runQuitDisposers(timeoutMs = 2000): Promise<void> {
   }
 }
 
+/**
+ * 外部硬杀 watchdog 的宽限期 (秒)。disposer 预算 6s 的 3 倍余量; 比更新脚本的
+ * 120s (updateScriptMacOS) 激进得多 —— 这是常规退出路径, 用户在旁边等。
+ */
+export const SHUTDOWN_HARD_KILL_GRACE_SECONDS = 20;
+
+/** 最小 spawn 形状 —— 单测注入 fake 用, 真实实现是 node:child_process 的 spawn。 */
+type WatchdogSpawn = (
+  command: string,
+  args: string[],
+  options: { detached: boolean; stdio: 'ignore'; windowsHide?: boolean },
+) => {
+  unref(): void;
+  /** ChildProcess 的 'error' 事件订阅; fake 可省略 (可选调用)。 */
+  once?(event: 'error', listener: (err: Error) => void): unknown;
+};
+
+let _watchdogArmed = false;
+/**
+ * watchdog spawn 总尝试预算(同步/异步失败共享计数,防 error→重试死循环):
+ * 3 次足以吸收 EAGAIN(fork 上限)这类瞬时抖动;仍然全失败 = 环境级问题
+ * (ENOENT/EACCES),本进程从内部**不可能**布防任何外部补刀,重试再多也无意义
+ * (review:此为可接受的终态)。耗尽时打一条明确的缺席标记(error 级),让
+ * 退出尸检一眼看出"这次 shutdown 没有外部兜底"。
+ */
+const WATCHDOG_MAX_SPAWN_ATTEMPTS = 3;
+let _watchdogSpawnAttempts = 0;
+
+function noteWatchdogSpawnFailure(err: unknown, options: Parameters<typeof armShutdownHardKillWatchdog>[0]): void {
+  _watchdogArmed = false;
+  if (_watchdogSpawnAttempts < WATCHDOG_MAX_SPAWN_ATTEMPTS) {
+    log.warn('shutdown hard-kill watchdog process failed to start (retrying)', err);
+    armShutdownHardKillWatchdog(options);
+    return;
+  }
+  log.error(
+    `shutdown hard-kill watchdog UNAVAILABLE after ${_watchdogSpawnAttempts} spawn attempts — ` +
+      'external kill backstop ABSENT for this shutdown (continuing without it)',
+    err,
+  );
+}
+
+/**
+ * 布防外部硬杀 watchdog: spawn 一个 detached 的外部杀手进程, 宽限期后对本进程
+ * PID 补 kill。这是唯一能同时覆盖三类退出挂死的手段:
+ *   - sync disposer 阻塞事件循环 (JS 层 setTimeout 根本不会触发)
+ *   - post-async 无界 await (Phase 3 已加预算, 这里是第二道保险)
+ *   - app.exit() 在 native teardown 挂死 —— 实证见 updateScriptMacOS.ts:
+ *     2026-07-06 观测到 exit 已打日志但 PID 存活 32h, 彼时 JS 事件循环已死,
+ *     进程无法自救, 只有外部进程能补刀。
+ *
+ * 正常退出时本进程早已死透, 补刀落空无害 (kill 静默失败)。PID 复用防护 (review
+ * P1 两轮): 映像名/命令行校验区分不了同一 App 的两次运行 (正常退出后更新器立即
+ * 重启、新实例在宽限期内拿到复用 PID 会被误杀), 所以 watchdog 在布防时刻 (本进程
+ * 必然存活) 先捕获目标 PID 的**进程创建时间**, 补刀前重取一次, 不一致 = PID 已易主,
+ * 放弃。残余窗口只剩 "本进程在 watchdog 子进程完成首次捕获前 (毫秒级) 就退出且
+ * PID 立即复用给另一个同路径进程", 视为可接受。
+ *
+ * 幂等: 进程生命周期内只布防一次。spawn/pid/platform 可注入, 便于单测;
+ * 布防失败只 warn, 绝不阻断正常退出。
+ */
+export function armShutdownHardKillWatchdog(
+  options: {
+    spawn?: WatchdogSpawn;
+    pid?: number;
+    platform?: NodeJS.Platform;
+    graceSeconds?: number;
+    /** 进程身份锚点 (杀前校验用), 默认 process.execPath;测试注入。 */
+    execPath?: string;
+  } = {},
+): void {
+  if (_watchdogArmed) return;
+  if (_watchdogSpawnAttempts >= WATCHDOG_MAX_SPAWN_ATTEMPTS) return; // 预算耗尽,缺席标记已打
+  _watchdogArmed = true;
+  _watchdogSpawnAttempts += 1;
+  const spawnFn = options.spawn ?? spawn;
+  const pid = options.pid ?? process.pid;
+  const platform = options.platform ?? process.platform;
+  const graceSeconds = options.graceSeconds ?? SHUTDOWN_HARD_KILL_GRACE_SECONDS;
+  const execPath = options.execPath ?? process.execPath;
+  try {
+    // 杀前校验进程身份 (review P1 两轮): 宽限期内 OS 复用了该 PID 时, 盲杀会误伤。
+    // 映像名/命令行校验区分不了同一 App 的两次运行 (更新器重启的新实例), 所以以
+    // **进程创建时间**为身份锚点: 布防时刻本进程必然存活, watchdog 子进程先捕获
+    // 目标 PID 的创建时间, 补刀前重取比对, 不一致 = PID 已易主, 放弃补刀。
+    const child =
+      platform === 'win32'
+        ? (() => {
+            // cmd 拿不到进程创建时间 (wmic 已从新版 Windows 移除), 改用 Windows
+            // PowerShell 5.1 —— 所有受支持 Windows 内置, 用 SystemRoot 绝对路径,
+            // 不假设它在 PATH。属性读取走 Select-Object -ExpandProperty 而非语言级
+            // .StartTime, 兼容企业锁死环境的 Constrained Language Mode (其下语言级
+            // 属性访问被禁, cmdlet 内部反射不受限);取不到创建时间时直接退出不杀,
+            // 失败方向是"少杀"而非"误杀"。字符串 -eq 大小写不敏感, 路径比对安全。
+            const psExe =
+              `${process.env.SystemRoot ?? 'C:\\Windows'}` +
+              '\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+            const script =
+              `$ErrorActionPreference='SilentlyContinue'; ` +
+              `$started = Get-Process -Id ${pid} | Select-Object -ExpandProperty StartTime; ` +
+              `if (-not $started) { exit }; ` +
+              `Start-Sleep -Seconds ${graceSeconds}; ` +
+              `$p = Get-Process -Id ${pid}; ` +
+              `if ($p -and ($p | Select-Object -ExpandProperty StartTime) -eq $started ` +
+              `-and ($p | Select-Object -ExpandProperty Path) -eq '${execPath.replace(/'/g, "''")}') ` +
+              `{ Stop-Process -Id ${pid} -Force }`;
+            return spawnFn(
+              psExe,
+              ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', script],
+              { detached: true, windowsHide: true, stdio: 'ignore' },
+            );
+          })()
+        : spawnFn(
+            '/bin/sh',
+            [
+              '-c',
+              // lstart 是完整启动时间字符串 (秒级), 同 PID + 同启动秒 + 同 execPath
+              // 的碰撞视为不可能。捕获时进程已死则直接退出 (不需要补刀)。
+              `started="$(ps -p ${pid} -o lstart= 2>/dev/null)"; ` +
+                `[ -n "$started" ] || exit 0; ` +
+                `sleep ${graceSeconds}; ` +
+                `[ "$(ps -p ${pid} -o lstart= 2>/dev/null)" = "$started" ] && ` +
+                `ps -p ${pid} -o command= 2>/dev/null | grep -qF '${execPath.replace(/'/g, `'\\''`)}' && ` +
+                `kill -9 ${pid} 2>/dev/null`,
+            ],
+            { detached: true, stdio: 'ignore' },
+          );
+    // spawn 的失败可能在返回后经 'error' 事件异步上报 (ENOENT/EACCES 等);
+    // 不挂 listener 会变成 uncaughtException, 且 watchdog 实际未布防却无任何
+    // 日志痕迹 —— 这里 warn 留痕, 让退出尸检能看出"补刀兜底当时不在位"。
+    child.once?.('error', (err) => {
+      // 异步启动失败 = 实际未布防(review P1 两轮):回置标志,预算内立即重试,
+      // 耗尽则打缺席标记(见 noteWatchdogSpawnFailure)。
+      noteWatchdogSpawnFailure(err, options);
+    });
+    child.unref();
+    // log 放在 spawn 之后 (review P1): 统一 logger 同步写日志文件, 坏盘/网络盘
+    // 上可能阻塞 —— watchdog 必须在任何可能卡住的盘 IO 之前先布防好。
+    log.info(`arming shutdown hard-kill watchdog: pid=${pid} grace=${graceSeconds}s`);
+  } catch (err) {
+    // 同步 spawn 失败 = 实际未布防:与异步 error 共享尝试预算,预算内重试,
+    // 耗尽打缺席标记(日志由 noteWatchdogSpawnFailure 统一输出)。
+    noteWatchdogSpawnFailure(err, options);
+  }
+}
+
 let _installed = false;
 let _isDisposing = false;
 let _disposeStarted: Promise<void> | null = null;
+
+/**
+ * 「致命 shutdown」观察者 —— 目前唯一消费者是日志上报的崩溃即时路径。
+ *
+ * 为什么用注册回调而不是让 lifecycle 直接 import 上报模块:上报模块要 onQuit() 注册自己的
+ * 清理,反向 import 会成环。接线由 bootstrap 完成,lifecycle 只管「什么时候派发」。
+ *
+ * ⚠️ 回调**不是 disposer**:它不进 registry,因此不占 runQuitDisposers 的 timeoutMs 预算、
+ * 也不推迟其起点(需求「不拖慢退出」)。代价是回调必须自己保证极短 —— 只允许做同步小写盘
+ * 或 fire-and-forget,绝不能 await 网络。
+ */
+type FatalShutdownListener = (reason: string) => void;
+const fatalShutdownListeners: FatalShutdownListener[] = [];
+
+export function onFatalShutdown(listener: FatalShutdownListener): void {
+  fatalShutdownListeners.push(listener);
+}
+
+/**
+ * reason 是否属于「致命崩溃」。
+ *
+ * 判据收口在这里是有意的:自挂 process 事件的实现会漏掉渲染进程崩溃(白屏),并把可恢复的
+ * 悬空 promise 误报成崩溃。能走到 beginShutdown 的 uncaughtException 已经被上面的
+ * broken-stdio / 瞬时网络两个分支筛过,渲染进程崩溃也已排除沙箱与 webview guest。
+ * 未知 reason 一律不算崩溃(宁可漏报,也不把正常退出当崩溃)。
+ */
+export function isFatalShutdownReason(reason: string): boolean {
+  return reason === 'uncaughtException' || reason.startsWith('render-process-gone:');
+}
+
+function notifyFatalShutdown(reason: string): void {
+  if (!isFatalShutdownReason(reason)) return;
+  for (const listener of fatalShutdownListeners) {
+    try {
+      listener(reason);
+    } catch (err) {
+      // 观察者出错绝不能影响退出链。
+      log.warn('fatal-shutdown listener threw', err);
+    }
+  }
+}
 
 /**
  * 幂等启动 disposer chain: 第一次调用真的跑, 后续调用复用同一个 Promise。
@@ -170,8 +382,17 @@ let _disposeStarted: Promise<void> | null = null;
 function beginShutdown(timeoutMs: number, reason: string): Promise<void> {
   if (_disposeStarted) return _disposeStarted;
   _isDisposing = true;
+  // watchdog 必须是 shutdown 的第一个动作 (review P1): log 与 noteShutdownBegin
+  // 都是同步盘 IO (日志文件 / run-marker 的 mkdirSync+writeFileSync), 落在坏盘
+  // 或网络盘上可能无限阻塞 —— 那正是 watchdog 要兜的挂死形态, 不能让布防
+  // 排在它们后面。spawn 本身不做盘写。
+  armShutdownHardKillWatchdog();
   log.info(`beginShutdown timeoutMs=${timeoutMs} reason=${reason}`);
   noteShutdownBegin(reason);
+  // 致命崩溃的观察者派发排在 disposer chain **之前**: 崩溃现场的待补传标记必须在清理链
+  // 开始前落盘(清理链可能超时被腰斩,甚至进程可能马上就没了)。回调不进 registry,
+  // 不占 timeoutMs 预算(见 onFatalShutdown 的注释)。
+  notifyFatalShutdown(reason);
   _disposeStarted = runQuitDisposers(timeoutMs)
     .then(() => {
       log.info('runQuitDisposers completed');
@@ -211,6 +432,10 @@ export function installQuitHandler(timeoutMs = 2000): void {
   // ── Layer 1: graceful quit (before-quit) ────────────────────────────────
   // preventDefault 阻断默认 quit, 等 disposer chain 跑完再 app.exit(0)。
   app.on('before-quit', (e) => {
+    // arm-first(review P1):本 handler 必然走向退出,而下面第一行 log 就是
+    // 同步盘 IO——日志落在坏盘/网络盘上时会在布防前就挂死,watchdog 形同虚设。
+    // 幂等,与 beginShutdown 里的布防互为兜底。
+    armShutdownHardKillWatchdog();
     log.info('before-quit received');
     if (_isDisposing) return;
     e.preventDefault();
@@ -226,6 +451,8 @@ export function installQuitHandler(timeoutMs = 2000): void {
   if (process.platform === 'win32') shutdownSignals.push('SIGBREAK');
   for (const sig of shutdownSignals) {
     process.on(sig, () => {
+      // arm-first(review P1):同 before-quit,先布防再碰日志盘 IO。
+      armShutdownHardKillWatchdog();
       log.info(`received ${sig}, gracefully shutting down`);
       if (_isDisposing) return;
       if (app.isReady()) {
@@ -266,6 +493,9 @@ export function installQuitHandler(timeoutMs = 2000): void {
       broadcastTransientNetworkErrorTip(err);
       return;
     }
+    // arm-first(review P1):只在确定退出的分支布防——上面 broken-stdio /
+    // 瞬时网络两个不退出的分支绝不能布防,否则 20s 后 watchdog 会误杀健康进程。
+    armShutdownHardKillWatchdog();
     log.error('uncaughtException — shutting down', err);
     if (_isDisposing) return;
     void beginShutdown(timeoutMs, 'uncaughtException').finally(() => app.exit(1));
@@ -287,6 +517,8 @@ export function installQuitHandler(timeoutMs = 2000): void {
   // renderer 侧 useBrowserWebview 已有 crash banner + reload 恢复链路。此前
   // 这里不区分 guest,网页死递归吃满内存被 OOM kill 时会把整个 App 一起带走
   // (VS Code / Cursor 的边界都是 guest 崩溃不退 Workbench)。
+  // 例外 3:RSB popup 虽然是 `window` 类型,但它是局部网页 surface；崩溃时由
+  // native popup manager 回收并让对应 tab 展示恢复态,不能拖垮主窗口。
   app.on('render-process-gone', (_event, webContents, details) => {
     if (isGhostSandboxWebContentsId(webContents.id)) {
       log.warn(
@@ -300,6 +532,15 @@ export function installQuitHandler(timeoutMs = 2000): void {
       );
       return;
     }
+    if (isRsbNativePopupWebContentsId(webContents.id)) {
+      log.warn(
+        `native popup render-process-gone (isolated, no shutdown): reason=${details.reason} exitCode=${details.exitCode}`,
+      );
+      return;
+    }
+    // arm-first(review P1):沙箱/webview 两个不退出的分支在上面已 return,
+    // 走到这里必然退出。
+    armShutdownHardKillWatchdog();
     log.error(`render-process-gone: reason=${details.reason} exitCode=${details.exitCode}`);
     if (_isDisposing) return;
     void beginShutdown(timeoutMs, `render-process-gone:${details.reason}`).finally(() =>

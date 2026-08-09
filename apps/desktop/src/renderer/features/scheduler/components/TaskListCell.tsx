@@ -76,6 +76,12 @@ interface Props {
   runBusy?: boolean;
   /** 仅在 Scheduler 明确把本任务列入并发等待队列时传入。 */
   waitingForResources?: { inFlight: number; maxConcurrentRuns: number };
+  /**
+   * true = 本任务这一轮已经触发，但 prompt 正排在目标会话的队列里等它空闲
+   * （见 maker-scheduler 的 phase 'queued'）。它不占执行槽，与 waitingForResources
+   * 的"没抢到槽"是两回事：不区分的话，用户会看到任务挂"运行中"几小时而无从判断。
+   */
+  queuedForSession?: boolean;
 }
 
 export function TaskListCell({
@@ -96,6 +102,7 @@ export function TaskListCell({
   onRunNow,
   runBusy = false,
   waitingForResources,
+  queuedForSession = false,
 }: Props) {
   const { t } = useTranslation();
   // 右键菜单：复用 ProjectNode 的"controlled DropdownMenu + 不可见 trigger 跟 click 坐标"模式。
@@ -151,7 +158,11 @@ export function TaskListCell({
   const lastText = formatLastRun(s.lastFiredAt);
   const nextText = s.status === 'active' ? formatNextRun(s.nextFireAt) : null;
   let subtitle: string | null;
-  if (waitingForResources) {
+  if (queuedForSession) {
+    // 排在目标会话队列里等派发 —— 比"没抢到执行槽"更靠前判定:这一轮已经触发过了，
+    // 显示"等执行资源"会让人以为还没开始。
+    subtitle = t('scheduler.cell.subtitleQueuedForSession');
+  } else if (waitingForResources) {
     subtitle = t('scheduler.cell.subtitleWaitingForResources', {
       inFlight: waitingForResources.inFlight,
       max: waitingForResources.maxConcurrentRuns,
@@ -385,7 +396,7 @@ export function TaskListCell({
         {!isEditing && isProjectSchedule && (
           <span
             className={cn(
-              'shrink-0 inline-flex items-center gap-1 rounded-full border px-2 py-[2px] text-[11px] font-medium leading-none',
+              'shrink-0 inline-flex items-center gap-1 rounded-full border px-2 py-[2px] text-11 font-medium leading-none',
               'border-[var(--cmd-palette-border)] text-[var(--cmd-palette-item-meta)]',
             )}
             title={t('scheduler.projectAutomation.cell.tooltip')}
@@ -397,7 +408,7 @@ export function TaskListCell({
         {!isEditing && (s.manual || !s.recurring) && (
           <span
             className={cn(
-              'shrink-0 translate-x-[2px] rounded-full border px-2 py-[2px] text-[11px] font-medium leading-none',
+              'shrink-0 translate-x-[2px] rounded-full border px-2 py-[2px] text-11 font-medium leading-none',
               'border-[var(--cmd-palette-border)] text-[var(--cmd-palette-item-meta)]',
             )}
           >
@@ -432,7 +443,7 @@ export function TaskListCell({
           {costText && (
             <span
               className={cn(
-                'ml-auto shrink-0 text-[11px]',
+                'ml-auto shrink-0 text-11',
                 selected
                   ? 'text-[var(--settings-section-desc)]'
                   : 'text-[var(--cmd-palette-item-meta)]',

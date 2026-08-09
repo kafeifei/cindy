@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { AppServerClient, detectAuthInvalidationReason } from './client.js';
 import type { Logger } from '../../../interfaces/logger.js';
 import type { Transport, LineHandler, StderrHandler, CloseHandler } from './transport.js';
+import { Method } from './protocol.js';
 
 class FakeTransport implements Transport {
   readonly lines: string[] = [];
@@ -60,6 +61,11 @@ const logger: Logger = {
 };
 
 describe('detectAuthInvalidationReason', () => {
+  const revokedRateLimitsError = {
+    code: -32603,
+    message:
+      'failed to fetch codex rate limits: GET https://chatgpt.com/backend-api/wham/usage failed: 401 Unauthorized; content-type=text/plain; body={"error":{"message":"Encountered invalidated oauth token for user, failing request","code":"token_revoked"},"status":401}',
+  };
   const cloudAuthError = (message: string, data: Record<string, unknown> = {}) => ({
     code: -32000,
     message,
@@ -100,6 +106,75 @@ describe('detectAuthInvalidationReason', () => {
     ).toBe('token_invalidated');
   });
 
+  it('maps structured cloudConfigBundle auth errors from config load failures', () => {
+    // codex-rs app-server config_errors.rs: thread/resume 等在配置加载阶段撞
+    // 鉴权失败时返回 -32600 + reason=cloudConfigBundle (detail 带 refresh 失败句)。
+    expect(
+      detectAuthInvalidationReason({
+        code: -32600,
+        message:
+          'failed to load configuration: Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again.',
+        data: {
+          reason: 'cloudConfigBundle',
+          errorCode: 'Auth',
+          action: 'relogin',
+          statusCode: 401,
+          detail:
+            'Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again.',
+        },
+      }),
+    ).toBe('token_revoked');
+    expect(
+      detectAuthInvalidationReason({
+        code: -32600,
+        message: 'failed to load configuration: request failed',
+        data: { reason: 'cloudConfigBundle', errorCode: 'Network' },
+      }),
+    ).toBeNull();
+  });
+
+  it('maps the text-only config-load token refresh failure without structured data', () => {
+    expect(
+      detectAuthInvalidationReason({
+        code: -32600,
+        message:
+          'failed to load configuration: Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again.',
+      }),
+    ).toBe('token_revoked');
+    expect(
+      detectAuthInvalidationReason({
+        code: -32600,
+        message:
+          'failed to load configuration: Your access token could not be refreshed because your refresh token has expired. Please log out and sign in again.',
+      }),
+    ).toBe('token_invalidated');
+    expect(
+      detectAuthInvalidationReason({
+        code: -32600,
+        message:
+          'failed to load configuration: Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.',
+      }),
+    ).toBe('refresh_token_reused');
+  });
+
+  it('rejects config-load errors and bare refresh sentences that lack the paired signal', () => {
+    // 非鉴权的配置加载失败: 不能清凭证。
+    expect(
+      detectAuthInvalidationReason({
+        code: -32600,
+        message: 'failed to load configuration: invalid TOML in config.toml',
+      }),
+    ).toBeNull();
+    // 孤立句子没有 config-load 包装也没有结构化 provenance: 保持窄门。
+    expect(
+      detectAuthInvalidationReason({
+        code: -32000,
+        message:
+          'Your access token could not be refreshed because your refresh token was revoked.',
+      }),
+    ).toBeNull();
+  });
+
   it('rejects keyword matches without the structured cloud auth provenance', () => {
     expect(
       detectAuthInvalidationReason({
@@ -121,6 +196,20 @@ describe('detectAuthInvalidationReason', () => {
         data: { reason: 'toolExecution', errorCode: 'Auth', action: 'relogin' },
       }),
     ).toBeNull();
+  });
+
+  it('accepts an explicit 401 token error only for correlated account auth RPCs', () => {
+    expect(
+      detectAuthInvalidationReason(revokedRateLimitsError, Method.AccountRateLimitsRead),
+    ).toBe('token_revoked');
+    expect(
+      detectAuthInvalidationReason(
+        revokedRateLimitsError,
+        Method.AccountRateLimitResetCreditConsume,
+      ),
+    ).toBe('token_revoked');
+    expect(detectAuthInvalidationReason(revokedRateLimitsError, Method.ModelList)).toBeNull();
+    expect(detectAuthInvalidationReason(revokedRateLimitsError)).toBeNull();
   });
 });
 
@@ -174,6 +263,31 @@ describe('AppServerClient auth invalidation', () => {
     await expect(second).rejects.toThrow(/token_revoked/i);
     expect(onAuthInvalidated).toHaveBeenCalledTimes(1);
     expect(onAuthInvalidated).toHaveBeenCalledWith('refresh_token_reused');
+  });
+
+  it('notifies for the account rate-limit 401 shape emitted by current codex-rs', async () => {
+    const transport = new FakeTransport();
+    const onAuthInvalidated = vi.fn();
+    const client = new AppServerClient({
+      createTransport: () => transport,
+      logger,
+      onAuthInvalidated,
+    });
+    client.start();
+
+    const request = client.request(Method.AccountRateLimitsRead);
+    transport.emitLine({
+      id: 1,
+      error: {
+        code: -32603,
+        message:
+          'failed to fetch codex rate limits: GET https://chatgpt.com/backend-api/wham/usage failed: 401 Unauthorized; content-type=text/plain; body={"error":{"message":"Encountered invalidated oauth token for user, failing request","code":"token_revoked"},"status":401}',
+      },
+    });
+
+    await expect(request).rejects.toThrow(/account\/rateLimits\/read.*401 Unauthorized/i);
+    expect(onAuthInvalidated).toHaveBeenCalledTimes(1);
+    expect(onAuthInvalidated).toHaveBeenCalledWith('token_revoked');
   });
 
   it('keeps auth correlation when an accepted write rejects before its response arrives', async () => {

@@ -59,6 +59,7 @@ function makeHarness(
   let settings: RsbWindowSettings = { detached: false, lastOpen: false, ...initial };
   let quitting = false;
   const windows: FakeWindow[] = [];
+  const createWindowCalls: Array<{ userInitiated: boolean }> = [];
   const mainWin = fakeWindow(100);
   const broadcasts: Array<{ detached: boolean; open: boolean }> = [];
   const sends: Array<{ channel: string; payload: unknown }> = [];
@@ -71,7 +72,8 @@ function makeHarness(
         settings = { ...settings, ...patch };
       },
     },
-    createWindow: () => {
+    createWindow: (createOpts) => {
+      createWindowCalls.push(createOpts);
       const w = fakeWindow(200 + windows.length, opts.asyncClose === true);
       windows.push(w);
       return w as unknown as BrowserWindow;
@@ -93,6 +95,7 @@ function makeHarness(
   return {
     controller,
     windows,
+    createWindowCalls,
     mainWin,
     broadcasts,
     sends,
@@ -139,6 +142,86 @@ describe('open / close', () => {
     h.controller.close();
     expect(h.getSettings().lastOpen).toBe(false);
     expect(h.broadcasts.at(-1)).toEqual({ detached: false, open: false });
+  });
+});
+
+describe('userInitiated:false 不抢用户前台', () => {
+  it('窗口已开:程序自发的 open 完全不动窗口(无 show / focus / restore)', () => {
+    const h = makeHarness();
+    h.controller.open();
+    const win = h.windows[0];
+    win.show.mockClear();
+    win.focus.mockClear();
+    win.restore.mockClear();
+
+    h.controller.open({ userInitiated: false });
+
+    expect(h.windows).toHaveLength(1);
+    expect(win.show).not.toHaveBeenCalled();
+    expect(win.focus).not.toHaveBeenCalled();
+    expect(win.restore).not.toHaveBeenCalled();
+  });
+
+  it('窗口未开:照常建窗并落 lastOpen,但把 userInitiated:false 透传给窗口工厂', () => {
+    const h = makeHarness();
+    h.controller.open({ userInitiated: false });
+    expect(h.windows).toHaveLength(1);
+    expect(h.createWindowCalls).toEqual([{ userInitiated: false }]);
+    expect(h.getSettings().lastOpen).toBe(true);
+    expect(h.broadcasts.at(-1)).toEqual({ detached: false, open: true });
+  });
+
+  it('ensureOpenForAutomation 缺省按程序自发处理(建窗不抢焦点)', async () => {
+    const h = makeHarness({ detached: true });
+    const p = h.controller.ensureOpenForAutomation();
+    h.controller.markReady();
+    await expect(p).resolves.toBeUndefined();
+    expect(h.createWindowCalls).toEqual([{ userInitiated: false }]);
+  });
+
+  it('routeCommand userInitiated:false:命令照常派发,但开窗不抢焦点', async () => {
+    const h = makeHarness({ detached: true });
+    h.controller.setContext({
+      sessionId: 's1',
+      workdir: '/w',
+      remoteHostId: null,
+      available: true,
+    });
+    const command = { type: 'open-web-browser' as const, sessionId: 's1', url: 'https://x.test/' };
+    const routed = h.controller.routeCommand({
+      command,
+      allowOpen: true,
+      userInitiated: false,
+    });
+    h.controller.markReady();
+    await expect(routed).resolves.toBe('routed');
+    expect(h.createWindowCalls).toEqual([{ userInitiated: false }]);
+    expect(h.sends.at(-1)).toEqual({ channel: 'cmd-channel', payload: command });
+  });
+
+  it('routeCommand 缺省(用户手势)仍走聚焦开窗', async () => {
+    const h = makeHarness({ detached: true });
+    h.controller.setContext({
+      sessionId: 's1',
+      workdir: '/w',
+      remoteHostId: null,
+      available: true,
+    });
+    const routed = h.controller.routeCommand({
+      command: { type: 'open-terminal', sessionId: 's1' },
+      allowOpen: true,
+    });
+    h.controller.markReady();
+    await expect(routed).resolves.toBe('routed');
+    expect(h.createWindowCalls).toEqual([{ userInitiated: true }]);
+  });
+
+  it('setDetached(true)(用户点按钮)开窗并聚焦', () => {
+    const h = makeHarness();
+    h.controller.setDetached(true);
+    expect(h.createWindowCalls).toEqual([{ userInitiated: true }]);
+    h.controller.setDetached(true);
+    expect(h.windows[0].focus).toHaveBeenCalled();
   });
 });
 
@@ -348,6 +431,62 @@ describe('setContext / routeCommand', () => {
       channel: 'cmd-channel',
       payload: { type: 'close-orca-workers-tab', sessionId: 's1' },
     });
+  });
+
+  it('跨会话 open-turn-review 按 hostSessionId(lead 桶)裁决,worker sessionId 不拒发', async () => {
+    // 协同面板审查 worker 轮次:command.sessionId 是取数目标 worker,可见桶是
+    // lead(hostSessionId)。detached context 停在 lead 上,按 sessionId 裁决会
+    // 误判 stale-context,worker 审查入口在 detached 形态下点了没反应。
+    const h = makeHarness({ detached: true });
+    h.controller.setContext(ctx);
+    h.controller.open();
+    h.controller.markReady();
+
+    const command = {
+      type: 'open-turn-review' as const,
+      sessionId: 'worker-1',
+      changeSetIds: ['c1'],
+      selectedDiffId: null,
+      selectedPath: null,
+      requestNonce: 1,
+      hostSessionId: 's1',
+    };
+    await expect(
+      h.controller.routeCommand({ command, allowOpen: true }),
+    ).resolves.toBe('routed');
+    expect(h.sends.at(-1)).toEqual({ channel: 'cmd-channel', payload: command });
+
+    // hostSessionId 与当前 context 不符时仍是 stale-context(不能放宽成任意会话)。
+    await expect(
+      h.controller.routeCommand({
+        command: { ...command, hostSessionId: 'other-lead' },
+        allowOpen: true,
+      }),
+    ).resolves.toBe('stale-context');
+  });
+
+  it('跨会话 open-turn-review 延迟命令按 lead 桶入队,lead ready 后派发', async () => {
+    const h = makeHarness({ detached: true });
+    h.controller.setContext(ctx);
+
+    const command = {
+      type: 'open-turn-review' as const,
+      sessionId: 'worker-1',
+      changeSetIds: ['c1'],
+      selectedDiffId: null,
+      selectedPath: null,
+      requestNonce: 2,
+      hostSessionId: 's1',
+    };
+    await expect(
+      h.controller.routeCommand({ command, allowOpen: false }),
+    ).resolves.toBe('queued');
+    expect(h.windows).toHaveLength(0);
+
+    // context 一直是 lead(s1),不会切到 worker;flush 必须按 lead 桶命中。
+    h.controller.open();
+    h.controller.markReady();
+    expect(h.sends.at(-1)).toEqual({ channel: 'cmd-channel', payload: command });
   });
 
   it('context mismatch / unavailable 返回 stale-context，不开窗也不派发', async () => {

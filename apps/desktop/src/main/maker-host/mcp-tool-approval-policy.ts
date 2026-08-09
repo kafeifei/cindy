@@ -40,6 +40,9 @@ import { canAutoApproveContactsMcpTool } from '@cindy/mcps';
  */
 const READ_ONLY_MCP_TOOLS: ReadonlySet<string> = new Set([
   'cindy::ghost_list',
+  // 免审查询会以 ASLEEP / DISABLED 区分已安装插件的不可见原因；这是有意
+  // 接受的存在性披露，只读元数据不因此回退为逐次审批或统一成 NOT_FOUND。
+  'cindy::ghost_info',
   'cindy::ghost_forge_guide',
   'cindy_browser::list_tools',
   'cindy_android::list_tools',
@@ -71,6 +74,10 @@ const TRUSTED_MCP_SERVERS: ReadonlySet<string> = new Set([
   'cindy_memory',
   'cindy_helper',
   'cindy_orca',
+  // worker → lead 回报通道。执行边界在工具内部 fail-closed
+  // (resolveWorkerLink 按 session ctx 校验 worker link 归属), 逐次弹窗只会
+  // 让远端 daemon 等审批超时、worker 回报断链。
+  'orca_worker_bridge',
   'cindy_lsp',
 ]);
 

@@ -173,6 +173,8 @@ const sessionIdFor = (bot: string, user: string, scope?: string): string =>
 
 const fakeRepo: ImSessionRepo = {
   sessionIdFor,
+  peekSession: async () => null,
+  peekSessionById: async () => null,
   findActiveSession: vi.fn(async (bot: string, user: string, scope?: string) => {
     return rows.get(sessionIdFor(bot, user, scope)) ?? null;
   }),
@@ -200,6 +202,7 @@ const fakeCards = {
 const fakeAdapter: ImChannelAdapter = {
   channel: 'slack',
   im: mocks.slackIm as unknown as ChannelIM,
+  output: { kind: 'rich-card', im: mocks.slackIm as unknown as ChannelIM },
   config: {
     agentKind: 'claude-code',
     defaultModel: 'claude-opus-4-7',
@@ -332,6 +335,26 @@ describe('turnRunner thread = session 路由(slack threadScoped)', () => {
     });
   });
 
+  it('claim-bearing SDK done keeps the IM card open until the product done', async () => {
+    const stub = streamingHandleStub();
+    mocks.slackIm.startStreamingText.mockResolvedValue(stub);
+    await runTurn('100.1');
+    const h = harnesses.get('slack_T1_U1_100_1')!;
+
+    h.emit({ type: 'text', data: { text: '第一段结果', isFinal: true } } as AgentEvent);
+    await vi.waitFor(() => expect(mocks.slackIm.startStreamingText).toHaveBeenCalledTimes(1));
+
+    h.emit({ type: 'done', data: {}, turnContinuationId: 1 } as AgentEvent);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(stub.finalize).not.toHaveBeenCalled();
+
+    h.emit({ type: 'text', data: { text: '续跑后的最终结果', isFinal: true } } as AgentEvent);
+    h.emit({ type: 'done', data: {} } as AgentEvent);
+    await vi.waitFor(() => expect(stub.finalize).toHaveBeenCalledTimes(1));
+    const finalBody = (stub.finalize.mock.calls[0] as unknown[] | undefined)?.[0];
+    expect(finalBody).toContain('续跑后的最终结果');
+  });
+
   it('排队提示带 threadTs(同 thread 第二条在 turn 进行中到达)', async () => {
     await runTurn('100.1');
     // 第一轮未收口 → 第二条同 scope 消息排队
@@ -430,7 +453,9 @@ describe('turnRunner thread = session 路由(slack threadScoped)', () => {
     await vi.waitFor(() => {
       expect(stream.finalize).toHaveBeenCalledWith('late output');
       expect(harness.unsubscribe).toHaveBeenCalledOnce();
-      expect(mocks.installDesktopInteractionListener).toHaveBeenCalledWith(harness.session);
+      // Central InteractionRouter keeps the Session listener installed; detach
+      // only releases this turn's route and must not overwrite the listener.
+      expect(mocks.installDesktopInteractionListener).not.toHaveBeenCalled();
     });
     await rewire;
     expect(rewireResolved).toBe(true);
@@ -572,12 +597,19 @@ describe('turnRunner 自动任务转播(scheduler turn → 远程控制 thread)'
       expect(lastReplace).toContain('检查完毕,无新变化');
     });
 
+    // continuation 的 SDK done 只封存中间段,不能提前 finalize scheduler 卡。
+    h.emit(withOrigin({ type: 'done', data: {}, turnContinuationId: 1 }));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(stub.finalize).not.toHaveBeenCalled();
+
+    h.emit(withOrigin({ type: 'text', data: { text: '\n续跑后最终结果', isFinal: false } }));
     // done 收口:finalize 去掉步骤,只留任务名 + 结果
     h.emit(withOrigin({ type: 'done', data: {} }));
     await vi.waitFor(() => {
       const finalBody = (stub.finalize.mock.calls.at(-1) as unknown[] | undefined)?.[0] as string;
       expect(finalBody).toContain('🤖 自动任务「PR #118 跟进」');
       expect(finalBody).toContain('检查完毕,无新变化');
+      expect(finalBody).toContain('续跑后最终结果');
       expect(finalBody).not.toContain('工作中'); // 过程区已去掉
     });
   });

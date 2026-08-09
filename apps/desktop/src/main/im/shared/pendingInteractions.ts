@@ -12,6 +12,12 @@
 
 import type { InteractionDecision } from '@cindy/maker-core';
 
+import {
+  buildAskNoAnswerDecision,
+  buildPermissionDenyDecision,
+  buildPlanDenyDecision,
+} from './interactionCardModel';
+
 interface PendingEntry {
   resolve: (decision: InteractionDecision) => void;
   reject: (err: Error) => void;
@@ -85,6 +91,29 @@ export function resolvePending(
   if (!entry) return null;
   pending.delete(requestId);
   entry.resolve(decision);
+  return { messageId: entry.messageId };
+}
+
+/**
+ * Resolve one pending card with the safe decision used when its turn ends.
+ * 安全默认与 hook 链路同源(interactionCardModel), 只有 reason 文案按渠道给。
+ *
+ * Returns the card's messageId (same shape as `resolvePending`) so the caller
+ * can close the card off. Without that, the card stays on screen with live
+ * buttons after the interaction is already gone — pressing it then does
+ * nothing at all, which is exactly what a dropped turn looks like to the user.
+ */
+export function cancelPending(requestId: string, reason: string): { messageId: string } | null {
+  const entry = pending.get(requestId);
+  if (!entry) return null;
+  pending.delete(requestId);
+  if (entry.kind === 'ask_user_question') {
+    entry.resolve(buildAskNoAnswerDecision());
+  } else if (entry.kind === 'plan_review') {
+    entry.resolve(buildPlanDenyDecision(reason));
+  } else {
+    entry.resolve(buildPermissionDenyDecision(reason));
+  }
   return { messageId: entry.messageId };
 }
 

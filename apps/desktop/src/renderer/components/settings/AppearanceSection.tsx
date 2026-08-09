@@ -1,6 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Sun, Moon, Monitor, ChevronDown, Check, Copy, FolderOpen, RefreshCw } from 'lucide-react';
+import {
+  Sun,
+  Moon,
+  Monitor,
+  ChevronDown,
+  Check,
+  Copy,
+  FolderOpen,
+  Import as ImportIcon,
+  RefreshCw,
+} from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
 import { basename, cn } from '@/lib/utils';
@@ -29,9 +39,22 @@ import { isLocalThemeId } from '../../../shared/local-themes';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Tip } from '@/components/ui/tooltip';
 import { Slider } from '@/components/ui/slider';
+import { extractIpcError } from '@/utils/ipcError';
 import { FontFamilyPicker, type FontPreset } from './FontFamilyPicker';
+import { LayoutResetControl } from './LayoutResetControl';
 
 const log = createLogger('settings/AppearanceSection');
+
+/** IPC 错误码 → 专门文案；未列出的码落到通用 importFailed。 */
+const IMPORT_ERROR_KEYS: Record<string, string> = {
+  THEME_UNSUPPORTED_FILE: 'settings.appearance.localThemes.importUnsupported',
+  THEME_CONTRAST_UNSUPPORTED: 'settings.appearance.localThemes.importContrastUnsupported',
+  THEME_USES_INCLUDE: 'settings.appearance.localThemes.importUsesInclude',
+  THEME_NOT_A_FILE: 'settings.appearance.localThemes.importNotAFile',
+  THEME_FILE_TOO_LARGE: 'settings.appearance.localThemes.importTooLarge',
+  THEME_WRITE_ERROR: 'settings.appearance.localThemes.importWriteError',
+  THEME_IMPORT_INTERNAL: 'settings.appearance.localThemes.importInternalError',
+};
 
 type ThemeOption = 'light' | 'dark' | 'system';
 
@@ -376,6 +399,46 @@ export function AppearanceSection() {
     );
   }, [familyId, t, theme]);
 
+  const handleImport = useCallback(async () => {
+    let result;
+    try {
+      result = await window.electronAPI.localThemes.importExternal();
+    } catch (err) {
+      const ipcErr = extractIpcError(err);
+      const key = ipcErr ? IMPORT_ERROR_KEYS[ipcErr.code] : undefined;
+      toast.error(
+        key
+          ? t(key)
+          : t('settings.appearance.localThemes.importFailed', { error: ipcErr?.code ?? 'UNKNOWN' }),
+      );
+      return;
+    }
+    if (result.canceled) return;
+    await refreshLocalThemes();
+    const name = result.written[0]?.name ?? '';
+    const skipped = result.report.skippedProtected;
+    const unresolved = result.report.unresolved.length;
+    const derived = result.report.derivedRoles.length;
+    if (skipped > 0 || unresolved > 0 || derived > 0) {
+      toast.success(
+        t('settings.appearance.localThemes.importPartial', {
+          name,
+          themeCount: result.written.length,
+          skipped,
+          unresolved,
+          derived,
+        }),
+      );
+      return;
+    }
+    toast.success(
+      t('settings.appearance.localThemes.importSuccess', {
+        name,
+        themeCount: result.written.length,
+      }),
+    );
+  }, [t]);
+
   const handleOpenDir = useCallback(async () => {
     const result = await window.electronAPI.localThemes.openDir();
     if (!result.success) {
@@ -530,6 +593,11 @@ export function AppearanceSection() {
               onClick={() => { void handleExport(); }}
             />
             <LocalThemeIconButton
+              icon={ImportIcon}
+              label={t('settings.appearance.localThemes.import')}
+              onClick={() => { void handleImport(); }}
+            />
+            <LocalThemeIconButton
               icon={FolderOpen}
               label={t('settings.appearance.localThemes.openDir')}
               onClick={() => { void handleOpenDir(); }}
@@ -628,7 +696,7 @@ export function AppearanceSection() {
                 }
               }}
               className={cn(
-                'h-9 w-[72px] rounded-xl border px-3 text-right text-[13px] outline-none',
+                'h-9 w-[72px] rounded-xl border px-3 text-right text-13 outline-none',
                 'border-[var(--settings-input-border)] bg-[var(--settings-input-bg)]',
                 'font-mono text-[var(--settings-input-text)]',
                 'focus:border-[var(--settings-input-border-focus)]',
@@ -712,7 +780,7 @@ export function AppearanceSection() {
                 }
               }}
               className={cn(
-                'h-9 w-[72px] rounded-xl border px-3 text-right text-[13px] outline-none',
+                'h-9 w-[72px] rounded-xl border px-3 text-right text-13 outline-none',
                 'border-[var(--settings-input-border)] bg-[var(--settings-input-bg)]',
                 'font-mono text-[var(--settings-input-text)]',
                 'focus:border-[var(--settings-input-border-focus)]',
@@ -746,7 +814,7 @@ export function AppearanceSection() {
         <div
           role="radiogroup"
           aria-label={t('settings.appearance.sidebarCardMode.aria')}
-          className="flex shrink-0 items-center gap-0.5 rounded-lg border border-[var(--settings-theme-card-border)] p-0.5"
+          className="flex shrink-0 items-center gap-0.5 rounded-full border border-[var(--settings-theme-card-border)] p-0.5"
         >
           {([
             { value: 'text', labelKey: 'ccAgent.sidebar.viewStyleList' },
@@ -760,7 +828,7 @@ export function AppearanceSection() {
               aria-checked={sidebarViewMode === opt.value}
               onClick={() => setSidebarViewMode(opt.value)}
               className={cn(
-                'rounded-md px-2.5 py-1 text-xs transition-colors',
+                'rounded-full px-2.5 py-1 text-xs transition-colors',
                 sidebarViewMode === opt.value
                   ? 'bg-[var(--chat-input-chip-bg)] font-medium text-[var(--msg-assistant-text)]'
                   : 'text-[var(--settings-section-sublabel)] hover:bg-sidebar-item-hover',
@@ -771,6 +839,8 @@ export function AppearanceSection() {
           ))}
         </div>
       </div>
+
+      <LayoutResetControl />
     </div>
   );
 }

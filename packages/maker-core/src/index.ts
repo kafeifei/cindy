@@ -15,6 +15,7 @@ export * from './interfaces/index.js';
 
 // agents
 export * from './agents/index.js';
+export { evaluatePiProjectTrust, piProjectKey } from './agents/pi/project-trust.js';
 
 // codex app-server transport interface — host 实现自定义 transport (e.g. SSH-bridged
 // for remote codex) 时需要这个接口形状。
@@ -38,6 +39,8 @@ export * from './memory/types.js';
 export {
   MemoryStorage,
   sanitizeWorkdir,
+  buildMemoryScopeKey,
+  memoryScopeDirName,
   buildFilename,
   parseFilename,
   validateSlug,
@@ -66,6 +69,13 @@ export { MAKER_MEMORY_RULES } from './memory/system-prompt.js';
 
 // maker contacts (agent-native 智能通讯录, 全局人物实体库)
 export * from './contacts/types.js';
+export * from './contacts/sync/types.js';
+export { createContactsSyncDelta } from './contacts/sync/merge.js';
+export {
+  CONTACTS_RULES_DISABLED,
+  CONTACTS_RULES_ENABLED,
+  type ContactsPromptState,
+} from './contacts/system-prompt.js';
 export { initContactsSchema, CONTACTS_SCHEMA_VERSION } from './contacts/schema.js';
 export { ContactsFts, type ContactFtsDoc } from './contacts/fts.js';
 export {

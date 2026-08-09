@@ -33,13 +33,16 @@
   的 Agent 能力归属、代码优先确定性、缓存率／性能／准确性指标不可回退，以及 system
   prompt 改动门禁。
 - [`plugin-security-and-authoring.md`](plugin-security-and-authoring.md)：插件（`.cindy`）
-  运行时沙箱与进程隔离、权限即授权边界、网络／凭证／资源交接，以及作者契约与
-  编写手册（`FORGE_GUIDE`）同步。
+  运行时沙箱与进程隔离、权限即授权边界、网络／凭证／资源交接、存量插件向下兼容红线
+  （升级不得要求用户重装或重新确认），以及作者契约与编写手册（`FORGE_GUIDE`）同步。
 - [`cindy-updater.md`](cindy-updater.md)：客户端自动更新链路的 owner 确认门禁与高风险
   约束。
 - [`engineering-conventions.md`](engineering-conventions.md)：统一日志、IPC 错误协议
   （`throwIpcError`）、main 侧默认带测试、macOS／Windows 双端兼容，以及 UI 文案的
   i18n 落地与 `pnpm check:i18n` 门禁。
+- [`log-upload-and-redaction.md`](log-upload-and-redaction.md)：客户端日志采集／脱敏／上报的
+  三条不变量（记录边界、白名单方向 deny-by-default、标记代次 + 原子清除）、四层收窄管道、
+  授权闸、区域绑定与崩溃时序。
 - [`protocol-and-submodules.md`](protocol-and-submodules.md)：`cindy-protocol` 协议权威源、
   device-link relay 层、内建插件来源与 wire protocol 兼容。
 - [`architecture-invariants.md`](architecture-invariants.md)：package 与 render／main 解耦、

@@ -30,13 +30,44 @@ import {
   query as sdkQuery,
   forkSession as sdkForkSession,
 } from '@anthropic-ai/claude-agent-sdk';
-import type { Query, CanUseTool, McpServerConfig, PermissionUpdate, Settings } from '@anthropic-ai/claude-agent-sdk';
+import type {
+  Query,
+  CanUseTool,
+  HookCallback,
+  McpServerConfig,
+  PermissionUpdate,
+  PreToolUseHookInput,
+  Settings,
+} from '@anthropic-ai/claude-agent-sdk';
+import { discoverSubagentDefinitions } from './subagent-definitions.js';
+import { spawnObservedClaudeProcess } from './local-process-spawn.js';
+import {
+  reportSubagentModelDiagnostics,
+  resolveSubagentModelDefault,
+  type ResolveSubagentModelDefaultResult,
+} from './subagent-model-default.js';
 import Anthropic, { APIError } from '@anthropic-ai/sdk';
 
-import { BaseAgent, OneShotError, AgentNotAuthenticatedError, type AgentSessionHandle, type AgentDeps, type StartSessionOptions, type OneShotOptions, type SendOptions } from '../base-agent.js';
+import {
+  BaseAgent,
+  OneShotError,
+  AgentNotAuthenticatedError,
+  TurnPermissionPolicyUnsupportedError,
+  type AgentSessionHandle,
+  type AgentDeps,
+  type StartSessionOptions,
+  type OneShotOptions,
+  type SendOptions,
+  type TurnPermissionPolicy,
+} from '../base-agent.js';
 import { SYSTEM_PROMPT_APPEND as MAKER_SYSTEM_PROMPT_APPEND } from './system-prompt-append.js';
 import { MAKER_MEMORY_RULES } from '../../memory/system-prompt.js';
+import {
+  CONTACTS_RULES_DISABLED,
+  CONTACTS_RULES_ENABLED,
+} from '../../contacts/system-prompt.js';
 import { MemoryFlushController } from '../../memory/flush-controller.js';
+import { buildMemoryScopeKey } from '../../memory/storage.js';
 import type {
   Capabilities,
   EffortDescriptor,
@@ -56,19 +87,52 @@ import type {
 } from '../../types/events.js';
 import { isTerminalAgentErrorEvent } from '../../types/events.js';
 import type { UserMessage } from '../../types/common.js';
+import {
+  capabilitySelectionAddedByPlanEdit,
+  findClaudeMcpCapabilityRoute,
+  isCapabilityRouteInvocationAllowed,
+} from '../../types/capability-routing.js';
 import { createAsyncQueue, type AsyncQueue } from '../shared/async-queue.js';
 import { AutoCompactController } from '../shared/auto-compact-controller.js';
+import { resolveMcpToolTarget } from '../shared/mcp-tool-target.js';
 import { scanClaudeAtResources, scanClaudeSlashCommands } from '../shared/palette-scanner.js';
 // scanClaudeSlashCommands 仍是 listAgentSkills 的实际数据源, 名字保留(它扫的是 commands+skills 两类)。
 import { UsageTracker } from '../shared/usage-tracker.js';
 import { getDefaultImageResizer } from '../shared/image-resizer.js';
 import { pickTurnStartStatus, type OneShotState } from '../shared/turn-start-phrases.js';
 import { ToolLoopGuard } from '../shared/loop-guard.js';
-import { buildClaudeEnv } from './env-builder.js';
+import {
+  applyOAuthSpawnEntrypointGate,
+  applySubagentModelEnv,
+  buildClaudeEnv,
+  REMOTE_ROUTE_OVERRIDE_ENV_KEYS,
+} from './env-builder.js';
 import { buildClaudeFlagSettings } from './flag-settings.js';
-import { resolveAgentCredentialMode } from '../credential-mode.js';
+import {
+  buildClaudeOrcaCallerProvenanceHooks,
+  buildClaudeLocalToolGuardHooks,
+  buildClaudeRemoteOrcaCallerGuards,
+  buildClaudeRemoteToolGuards,
+  mergeClaudeHookSets,
+} from './capability-routing.js';
+import { normalizeBuiltinToolForAutoReview } from './auto-review-policy.js';
+import {
+  composeAutoReviewIntentWithApprovedPlan,
+  composeAutoReviewIntentWithClarification,
+  createAutoReviewUnavailableNotice,
+  extractAutoReviewUserIntent,
+  resolveAutoReviewDecision,
+  type AutoReviewDecision,
+} from '../shared/auto-review-decision.js';
+import type { ReviewableAction } from '../shared/auto-review.js';
+import {
+  resolveAgentCredentialMode,
+  resolveEffectiveCredentialModeFromAuthSource,
+} from '../credential-mode.js';
 import { repairForkedClaudeSessionJsonl, type RepairForkedClaudeJsonlResult } from './fork-jsonl-repair.js';
 import { ensureClaudeTranscriptInWorkingDir } from './transcript-relocation.js';
+import { findClaudeSessionJsonl } from './claude-projects-fs.js';
+import { normalizeClaudeSessionJsonlToolIds } from './jsonl-tool-id-normalize.js';
 import { isClaudeResumeSessionNotFound } from './invalid-resume.js';
 import { translateSdkMessage, newRuntimeState, type TurnState, type RuntimeState } from './translator.js';
 import type { Effort, PermissionMode } from '../../types/common.js';
@@ -168,6 +232,16 @@ function isProviderRoutedModel(model: string): boolean {
   return !model.startsWith('claude-');
 }
 
+/** URL → host(路由决策日志用,失败返回 undefined,不抛)。 */
+function hostOfUrl(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    return new URL(url).host;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * 已知的 Claude 内置只读工具白名单(纯读、无本地写 / 无命令执行 / 无外部发送副作用)。
  *
@@ -191,34 +265,6 @@ const READ_ONLY_CLAUDE_TOOLS: ReadonlySet<string> = new Set([
 /** canUseTool fail-closed 分支用: 判断工具是否属于已知只读工具(见上方白名单注释)。 */
 function isReadOnlyClaudeTool(toolName: string): boolean {
   return READ_ONLY_CLAUDE_TOOLS.has(toolName);
-}
-
-/**
- * 把 Claude SDK 的 MCP 工具名拆成 host 审批策略要的 { serverName, toolName }。
- *
- * SDK 命名格式为 `mcp__<server>__<tool>`, 但**不能**按 `__` 盲切首段当 server ——
- * server 名自身可以含 `__`(自定义 MCP 的 id 正则是 `/^[a-z0-9_-]+$/`, 下划线合法)。
- * 盲切会让 id 为 `cindy_browser__evil` 的第三方 server 被识别成第一方 `cindy_browser`,
- * 直接继承信任表里的静默放行 —— 这是一条实打实的提权路径。
- *
- * 因此只在**本 session 实际注册过**的 server 名里做前缀匹配, 命中多个时取最长者
- * (`cindy_browser__evil` 胜过 `cindy_browser`), 保证归属唯一。名字对不上任何已注册
- * server 时返回 null, 调用方按"不查策略"处理 —— 走原有权限链, 不放行。
- */
-function resolveMcpToolTarget(
-  toolName: string,
-  registeredServerNames: ReadonlySet<string>,
-): { serverName: string; toolName: string } | null {
-  if (!toolName.startsWith('mcp__')) return null;
-  let best: { serverName: string; toolName: string } | null = null;
-  for (const serverName of registeredServerNames) {
-    const prefix = `mcp__${serverName}__`;
-    if (!toolName.startsWith(prefix) || toolName.length <= prefix.length) continue;
-    if (!best || serverName.length > best.serverName.length) {
-      best = { serverName, toolName: toolName.slice(prefix.length) };
-    }
-  }
-  return best;
 }
 
 /**
@@ -341,6 +387,17 @@ export async function toClaudeSdkContent(
   return text || prefix.trim();
 }
 
+function userMessageTextForCapabilityRouting(content: UserMessage['content']): string {
+  if (typeof content === 'string') return content;
+  return content
+    .flatMap((block) => (block.type === 'text' ? [block.text] : []))
+    .join('\n');
+}
+
+function isUserSettingsMcpScope(scope: unknown): boolean {
+  return scope === 'user' || scope === 'project' || scope === 'local';
+}
+
 /**
  * Anthropic Messages SDK 错误 → OneShotError 分类映射。
  * 参考自 apps/desktop/src/main/skillReview/claudeSdkReviewer.ts:mapApiError,
@@ -386,6 +443,13 @@ function parseIdleTimeoutMs(raw: string | undefined): number {
   if (!Number.isFinite(n) || n < 0) return DEFAULT;
   return Math.floor(n);
 }
+
+/** upstream-response-idle 看门狗的计时分片长度(见 armUpstreamResponseIdleSlice)。 */
+const CC_UPSTREAM_IDLE_SLICE_MS = 60_000;
+
+/** 分片实际耗时超出片长这么多 → 判为进程被系统挂起过,该片不计入额度。 */
+const CC_UPSTREAM_IDLE_SUSPEND_GAP_MS = 30_000;
+
 
 function mapAnthropicError(err: unknown): OneShotError {
   if (err instanceof APIError) {
@@ -478,7 +542,7 @@ function notifySupportedModels(q: Query): void {
 const CLAUDE_PERMISSION_MODES: PermissionModeDescriptor[] = [
   { id: 'ask',               displayName: 'Ask permissions',     description: 'Always ask before making changes' },
   { id: 'acceptEdits',       displayName: 'Auto accept edits',   description: 'Automatically accept all file edits' },
-  { id: 'auto',              displayName: 'Auto',                description: 'Let a model classifier approve or deny prompts' },
+  { id: 'auto',              displayName: 'Auto',                description: 'Auto-approve safe in-workspace actions; ask before out-of-workspace or risky ones' },
   { id: 'bypassPermissions', displayName: 'Bypass permissions',  description: 'Accepts all permissions' },
 ];
 
@@ -495,6 +559,12 @@ const CAPABILITIES: Capabilities = {
   reasoningDisplay: ['off', 'summarized', 'full'],
   permissionModes: CLAUDE_PERMISSION_MODES,
   setPermissionModeMidSession: { supported: true },
+  turnPermissionPolicy: {
+    supported: { supported: true },
+    // Both modes can execute mutations without invoking canUseTool. Reject the
+    // combination instead of presenting a false forced-confirmation promise.
+    unsupportedPermissionModes: ['acceptEdits', 'bypassPermissions'],
+  },
   // 计划模式一级开关: SDK plan mode + ExitPlanMode → plan_review 审批, 批准后自动退出
   planMode: { supported: true },
   multimodal: {
@@ -509,7 +579,7 @@ const CAPABILITIES: Capabilities = {
   memory: {
     supported: { supported: true },
     displayName: 'Auto Memory',
-    description: '自动从对话中沉淀长期记忆并在新会话中召回 (后台 auto-dream 一并联动)',
+    description: '自动从对话中沉淀长期记忆并在后续对话中召回 (后台 auto-dream 一并联动)',
     stage: 'stable',
     defaultEnabled: true,
     resettable: true,
@@ -564,6 +634,30 @@ export class ClaudeCodeAgent extends BaseAgent {
         ? descriptor.contextWindow
         : undefined;
     return toSdkModelString(model, window);
+  }
+
+  /**
+   * 订阅 token 401 强刷 —— 本地 SDK getOAuthToken 回调与远端 onOAuthRefresh 共用。
+   *
+   * env.CLAUDE_CODE_OAUTH_TOKEN 是该会话持有 token 的**单一事实源**:作为失败基线传给
+   * host(库已被后台预续期换代时直接返回库值,不再消耗一次轮换);拿到新 token 后原地
+   * 写回 env —— rewind/fork/重连重建复用同一 env 引用,新子进程直接以最新 token spawn,
+   * 不会拿旧 token 起跑立即 401 再白白强刷一枚好 token。失败返回 null(cc 侧 surface
+   * 鉴权错误),绝不上抛。
+   */
+  private async refreshSubscriptionTokenInPlace(env: Record<string, string>): Promise<string | null> {
+    try {
+      const fresh = await this.deps.auth.getFreshSubscriptionToken!(env.CLAUDE_CODE_OAUTH_TOKEN);
+      if (fresh) env.CLAUDE_CODE_OAUTH_TOKEN = fresh;
+      return fresh ?? null;
+    } catch (e) {
+      this.deps.logger
+        .child('claude-code/oauth-refresh')
+        .warn('subscription token refresh failed; returning null (cc will surface auth error)', {
+          error: e instanceof Error ? e.message : String(e),
+        });
+      return null;
+    }
   }
 
   /**
@@ -744,13 +838,34 @@ export class ClaudeCodeAgent extends BaseAgent {
     // (用户单独装过 Claude Code 时存在),用上别人的 OAuth 通道 → 既泄漏隔离,也
     // 让用户莫名其妙"用上了不属于本 app 的 key"。
     // renderer 接到 AgentNotAuthenticatedError 后据 reason 引导用户补齐当前来源的鉴权。
-    const credentialMode = opts.remoteHostId
-      ? 'gateway-key'
-      : resolveAgentCredentialMode({
-          agentKind: 'claude-code',
-          providerId: opts.providerId,
-          model: opts.model,
-        });
+    // 远端路由 materialization(必须先于凭证形态推导):本地按模型分流的逻辑活在 loopback
+    // proxy,远端够不到,由 host 在 spawn 前把「该会话真实上游 + 鉴权 + 定制头」解析成 cc
+    // env(见 base-agent.ts AgentDeps.resolveRemoteClaudeRoute)。
+    //   - 返回 route:native OAuth 订阅 / 自定义 Claude Code 供应商 —— 下方覆盖 endpoint + 鉴权;
+    //   - 返回 null / resolver 未注入(旧 host):有效路由是 XD 网关 —— credentialMode 必须
+    //     回落 'gateway-key'(与升级前「远端恒用网关」逐字节一致)。不回落的话,getAuthEnv
+    //     会按本地 fallback 注入订阅 token / provider 占位 key,与 buildClaudeEnv 写入的网关
+    //     endpoint 并存:订阅 token 被发往网关(凭证泄漏)或网关收到占位 key(401)。
+    //   - throw:显式选定的供应商在远端无法表达(自定义 requestPath / modelIdRewrite 等),
+    //     透传报错,不静默错路由。
+    const remoteRoute =
+      opts.remoteHostId && this.deps.resolveRemoteClaudeRoute
+        ? await this.deps.resolveRemoteClaudeRoute({
+            providerId: opts.providerId,
+            model: opts.model,
+          })
+        : null;
+    // 凭证形态:本地按会话来源推导;远端仅在 materialize 出 route 时用来源形态(route.env
+    // 是远端鉴权的唯一事实源,来源形态只影响 auth gate 与 behaviorFlags),网关路径(route
+    // 为 null / 旧 host)维持「远端恒用网关 key」。
+    const credentialMode =
+      opts.remoteHostId && !remoteRoute
+        ? 'gateway-key'
+        : resolveAgentCredentialMode({
+            agentKind: 'claude-code',
+            providerId: opts.providerId,
+            model: opts.model,
+          });
     const authOptions = credentialMode ? { credentialMode } : undefined;
     const authState = await this.deps.auth.getState(authOptions);
     if (!authState.authenticated) {
@@ -759,10 +874,16 @@ export class ClaudeCodeAgent extends BaseAgent {
         `claude-code not authenticated: ${authState.errorReason ?? 'no_key'}`,
       );
     }
+    const effectiveCredentialMode = resolveEffectiveCredentialModeFromAuthSource(
+      credentialMode,
+      authState.authSource,
+    );
 
     // 箭头别名捕获 this —— 下方 replayRuntimeDrift(普通 function)与 handle 对象
     // 字面量方法里没有类实例 this,统一经它取 wire 串。
     const sdkModelFor = (model: string): string => this.sdkModelFor(model);
+    const resolveRemoteClaudeRoute = this.deps.resolveRemoteClaudeRoute?.bind(this.deps);
+    const getAuthEnv = this.deps.auth.getAuthEnv.bind(this.deps.auth);
     const sdkModel = sdkModelFor(opts.model);
     const initialSdkEffort = this.sdkEffortForModel(opts.model, opts.effort ?? 'high');
     const binaryPath = this.deps.binaryPath;
@@ -772,7 +893,71 @@ export class ClaudeCodeAgent extends BaseAgent {
     const env = await buildClaudeEnv(this.deps.auth, this.deps.runtimeConfig, {
       credentialMode,
       modelContextWindows: providerRoutedModels,
+      // 先按「不设」建好 env(顺带删掉可能从 process.env 继承来的残留),真正的判定在下面
+      // 拿到这份 env 之后做 —— 扫描需要 env 里的 CLAUDE_CONFIG_DIR 才能找对目录。
+      subagentModel: null,
     });
+
+    // 「Subagent 模型」设置的默认值语义(见 subagent-model-default.ts):
+    // 平台的 CLAUDE_CODE_SUBAGENT_MODEL 是最高优先级**强制覆盖**,会静默盖掉用户手写
+    // agent 的 `model:`。这里先扫一遍用户手写定义再决定:没人声明 model → 照旧设 env
+    // (内置 agent 也吃到默认值);有人声明 → 不设 env,让那些声明生效。
+    //
+    // 必须放在 buildClaudeEnv **之后**:dev 多实例把 cc 的配置目录重定向到
+    // `<userData>/claude-home`,而那个 CLAUDE_CONFIG_DIR 只存在于**子进程 env**里
+    // (boot 期已从 process.env 剥离)。拿 process.env 去扫会扫到 `~/.claude/agents`,
+    // 和 cc 实际读的目录不是同一个 → 判定失真,声明照旧被覆盖。
+    //
+    // 只在会话启动时解析一次 —— env 要在 spawn 前定好,会话中途变动 tools/system 会破坏
+    // prompt 缓存(见 docs/dev-rules/maker-core-and-agent-behavior.md §3.1)。
+    // 诊断只落日志与 host 回调,**不进模型上下文**(理由见 subagent-model-default.ts 模块头)。
+    // 扫描失败(含触发 IO 预算)一律降级成「照旧设 env」= 本改动前的行为,绝不阻断会话启动。
+    //
+    // 候选默认值从路由感知入口取:子代理请求跑在父会话来源上,覆写在**该来源**下不可
+    // 路由(被停用)时 host 返回 undefined = 不注入(PR #744 review 第十九/二十轮)。
+    // 缺席 subagentModelForRoute 时退回静态 subagentModel(旧 host / CLI 行为不变)。
+    const configuredSubagentDefault =
+      (this.deps.runtimeConfig.subagentModelForRoute
+        ? this.deps.runtimeConfig.subagentModelForRoute(opts.providerId ?? null, credentialMode)
+        : this.deps.runtimeConfig.subagentModel
+      )?.trim() || undefined;
+    let subagentDefault: ResolveSubagentModelDefaultResult = {
+      envSubagentModel: configuredSubagentDefault,
+      diagnostics: [],
+    };
+    // 远端(SSH)会话**不做**本地扫描:opts.workingDir 是远端机器上的路径(本地不存在),
+    // `~/.claude/agents` 也是本地用户的而非远端的 —— 拿本地结果去决定远端行为会误判
+    // 「有没有人声明 model」。远端因此沿用既有 env 语义(设置值照旧强制覆盖),
+    // 即上面 subagentDefault 的初值。
+    if (!opts.remoteHostId) {
+      try {
+        const discovered = await discoverSubagentDefinitions({
+          workingDir: opts.workingDir,
+          // 子进程真正会用的那份 env —— CLAUDE_CONFIG_DIR 在里面。
+          env,
+        });
+        subagentDefault = resolveSubagentModelDefault({
+          configuredDefault: configuredSubagentDefault,
+          discovered,
+          // 校验 agent 声明的 model 是否真的可用 —— 清单就是 host 从目录派生的那份。
+          availableModelIds: this.capabilities.availableModels.map((m) => m.id),
+        });
+        for (const d of subagentDefault.diagnostics) {
+          log.warn('subagent model diagnostic', { ...d });
+        }
+        // 同步 throw 与 async reject 都在里面接住(host 可能传 async 回调)。
+        reportSubagentModelDiagnostics(
+          this.deps.runtimeConfig.onSubagentModelDiagnostics,
+          subagentDefault.diagnostics,
+        );
+      } catch (e) {
+        log.warn('discover subagent definitions failed; falling back to env override', {
+          error: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+    // 判定落到 env(唯一写入点,见 env-builder.applySubagentModelEnv)。
+    applySubagentModelEnv(env, subagentDefault.envSubagentModel ?? null);
     // 远端单独一份 env:用 'remote' 模式从空字典起(不继承 desktop OS env),否则
     // Windows HOME=C:\Users\Lizi 之类污染远端 cc CLI 的 ~ 展开(session/memory
     // 落怪路径)。详见 env-builder.ts buildClaudeEnv 文档。
@@ -781,9 +966,42 @@ export class ClaudeCodeAgent extends BaseAgent {
           credentialMode,
           mode: 'remote',
           modelContextWindows: providerRoutedModels,
+          // 远端不做本地扫描(见上),这里的值就是路由感知后的设置值 —— 保持 env 强制覆盖语义。
+          subagentModel: subagentDefault.envSubagentModel ?? null,
         })
       : null;
+    // 远端 route 覆盖(route 解析见上方 credentialMode 前的 remoteRoute):
+    // 先剥掉 buildClaudeEnv 经 getAuthEnv/endpoint 写入的鉴权/上游字段(订阅 token /
+    // provider-oauth 占位 key / 网关 endpoint),再让 route.env 成为唯一事实源,避免两套
+    // 鉴权字段并存。route 为 null 时 credentialMode 已回落 'gateway-key',remoteEnv 保持
+    // buildClaudeEnv 写入的网关 key + 网关 endpoint(remoteEndpoint),不进本块。
+    if (remoteEnv && remoteRoute) {
+      for (const key of REMOTE_ROUTE_OVERRIDE_ENV_KEYS) delete remoteEnv[key];
+      Object.assign(remoteEnv, remoteRoute.env);
+      remoteEnv.ANTHROPIC_BASE_URL = remoteRoute.endpoint;
+      // 订阅 token 续命回调的 entrypoint 闸门:route 覆盖后才出现 CLAUDE_CODE_OAUTH_TOKEN
+      // 的场景(如显式 anthropic 的 oauth-bearer 形态,buildClaudeEnv 期不注入 token)
+      // 需要在这里补跑一次;规则单源在 env-builder。
+      applyOAuthSpawnEntrypointGate(remoteEnv);
+    }
+    // 远端路由决策日志(排障还原「为什么这个会话走网关/直连/自定义上游」)。只打安全
+    // 字段:endpoint 只取 host,凭证形态与接线布尔量;绝不打 token / header 值。
+    if (remoteEnv) {
+      log.info('remote claude route decision', {
+        remoteHostId: opts.remoteHostId,
+        providerId: opts.providerId?.trim() || null,
+        routeMaterialized: remoteRoute !== null,
+        credentialMode: credentialMode ?? null,
+        endpointHost: hostOfUrl(remoteEnv.ANTHROPIC_BASE_URL),
+        oauthRefreshWired: Boolean(
+          remoteEnv.CLAUDE_CODE_OAUTH_TOKEN && this.deps.auth.getFreshSubscriptionToken,
+        ),
+      });
+    }
     const hostSystemPrompt = this.deps.runtimeConfig.systemPrompt;
+    const ghostRosterPrompt = opts.remoteHostId
+      ? ''
+      : (this.deps.getGhostRosterPrompt?.({ workingDir: opts.workingDir }) ?? '');
 
     // mutable closure — setVendorOptions 在 handle 上对外暴露,**原地合并** patch。
     // 关键: 不能用 `vo = {...vo, ...patch}` 重赋值 — Claude SDK 在 startSession 时
@@ -834,15 +1052,18 @@ export class ClaudeCodeAgent extends BaseAgent {
       opts.makerMemoryEnabled ?? this.deps.runtimeConfig.makerMemoryEnabled ?? false;
     const makerMemory = this.deps.makerMemory;
     const makerMemoryEnabled = makerMemoryFlag === true && !!makerMemory;
+    // SSH remote 的 workingDir 是远端路径 — store 定位统一经 scope key,
+    // 键规则与理由见 buildMemoryScopeKey (memory/storage.ts)。
+    const memoryScopeKey = buildMemoryScopeKey(opts.workingDir, opts.remoteHostId);
     // This per-session injection flag must not mutate the shared manager.
     if (makerMemoryEnabled && makerMemory) {
       try {
-        const store = await makerMemory.getStore(opts.workingDir);
+        const store = await makerMemory.getStore(memoryScopeKey);
         makerMemoryRules = MAKER_MEMORY_RULES;
         makerMemoryIndex = await store.getIndex();
         memoryFlushController = new MemoryFlushController({
           logger: log.child('memory-flush'),
-          workdir: opts.workingDir,
+          workdir: memoryScopeKey,
           agentKind: 'claude-code',
         });
         log.debug('maker memory loaded for session', {
@@ -868,9 +1089,81 @@ export class ClaudeCodeAgent extends BaseAgent {
      * 一律解析失败 → MCP 策略不参与判定, 维持原权限链。
      */
     let registeredMcpServerNames: ReadonlySet<string> = new Set();
+    let hostMcpServerNames: ReadonlySet<string> = new Set();
+    let nonHarnessMcpServerNames: ReadonlySet<string> = new Set();
+    const noteSdkInitMcpServerNames = (message: unknown): boolean => {
+      if (!message || typeof message !== 'object') return false;
+      const record = message as Record<string, unknown>;
+      if (
+        record.type !== 'system' ||
+        record.subtype !== 'init' ||
+        !Array.isArray(record.mcp_servers)
+      ) {
+        return false;
+      }
+      const finalNames = record.mcp_servers
+        .map((server) => {
+          if (!server || typeof server !== 'object') return undefined;
+          const serverRecord = server as Record<string, unknown>;
+          if (serverRecord.status !== 'connected') return undefined;
+          const name = serverRecord.name;
+          return typeof name === 'string' && name.length > 0 ? name : undefined;
+        })
+        .filter((name): name is string => name !== undefined);
+      // The init payload is the SDK's authoritative post-settings registry.
+      // Replace instead of unioning so a query rebuild cannot retain a server
+      // removed from user/project/local settings and disable a guard forever.
+      registeredMcpServerNames = new Set(finalNames);
+      return true;
+    };
+    const refreshSdkMcpProvenance = async (currentQ: Query): Promise<void> => {
+      const fallbackNames = new Set(hostMcpServerNames);
+      const queryWithStatus = currentQ as Query & {
+        mcpServerStatus?: () => Promise<Array<{
+          name: string;
+          status: string;
+          scope?: string;
+        }>>;
+      };
+      if (typeof queryWithStatus.mcpServerStatus !== 'function') {
+        if (currentQ === q) nonHarnessMcpServerNames = fallbackNames;
+        return;
+      }
+      try {
+        const statuses = await queryWithStatus.mcpServerStatus();
+        const connectedNonHarnessNames = new Set<string>();
+        for (const server of statuses) {
+          if (
+            server.status === 'connected' &&
+            typeof server.name === 'string' &&
+            server.name.length > 0 &&
+            (
+              hostMcpServerNames.has(server.name) ||
+              isUserSettingsMcpScope(server.scope)
+            )
+          ) {
+            connectedNonHarnessNames.add(server.name);
+          }
+        }
+        if (currentQ === q) nonHarnessMcpServerNames = connectedNonHarnessNames;
+        return;
+      } catch (error) {
+        // Init names have no provenance. On status failure, preserve only
+        // host-injected MCPs and keep settings/plugin routing fail-closed.
+        log.warn('failed to read scoped MCP status for capability routing', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      if (currentQ === q) nonHarnessMcpServerNames = fallbackNames;
+    };
     const buildMcpServers = (): Record<string, McpServerConfig> | undefined => {
       const providers = mcpProviders;
-      if (providers.length === 0) return undefined;
+      if (providers.length === 0) {
+        hostMcpServerNames = new Set();
+        registeredMcpServerNames = hostMcpServerNames;
+        nonHarnessMcpServerNames = hostMcpServerNames;
+        return undefined;
+      }
       const context: McpProviderContext = {
         agentKind: 'claude-code' as const,
         workingDir: opts.workingDir,
@@ -881,6 +1174,9 @@ export class ClaudeCodeAgent extends BaseAgent {
         // 到对应 session 的业务函数。host 直接调 startSession 而没透 sessionId
         // 时此处为 undefined, 工具按"无 session 绑定"语义处理。
         sessionId: opts.sessionId,
+        mcpCallerKind: 'root',
+        mcpCallerAttested: true,
+        ...(opts.sessionInstanceId ? { sessionInstanceId: opts.sessionInstanceId } : {}),
         getSessionContext: () => context,
       };
       // null-prototype: server 名来自用户可控的自定义 MCP id, 而 id 正则允许下划线,
@@ -890,6 +1186,9 @@ export class ClaudeCodeAgent extends BaseAgent {
       // 普通字符串键。
       const out: Record<string, McpServerConfig> = Object.create(null);
       for (const provider of providers) {
+        // cindy_memory: per-session flag 关 → 不注册; remote → in-process sdk 实例
+        // 不可序列化, 这里跳过, 由 host 的 remoteCcQueryFactory 按同一 flag 以
+        // http 形态经 bridge 注入 (见 cc-remote-mcp.ts)。
         if (provider.name === 'cindy_memory' && (!makerMemoryEnabled || opts.remoteHostId)) continue;
         if (provider.isEnabled && !provider.isEnabled(context)) continue;
         // 同名 provider 先注册者胜 —— host 把用户自定义 MCP **追加**在内置之后, 后写
@@ -908,7 +1207,9 @@ export class ClaudeCodeAgent extends BaseAgent {
       }
       // canUseTool 只认这批真实注册过的 server 名, 不靠 `mcp__` 工具名切分猜归属
       // (见 resolveMcpToolTarget: 自定义 server id 可以含 `__`, 盲切会被冒名顶替)。
-      registeredMcpServerNames = new Set(Object.keys(out));
+      hostMcpServerNames = new Set(Object.keys(out));
+      registeredMcpServerNames = hostMcpServerNames;
+      nonHarnessMcpServerNames = hostMcpServerNames;
       // 交回普通对象: SDK / RPC 序列化路径按普通对象处理(有的实现会调 obj.hasOwnProperty)。
       // spread 走 CreateDataProperty, 不触发 `__proto__` setter, 所以这一步是安全的。
       return Object.keys(out).length > 0 ? { ...out } : undefined;
@@ -936,8 +1237,111 @@ export class ClaudeCodeAgent extends BaseAgent {
     let inputQueue = createAsyncQueue<SdkUserInput>();
     let abortController = new AbortController();
     let interactionResolver: InteractionResolver | null = null;
+    // Keep the policy across Claude task_notification auto-continue turns,
+    // which do not call handle.send again. The next explicit send replaces it.
+    let activeTurnPermissionPolicy: TurnPermissionPolicy | null = null;
+    let activeCapabilitySelectionText = '';
+    const appendActiveCapabilitySelectionText = (text: string | undefined): void => {
+      if (!text) return;
+      activeCapabilitySelectionText = [activeCapabilitySelectionText, text]
+        .filter(Boolean)
+        .join('\n');
+    };
+    const turnChangeCaptureHook: HookCallback = async (input) => {
+      const captureCwd = opts.workingDir;
+      const captureSessionId = opts.sessionId;
+      if (!this.deps.turnChangeCapture || !captureCwd || !captureSessionId) {
+        return { continue: true };
+      }
+      if (input.hook_event_name === 'PreToolUse') {
+        const pre = input as PreToolUseHookInput;
+        const toolInput = pre.tool_input as Record<string, unknown> | undefined;
+        const targetPath = ['file_path', 'path', 'notebook_path']
+          .map((key) => toolInput?.[key])
+          .find((value): value is string => typeof value === 'string' && value.length > 0);
+        if (targetPath && ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(pre.tool_name)) {
+          await this.deps.turnChangeCapture.beforeKnownFileWrite({
+            sessionId: captureSessionId,
+            provider: 'claude-code',
+            cwd: captureCwd,
+            targetPath,
+            ...(opts.remoteHostId ? { remote: true } : {}),
+          });
+        }
+      } else if (
+        input.hook_event_name === 'PostToolUse'
+        || input.hook_event_name === 'PostToolUseFailure'
+      ) {
+        const toolName = (input as { tool_name?: unknown }).tool_name;
+        if (typeof toolName !== 'string' || (toolName !== 'Bash' && !toolName.startsWith('mcp__'))) {
+          return { continue: true };
+        }
+        this.deps.turnChangeCapture.noteOpaqueWrite({
+          sessionId: captureSessionId,
+          provider: 'claude-code',
+          cwd: captureCwd,
+          ...(opts.remoteHostId ? { remote: true } : {}),
+        });
+      }
+      return { continue: true };
+    };
+    const localClaudeHooks = mergeClaudeHookSets(
+      buildClaudeLocalToolGuardHooks(
+        this.deps.capabilityRouting,
+        () => activeCapabilitySelectionText,
+        (toolName, route) => {
+          log.warn('downstream MCP source denied by host PreToolUse route', {
+            toolName,
+            capabilityId: route.capabilityId,
+            replacement: route.replacement?.id,
+          });
+        },
+        () => nonHarnessMcpServerNames,
+      ),
+      {
+        PreToolUse: [{ hooks: [turnChangeCaptureHook] }],
+        PostToolUse: [{ hooks: [turnChangeCaptureHook] }],
+        PostToolUseFailure: [{ hooks: [turnChangeCaptureHook] }],
+      },
+      // Keep the existing local routing/capture hooks first: callers and tests
+      // rely on their observable order. The exact-match Orca provenance guard
+      // still runs for send_to_lead after those hooks and denies descendants.
+      buildClaudeOrcaCallerProvenanceHooks(),
+      this.deps.claudeHooks,
+    );
+    const deniedCapabilityRoute = (toolName: string) => {
+      const route = findClaudeMcpCapabilityRoute(
+        this.deps.capabilityRouting,
+        toolName,
+        nonHarnessMcpServerNames,
+      );
+      return route &&
+        !isCapabilityRouteInvocationAllowed(route, activeCapabilitySelectionText)
+        ? route
+        : undefined;
+    };
+    const forceTurnConfirmation = (toolName: string, input: unknown): boolean => {
+      const policy = activeTurnPermissionPolicy;
+      if (!policy) return false;
+      try {
+        return policy.forceConfirmToolCall(toolName, input) === true;
+      } catch (error) {
+        // A safety classifier failure cannot become an approval bypass.
+        log.error('turn permission policy threw -> force confirmation', {
+          toolName,
+          origin: policy.origin,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return true;
+      }
+    };
     // 事件队列预先声明 —— canUseTool 路径要 push interaction_dismissed 事件
     const eventQueue = createAsyncQueue<AgentEvent>();
+    // Cancellation closes a provider continuation with a queued terminal done.
+    // Keep the handle busy until the single Session consumer has processed that
+    // exact event, otherwise a new send can enter ahead of the queued boundary.
+    const continuationTerminalBoundaryEvents = new WeakSet<AgentEvent>();
+    let pendingContinuationTerminalBoundaries = 0;
 
     // ── Pending interaction 跟踪 ───────────────────────────────────────────
     // setPermissionMode 切换 / close session 时, 用此 Map 找到所有挂着的 interaction
@@ -1130,6 +1534,13 @@ export class ClaudeCodeAgent extends BaseAgent {
           log.warn('AskUserQuestion got mismatched decision', { decKind: decision.kind });
           return { behavior: 'deny', message: 'resolver kind mismatch' };
         }
+        // 澄清答案同样改变本轮授权范围(用户把范围从 src/ 收窄到 build/ 后,后续 `rm -rf src` 必须按
+        // 澄清后的意图裁决)→ 并入有界 review intent 并清空决策缓存,否则 reviewer 仍按原含糊请求
+        // 裁决、可能静默 allow(codex 报)。
+        setAutoReviewIntent(composeAutoReviewIntentWithClarification(
+          currentAutoReviewIntent,
+          Object.entries(decision.answers ?? {}).map(([question, answer]) => ({ question, answer })),
+        ));
         // 把用户回答拼回 SDK 让模型读 (老链路 agentManager.ts:1097-1106 把 answers 当 updatedInput.answers)
         return {
           behavior: 'allow',
@@ -1146,6 +1557,9 @@ export class ClaudeCodeAgent extends BaseAgent {
           // 空 plan 直接放过(老链路 agentManager.ts:1118-1120 同样处理)
           return { behavior: 'allow', updatedInput: input };
         }
+        // 计划审批期间用户可能继续发消息(currentAutoReviewIntent 会被覆盖);实施阶段的审查意图
+        // 必须是"发起计划时的原始请求 + 最终获批计划",不能掺进审批期间的内部跟进消息(codex 报)。
+        const planRequestAutoReviewIntent = currentAutoReviewIntent;
         const decision = await dispatchInteraction({
           kind: 'plan_review',
           requestId: options.toolUseID,
@@ -1157,8 +1571,19 @@ export class ClaudeCodeAgent extends BaseAgent {
           return { behavior: 'deny', message: 'resolver kind mismatch' };
         }
         if (decision.behavior === 'deny') {
+          if (!decision.dismissed) {
+            appendActiveCapabilitySelectionText(decision.reason);
+          }
           return { behavior: 'deny', message: decision.reason ?? 'plan rejected by user' };
         }
+        appendActiveCapabilitySelectionText(
+          capabilitySelectionAddedByPlanEdit(
+            this.deps.capabilityRouting,
+            'claude-code',
+            plan,
+            decision.editedPlan,
+          ),
+        );
         // 计划批准 → 本轮 plan 循环结束: SDK 切回底层权限档。武装态正常已在 send
         // 消耗(plan_mode_changed 已广播), 这里兜底处理"未经 send 直接批准"的路径。
         // 不能在 canUseTool 里 await SDK 控制请求(SDK 正等本回调返回),
@@ -1176,6 +1601,12 @@ export class ClaudeCodeAgent extends BaseAgent {
           });
         }
         const finalPlan = decision.editedPlan ?? plan;
+        // 计划获批后,后续实施动作要按"原始意图 + 获批计划"审查 —— 否则轻量 reviewer 仍按批准前的
+        // 过期意图裁决,计划里明确授权的动作会被误 block(或反之)。
+        setAutoReviewIntent(composeAutoReviewIntentWithApprovedPlan(
+          planRequestAutoReviewIntent,
+          finalPlan,
+        ));
         return {
           behavior: 'allow',
           updatedInput: { ...(input as Record<string, unknown>), plan: finalPlan } as Record<string, unknown>,
@@ -1183,7 +1614,23 @@ export class ClaudeCodeAgent extends BaseAgent {
       }
 
       // ── 3. 其他工具 → permission kind ──
-      // 没接 resolver → fail-closed(安全拦截逻辑不许 fail-open)。
+      const capabilityRoute = deniedCapabilityRoute(toolName);
+      if (capabilityRoute) {
+        log.warn('downstream MCP source denied by host capability route', {
+          toolName,
+          capabilityId: capabilityRoute.capabilityId,
+          replacement: capabilityRoute.replacement?.id,
+        });
+        return {
+          behavior: 'deny',
+          message: capabilityRoute.replacement
+            ? `This downstream source was not selected. Use Cindy capability ${capabilityRoute.replacement.id}.`
+            : 'This downstream source was not selected.',
+        };
+      }
+      // 没接 resolver → 普通档与 MCP 工具继续 fail-closed；Auto 的内置工具例外，
+      // 因为 allow/block 可以由本地规则或轻量 reviewer 完成，并不需要 UI。只有最终
+      // `ask` 才会落到 dispatchInteraction，在无 resolver 时自然 deny。
       // 正常流程里 Session 构造时**必定**注入 resolver(见 session.ts:
       // setInteractionResolver, 且 host 没接 listener 时该 resolver 自身返回 deny),
       // 故这里 interactionResolver 为 null 只可能是 misconfiguration / 裸 handle 直用。
@@ -1193,7 +1640,9 @@ export class ClaudeCodeAgent extends BaseAgent {
       // 这道闸必须在 MCP 审批策略**之前**: host 策略描述的是"这个工具值不值得打扰
       // 用户", 不代表"没有用户在场也可以跑"。裸 handle 场景下没有任何人能撤销误判,
       // 可信 MCP 同样落到 deny。
-      if (!interactionResolver) {
+      const canReviewWithoutUi =
+        mutablePermissionMode === 'auto' && !toolName.startsWith('mcp__');
+      if (!interactionResolver && !canReviewWithoutUi) {
         if (isReadOnlyClaudeTool(toolName)) {
           return { behavior: 'allow', updatedInput: input };
         }
@@ -1202,11 +1651,50 @@ export class ClaudeCodeAgent extends BaseAgent {
       }
 
       // 3a. MCP 工具过 host 审批策略(本地与远端会话共用 classifyMcpApprovalPolicy)。
+      const turnPolicyForcePrompt = forceTurnConfirmation(toolName, input);
       const mcpApprovalPolicy = classifyMcpApprovalPolicy(toolName, input);
-      if (mcpApprovalPolicy === 'auto-approve') {
-        return { behavior: 'allow', updatedInput: input };
+      let forcePrompt = turnPolicyForcePrompt;
+      if (mutablePermissionMode === 'auto' && !toolName.startsWith('mcp__')) {
+        const workspaceRoots = [opts.workingDir, ...mutableExtraDirs].filter(
+          (d): d is string => typeof d === 'string' && d.length > 0,
+        );
+        const autoDecision = await reviewAutoAction(
+          normalizeBuiltinToolForAutoReview(toolName, input),
+          workspaceRoots,
+          opts.remoteHostId ? 'linux' : process.platform,
+        );
+        // 热切换收口:reviewAutoAction 是 async,期间 setPermissionMode 可能收紧(Auto→Ask)
+        // 或放宽(→Full)。必须按**最新**档位决策,否则进入审查前的旧 auto 档 allow 会绕过用户
+        // 刚通过 setPermissionMode 要求的确认(codex review P1;与已修复的 Pi 线程同口径)。
+        // cast 破 TS 收窄:TS 不建模 await 期间经 setPermissionMode 闭包的重赋值,会把此处
+        // mutablePermissionMode 仍视为 'auto';运行期它确实可能已变,故按 union 类型现读。
+        const modeAfterReview = mutablePermissionMode as PermissionMode;
+        if (modeAfterReview === 'bypassPermissions') {
+          return { behavior: 'allow', updatedInput: input };
+        }
+        if (modeAfterReview !== 'auto') {
+          // 已收紧到 Ask/更严:不吃 auto 裁决,强制走用户确认(下方 forcePrompt 流程)。
+          forcePrompt = true;
+        } else if (!turnPolicyForcePrompt && autoDecision.verdict === 'allow') {
+          return { behavior: 'allow', updatedInput: input };
+        } else if (!turnPolicyForcePrompt && autoDecision.verdict === 'block') {
+          // 审阅器没跑起来 ≠ 模型判定危险:前者是基础设施故障,用户有权知道并接管,
+          // 后者按 Auto 本意保持静默(只把 reason 喂给模型)。动作两种都仍然 deny。
+          if (autoDecision.unavailable) autoReviewUnavailableNotice.notify();
+          return {
+            behavior: 'deny',
+            message: autoDecision.reason ?? 'Cindy Auto Review blocked this action. Choose a safer alternative.',
+          };
+        } else {
+          // AI `ask` and deterministic red-line verdicts are never persisted.
+          forcePrompt = true;
+        }
+      } else {
+        if (mcpApprovalPolicy === 'auto-approve' && !turnPolicyForcePrompt) {
+          return { behavior: 'allow', updatedInput: input };
+        }
+        forcePrompt = forcePrompt || mcpApprovalPolicy === 'prompt-each-time';
       }
-      const forcePrompt = mcpApprovalPolicy === 'prompt-each-time';
       const decision = await dispatchInteraction({
         kind: 'permission',
         requestId: options.toolUseID,
@@ -1275,14 +1763,17 @@ export class ClaudeCodeAgent extends BaseAgent {
     const buildSettings = (): Settings =>
       buildClaudeFlagSettings({
         showThinkingSummaries,
-        // Maker Memory is not available on SSH targets. Do not carry the local
-        // manager's native-memory suppression across that boundary: the remote
-        // host must retain its own Claude memory configuration.
+        // Do not carry the local manager's native-memory suppression across the
+        // SSH boundary: the remote host retains its own Claude memory
+        // configuration. Maker Memory on remote sessions is injected via the
+        // host bridge (prompt + http MCP), which coexists with — but does not
+        // rewrite — the remote machine's native memory settings.
         memoryOverride: opts.remoteHostId ? undefined : this.memoryOverride,
         // Fast 模式:进 flag settings 层(= --settings),解锁 cc 二进制在 Agent SDK 通道下的
         // fast(否则二进制按 "Agent SDK 不可用" 拒绝)。是否 Opus/官方/firstParty 由二进制把关,
         // agent 层不重复硬判(规则 9:确定性逻辑就近,但 fast 的最终门槛是二进制 + 配置门控)。
         fastMode: mutableFastMode,
+        capabilityRouting: this.deps.capabilityRouting,
       });
 
     // file checkpointing 与 capability 强绑定 —— 声明 rewind 能力时必须开此开关,
@@ -1300,6 +1791,64 @@ export class ClaudeCodeAgent extends BaseAgent {
     // translator ctx 也通过 getter 读, 让 turn start/end 日志反映"当前真实值"而不是创建时的值。
     // 必须在 buildQuery / forward loop 之前声明, 否则 ctx getter 会捕获到 TDZ。
     let mutableModel = opts.model;
+    let mutableProviderId = opts.providerId ?? null;
+    let mutableAutoReviewCredentialMode = effectiveCredentialMode;
+    let nativeAutoReviewUnavailable = false;
+    let currentAutoReviewIntent = '';
+    const autoReviewDecisionCache = new Map<string, Promise<AutoReviewDecision>>();
+    // Claude's native OAuth Auto classifier bypasses canUseTool entirely. Once a host MCP
+    // is registered, that would also bypass Cindy's trusted-server and prompt policies,
+    // leaving permission requests with no Cindy interaction surface. Keep native Auto for
+    // MCP-free sessions, but route host-MCP sessions through SDK default so canUseTool owns
+    // the decision.
+    const hasRegisteredMcpServers = (): boolean => registeredMcpServerNames.size > 0;
+    const usesNativeClaudeAutoReview = (): boolean =>
+      !nativeAutoReviewUnavailable
+      && mutableAutoReviewCredentialMode === 'oauth-bearer'
+      && !hasRegisteredMcpServers();
+    const setAutoReviewIntent = (content: UserMessage['content']): void => {
+      currentAutoReviewIntent = extractAutoReviewUserIntent(content);
+      autoReviewDecisionCache.clear();
+    // 每条新用户消息 = 新一轮,提示重新武装。ErrorBanner 那份只活到下一条非 error 事件
+    // (renderer 的 handleStreamEvent 会清 recoverableError),所以「整个会话只说一次」
+    // 会让用户在后续轮次里完全看不到;改为每轮至多一条 —— 不刷屏,又保证每一轮遇到时
+    // 都有机会看见。持久呈现需要一条真正的会话级 notice 通道,见 issue 外推。
+      autoReviewUnavailableNotice.reset();
+    };
+    // 「自动审核不可用」的会话级一次性提示(issue #1574)。走既有的非终止 error 事件 +
+    // `[CODE]` 约定,不新增事件类型;逐条提示会把 Auto 退化成比 Ask 更烦的东西,所以去重。
+    const autoReviewUnavailableNotice = createAutoReviewUnavailableNotice((message) => {
+      eventQueue.push({
+        type: 'error',
+        data: { message, isTerminal: false },
+        source: 'claude-code',
+      });
+    });
+    const reviewAutoAction = (
+      action: ReviewableAction,
+      workspaceRoots: string[],
+      platform: NodeJS.Platform,
+    ): Promise<AutoReviewDecision> => {
+      const request = {
+        sessionId: opts.sessionId,
+        agentKind: 'claude-code' as const,
+        providerId: mutableProviderId,
+        model: mutableModel,
+        userIntent: currentAutoReviewIntent,
+        action,
+        workspaceRoots,
+        platform,
+      };
+      const key = JSON.stringify(request);
+      const cached = autoReviewDecisionCache.get(key);
+      if (cached) return cached;
+      const pending = resolveAutoReviewDecision(
+        request,
+        this.deps.reviewAutoPermissionAction,
+      );
+      autoReviewDecisionCache.set(key, pending);
+      return pending;
+    };
     let toolLoopGuard: ToolLoopGuard | null = isDeepSeekModel(mutableModel)
       ? new ToolLoopGuard()
       : null;
@@ -1317,14 +1866,23 @@ export class ClaudeCodeAgent extends BaseAgent {
     let sdkInPlanMode = false;
     // SDK PermissionMode union 没有 'ask' (我们对 ChatInput 暴露的统一名字), SDK 侧当 default。
     type SdkPermissionMode = 'default' | 'acceptEdits' | 'plan' | 'auto' | 'bypassPermissions';
-    const toSdkPermissionMode = (mode: PermissionMode): SdkPermissionMode =>
-      (mode === 'ask' ? 'default' : mode) as SdkPermissionMode;
+    // 官方 Claude OAuth 路由保留 CC 原生 Auto classifier。第三方/网关路由及原生
+    // classifier 故障后的会话映射到 default，使 canUseTool 回调进入 Cindy 轻量 fallback。
+    const toSdkPermissionMode = (mode: PermissionMode): SdkPermissionMode => {
+      if (mode === 'auto') return usesNativeClaudeAutoReview() ? 'auto' : 'default';
+      return (mode === 'ask' ? 'default' : mode) as SdkPermissionMode;
+    };
     /**
      * SDK 实际起 turn 时应用的权限档: 计划模式武装中(下一 turn arm)或本轮 plan turn
      * 进行中都恒为 plan, 否则跟随底层权限档。**含 arm 态**, 用于 buildQuery 起 turn。
      */
     const effectiveSdkPermissionMode = (): SdkPermissionMode =>
       mutablePlanMode || planTurnActive ? 'plan' : toSdkPermissionMode(mutablePermissionMode);
+    // Only queries that actually started in native Auto need the post-init
+    // downgrade. A host MCP can already have made a query start in `default`;
+    // retrying that no-op and treating a transport failure as fatal would close
+    // an otherwise safe session.
+    const nativeAutoQueries = new WeakSet<Query>();
 
     /**
      * **本次 turn** 目标 SDK 权限档: 只看 `planTurnActive`(本轮是否 plan turn), **不含**
@@ -1391,7 +1949,7 @@ export class ClaudeCodeAgent extends BaseAgent {
     const runtimeState: RuntimeState = newRuntimeState();
     const beginNewTurn = (): void => {
       // usageTracker.beginTurn() 只清 usage 桶；translator 的 turnState 也要在新 turn
-      // 开始时清掉，避免上一轮 abnormal/abort 没走 result 时污染下一轮 API call 计数。
+      // 开始时清掉，避免上一轮 abnormal/abort 没走 result 时污染下一轮状态。
       usageTracker.beginTurn();
       turnState.text = '';
       turnState.toolUses = 0;
@@ -1400,6 +1958,8 @@ export class ClaudeCodeAgent extends BaseAgent {
       turnState.hasEmittedText = false;
       turnState.uiEmittedText = '';
       turnState.pendingApiError = null;
+      turnState.lastAssistantRequestId = undefined;
+      turnState.lastAssistantMsgHadSubstance = true;
       // 代际前进: 迟到的被打断 result 据此被 translator 识别为已被本 send 接管。
       turnState.generation += 1;
       // interruptRequested **刻意不在这里清**: watchdog / tool-loop guard 先置
@@ -1420,6 +1980,11 @@ export class ClaudeCodeAgent extends BaseAgent {
     // SSE idle watchdog 触发时也会主动清, 防止 SDK drain 期间又起 timer。
     // rewind preview/commit 业务层用 isTurnRunning() 前置守卫, 不在 turn 跑时操作 SDK。
     let turnInFlight = false;
+    // send() 处于 beginNewTurn→userInputAccepted 之间时置 true。
+    // abort() 在此期间跳过 turnInFlight 清除:并发 send 负责在错误路径上
+    // (finishSendBeforeUserInput) 自行清 turnInFlight 并 emit boundary,
+    // abort 抢清会让 boundary 丢失、acceptingRebuiltSend 残留(review #485)。
+    let sendInAcceptPhase = false;
     /**
      * "桥接 turn"计数器: rebuild 尾部注入的 /compact 是 SDK 独立 turn, 但产品层视角
      * 它是"用户 turn 的一部分" — 该 /compact 的 done / end-status 不能让上层做 turn
@@ -1438,12 +2003,16 @@ export class ClaudeCodeAgent extends BaseAgent {
      * 的边界事件正常放行、清 turnInFlight。计数 = "已注入但 SDK 还没跑完的桥接 turn 数"。
      */
     let queuedBridgeTurns = 0;
-    // Bridge /compact 只在 rewind rebuild 尾部注入。若用户 Stop 打在该 bridge turn
+    type ActiveBridgeKind = 'rewind' | 'cancellation';
+    let activeBridgeKind: ActiveBridgeKind | null = null;
+    // Bridge /compact 由 rewind 或 cancellation rebuild 尾部注入。若用户 Stop 打在该 bridge turn
     // 上, 已被 SDK eager-drain 的后续真实用户输入无法再从 inputQueue.clear() 追回;
     // 必须 close 当前 Query, 并在下一次 send 用同一个 resume point 重建, 才能从 SDK
     // 侧取消整条 compact → user 序列。
     let activeBridgeRewindResumeAt: string | undefined;
     let bridgeCompactUsageSnapshot: ReturnType<AutoCompactController['getLatestSnapshot']> = null;
+    const bridgeStateActive = (): boolean =>
+      queuedBridgeTurns > 0 || activeBridgeKind !== null || activeBridgeRewindResumeAt !== undefined;
     let q: Query;
     function restoreBridgeAutoCompactSnapshot(reason: string): void {
       const snapshot = bridgeCompactUsageSnapshot;
@@ -1477,12 +2046,18 @@ export class ClaudeCodeAgent extends BaseAgent {
     let upstreamResponseIdleTimer: NodeJS.Timeout | null = null;
     let upstreamResponseLastEventType: string | null = null;
     let upstreamResponseLastEventAt = 0;
+    /** 还需要"清醒地"静默多久才判上游哑火;按分片递减(见 armUpstreamResponseIdleSlice)。 */
+    let upstreamResponseIdleRemainingMs = 0;
+    /** 当前分片的起始壁钟时刻;片尾据此识别系统挂起。 */
+    let upstreamResponseIdleSliceStartedAt = 0;
     const pendingToolIds: Set<string> = new Set();
     function clearUpstreamResponseIdle(): void {
       if (upstreamResponseIdleTimer) {
         clearTimeout(upstreamResponseIdleTimer);
         upstreamResponseIdleTimer = null;
       }
+      upstreamResponseIdleRemainingMs = 0;
+      upstreamResponseIdleSliceStartedAt = 0;
     }
     function armUpstreamResponseIdle(): void {
       clearUpstreamResponseIdle();
@@ -1490,71 +2065,72 @@ export class ClaudeCodeAgent extends BaseAgent {
       if (closed || !turnInFlight) return;
       // 工具执行 / 用户交互 in-flight 期间 ball 不在上游, 不计 idle 配额。
       if (pendingToolIds.size > 0) return;
+      upstreamResponseIdleRemainingMs = upstreamResponseIdleTimeoutMs;
+      armUpstreamResponseIdleSlice();
+    }
+    /**
+     * 分片计时,片尾核对真实耗时(壁钟差 ≠ 清醒时间,分层自愈不变量第 6 处;
+     * 与 codex 的 armUpstreamIdleSlice、Session 层的 armTurnStallSlice /
+     * armAbortRecoverySlice、scheduler 的 absorbSuspendGap、scheduler-host runner
+     * 的排队派发上限同源)。不能用一个 30 分钟的长定时器直接判定 —— Electron 被
+     * 系统挂起(合盖睡眠)期间没有任何事件,定时器一旦在唤醒后到期就立刻开火,
+     * 一次午休就能让看门狗中断一条其实还健康的 turn(SDK 连接可能仍活着)。
+     * 片尾判定被冻结过时走**完整重判**(armUpstreamResponseIdle)而不是直接续片:
+     * 唤醒后 turn / 工具 / 交互状态可能已经变了。
+     */
+    function armUpstreamResponseIdleSlice(): void {
+      const slice = Math.min(upstreamResponseIdleRemainingMs, CC_UPSTREAM_IDLE_SLICE_MS);
+      upstreamResponseIdleSliceStartedAt = Date.now();
       upstreamResponseIdleTimer = setTimeout(() => {
         upstreamResponseIdleTimer = null;
-        if (closed || !turnInFlight) return;
-        const idleMs = upstreamResponseIdleTimeoutMs;
-        const msSinceLast = upstreamResponseLastEventAt > 0
-          ? Date.now() - upstreamResponseLastEventAt
-          : null;
-        log.warn('upstream-response-idle watchdog tripped — interrupting current turn', {
-          idleMs,
-          sdkSessionId,
-          lastEventType: upstreamResponseLastEventType,
-          msSinceLastEvent: msSinceLast,
-          pendingToolIdsSize: pendingToolIds.size,
-          turnInFlight,
-        });
-        // Bridge 消费兜底 (Codex review 3535664420 / 3536509277): 若 watchdog 在
-        // bridge /compact turn 内触发(大上下文压缩容易超 idle 阈值), 语义与用户 Stop
-        // 一致:取消整条 "compact → real user message" 序列。只 inputQueue.clear()
-        // 不够,因为 SDK 可能已经 eager-drain 了后续真实用户输入;只 q.interrupt()
-        // 也可能只中断当前 /compact turn,让已 drain 的真实消息继续跑。这里走与
-        // abort() 相同的 close-and-rebuild 路径,并保留 rewind resume point 给下一次
-        // send 重建。
-        if (queuedBridgeTurns > 0 || activeBridgeRewindResumeAt !== undefined) {
-          log.warn('upstream-idle watchdog fired during bridge — closing query and preserving rewind resume point', {
-            queuedBridgeTurns,
-            queuedInput: inputQueue.pending,
-            activeBridgeRewindResumeAt,
+        const elapsed = Date.now() - upstreamResponseIdleSliceStartedAt;
+        if (elapsed > slice + CC_UPSTREAM_IDLE_SUSPEND_GAP_MS) {
+          log.info('upstream-response-idle watchdog skipped a suspended slice', {
+            sdkSessionId,
+            sliceMs: slice,
+            elapsedMs: elapsed,
           });
-          eventQueue.push({
-            type: 'error',
-            data: {
-              message:
-                `上游 API 单次响应已静默 ${Math.round(idleMs / 1000)}s, ` +
-                `已自动中断当前 turn 防止卡死。可以直接发下一条消息继续 ` +
-                `(已完成的 tool result 都保留)。`,
-              isTerminal: true,
-              reason: 'upstream_response_idle_timeout',
-              idleMs,
-              sdkSessionId,
-              lastEventType: upstreamResponseLastEventType,
-              msSinceLastEvent: msSinceLast,
-            },
-            source: 'claude-code',
-          });
-          queuedBridgeTurns = 0;
-          restoreBridgeAutoCompactSnapshot('upstream_response_idle_timeout');
-          autoCompactController?.onCompactCanceled('upstream_response_idle_timeout');
-          inputQueue.clear();
-          try {
-            inputQueue.end();
-          } catch (e) {
-            log.warn('upstream-idle watchdog during bridge: inputQueue.end threw', { error: String(e) });
-          }
-          canceledBridgeQueries.add(q);
-          try {
-            q.close();
-          } catch (e) {
-            log.warn('upstream-idle watchdog during bridge: q.close threw', { error: String(e) });
-          }
-          turnInFlight = false;
-          turnState.interruptRequested = false;
-          pendingToolIds.clear();
-          emitTurnBoundary('upstream_response_idle_timeout', takeBridgeSuppressedDoneData());
+          armUpstreamResponseIdle();
           return;
         }
+        upstreamResponseIdleRemainingMs -= Math.max(0, elapsed);
+        if (upstreamResponseIdleRemainingMs > 0) {
+          armUpstreamResponseIdleSlice();
+          return;
+        }
+        onUpstreamResponseIdleTimeout();
+      }, slice);
+      (upstreamResponseIdleTimer as unknown as { unref?: () => void }).unref?.();
+    }
+    function onUpstreamResponseIdleTimeout(): void {
+      if (closed || !turnInFlight) return;
+      const idleMs = upstreamResponseIdleTimeoutMs;
+      const msSinceLast = upstreamResponseLastEventAt > 0
+        ? Date.now() - upstreamResponseLastEventAt
+        : null;
+      log.warn('upstream-response-idle watchdog tripped — interrupting current turn', {
+        idleMs,
+        sdkSessionId,
+        lastEventType: upstreamResponseLastEventType,
+        msSinceLastEvent: msSinceLast,
+        pendingToolIdsSize: pendingToolIds.size,
+        turnInFlight,
+      });
+      // Bridge 消费兜底 (Codex review 3535664420 / 3536509277): 若 watchdog 在
+      // bridge /compact turn 内触发(大上下文压缩容易超 idle 阈值), 语义与用户 Stop
+      // 一致:取消整条 "compact → real user message" 序列。只 inputQueue.clear()
+      // 不够,因为 SDK 可能已经 eager-drain 了后续真实用户输入;只 q.interrupt()
+      // 也可能只中断当前 /compact turn,让已 drain 的真实消息继续跑。这里走与
+      // abort() 相同的 close-and-rebuild 路径,并保留 rewind resume point 给下一次
+      // send 重建。
+      if (bridgeStateActive()) {
+        const timedOutBridgeKind = activeBridgeKind;
+        const timedOutRewindResumeAt = activeBridgeRewindResumeAt;
+        log.warn('upstream-idle watchdog fired during bridge — closing query and preserving rewind resume point', {
+          queuedBridgeTurns,
+          queuedInput: inputQueue.pending,
+          activeBridgeRewindResumeAt,
+        });
         eventQueue.push({
           type: 'error',
           data: {
@@ -1571,21 +2147,55 @@ export class ClaudeCodeAgent extends BaseAgent {
           },
           source: 'claude-code',
         });
-        // 先关 turn-in-flight + 清 pending 再 interrupt: 这样 SDK drain 出 ResultMessage 时,
-        // translator 的 onTurnEnd 还会再清一次 (幂等), 但中间任何 message 都不会重新 arm timer。
+        restoreBridgeAutoCompactSnapshot('upstream_response_idle_timeout');
+        autoCompactController?.onCompactCanceled('upstream_response_idle_timeout');
+        const suppressedDoneData = takeBridgeSuppressedDoneData();
+        clearBridgeState();
+        inputQueue.clear();
+        try {
+          inputQueue.end();
+        } catch (e) {
+          log.warn('upstream-idle watchdog during bridge: inputQueue.end threw', { error: String(e) });
+        }
+        canceledBridgeQueries.add(q);
+        recordCanceledQueryClose(q, 'upstream idle watchdog during bridge');
         turnInFlight = false;
+        turnState.interruptRequested = false;
         pendingToolIds.clear();
-        // watchdog 上面已推过带 reason 的 terminal error, interrupt 后 drain 出的
-        // is_error result 不能再触发 translator 的失败兜底(双 error banner)。
-        turnState.interruptRequested = true;
-        turnState.interruptGeneration = turnState.generation;
-        void q.interrupt().catch((e) => {
-          // interrupt 没发出去 → 不会有被打断的 result 来消费标记, 残留会错误
-          // 抑制下一真实 turn 的 is_error 兜底 —— 立即回收。
-          turnState.interruptRequested = false;
-          log.warn('upstream-response-idle watchdog: interrupt threw', { error: String(e) });
-        });
-      }, upstreamResponseIdleTimeoutMs);
+        preserveBridgeRetryTarget(timedOutBridgeKind, timedOutRewindResumeAt);
+        emitTurnBoundary('upstream_response_idle_timeout', suppressedDoneData);
+        return;
+      }
+      eventQueue.push({
+        type: 'error',
+        data: {
+          message:
+            `上游 API 单次响应已静默 ${Math.round(idleMs / 1000)}s, ` +
+            `已自动中断当前 turn 防止卡死。可以直接发下一条消息继续 ` +
+            `(已完成的 tool result 都保留)。`,
+          isTerminal: true,
+          reason: 'upstream_response_idle_timeout',
+          idleMs,
+          sdkSessionId,
+          lastEventType: upstreamResponseLastEventType,
+          msSinceLastEvent: msSinceLast,
+        },
+        source: 'claude-code',
+      });
+      // 先关 turn-in-flight + 清 pending 再 interrupt: 这样 SDK drain 出 ResultMessage 时,
+      // translator 的 onTurnEnd 还会再清一次 (幂等), 但中间任何 message 都不会重新 arm timer。
+      turnInFlight = false;
+      pendingToolIds.clear();
+      // watchdog 上面已推过带 reason 的 terminal error, interrupt 后 drain 出的
+      // is_error result 不能再触发 translator 的失败兜底(双 error banner)。
+      turnState.interruptRequested = true;
+      turnState.interruptGeneration = turnState.generation;
+      void q.interrupt().catch((e) => {
+        // interrupt 没发出去 → 不会有被打断的 result 来消费标记, 残留会错误
+        // 抑制下一真实 turn 的 is_error 兜底 —— 立即回收。
+        turnState.interruptRequested = false;
+        log.warn('upstream-response-idle watchdog: interrupt threw', { error: String(e) });
+      });
     }
     function noteUpstreamResponseActivity(eventType: string): void {
       upstreamResponseLastEventType = eventType;
@@ -1625,6 +2235,45 @@ export class ClaudeCodeAgent extends BaseAgent {
       return true;
     }
 
+    // Rewind preview/commit intentionally skip injecting /compact because they
+    // are control operations, not product turns. If a blocked model/window
+    // switch crossed the threshold while the old Query was retired, leave the
+    // cancellation rebuild tombstone armed so the next send can inject the
+    // compact bridge on a fresh Query before accepting user input.
+    function shouldRearmAutoCompactAfterRewindControl(): boolean {
+      const snapshot = autoCompactController?.getLatestSnapshot();
+      const threshold = autoCompactController?.getCurrentThresholdPct();
+      return snapshot !== null && snapshot !== undefined &&
+        threshold !== undefined && snapshot.ratio >= threshold / 100;
+    }
+
+    function queueAutoCompactBridge(kind: ActiveBridgeKind, resumeAt?: string): boolean {
+      const queued = triggerAutoCompactIfNeeded();
+      if (!queued) return false;
+      bridgeCompactUsageSnapshot = autoCompactController?.getLatestSnapshot() ?? null;
+      activeBridgeKind = kind;
+      if (kind === 'rewind') activeBridgeRewindResumeAt = resumeAt;
+      queuedBridgeTurns += 1;
+      log.debug('rebuild: bridge /compact injected', {
+        bridgeKind: kind,
+        queuedBridgeTurns,
+        activeBridgeRewindResumeAt,
+      });
+      return true;
+    }
+
+    function preserveBridgeRetryTarget(
+      kind: ActiveBridgeKind | null,
+      rewindResumeAt: string | undefined,
+    ): void {
+      if (kind === 'rewind' && rewindResumeAt !== undefined) {
+        pendingRewindTo = rewindResumeAt;
+      } else if (kind === 'cancellation') {
+        continuationCancellationRequiresQueryRebuild = true;
+      }
+      // Caller may preserve a retry target before clearing this state.
+    }
+
     // 当前 session 的 one-shot tip 状态 (turn-start status 用):
     //  - displayed: id → 已展示次数 (≥ 该 tip 的 guarantees.length 时退出抽样池)
     //  - pity:      id → 自上次展示以来候选轮次 (pickTurnStartStatus 内部自增 / 触发保底)
@@ -1648,6 +2297,19 @@ export class ClaudeCodeAgent extends BaseAgent {
       const finalResumeAt = extra?.fresh ? undefined : (extra?.resumeSessionAt ?? baseResumeAt);
       const finalFork = extra?.fresh ? false : (extra?.forkSession ?? baseFork);
       const mcpServers = buildMcpServers();
+      // ── 智能通讯录两态段: 紧跟 buildMcpServers 求值, prompt 状态与本次 build
+      // 实际生效的工具面对齐(rewind/fresh 重建同步跟随), 三种去向:
+      //   host 有效状态 enabled 且 cindy_contacts 真的注册了 → 使用规范段;
+      //   disabled(功能未开) → 可选功能告示段(邀请开启);
+      //   其余(unavailable/工作区覆盖禁用/注册被跳过/remote/未接线) → 不注入 —
+      //   既不指挥模型调不可达工具, 也不邀请用户去开一个已开着的开关。
+      const contactsRules = (() => {
+        if (opts.remoteHostId) return '';
+        const state = this.deps.getContactsPromptState?.({ workingDir: opts.workingDir });
+        if (state === 'disabled') return CONTACTS_RULES_DISABLED;
+        if (state !== 'enabled') return '';
+        return registeredMcpServerNames.has('cindy_contacts') ? CONTACTS_RULES_ENABLED : '';
+      })();
       // resume 优先用当前的 sdkSessionId (rewind 重启时它指向上一轮 SDK 给的 id);
       // 缺省回到 startSession 入参的 resumeSessionId (新会话首次起 query 时用)。
       let resumeSdkSid = sdkSessionId ?? configuredResumeSessionId;
@@ -1679,12 +2341,27 @@ export class ClaudeCodeAgent extends BaseAgent {
           remoteHostId: opts.remoteHostId,
           sessionId: opts.sessionId,
         });
-        // 远端真上游由 host 经 runtimeConfig.remoteEndpoint 提供(model-access 下发的
-        // 网关 endpoint)。host 定义了该字段但值为空 = 网关凭据尚未就绪 / 已失效——
-        // 此时 env-builder 会回落到本地 endpoint,下面的 loopback guard 虽也能拦,
-        // 但错误归因是「内部错误」,按它排查会走进死胡同。这里先按真实原因拒绝。
-        // (`!== undefined` 区分未注入该字段的旧 host:保持其原有回落行为。)
+        // 已知覆盖缺口(codex-connector review P1):远端会话的转录在远端 daemon
+        // 磁盘、CLI 流量直连远端 endpoint(remoteEnv.ANTHROPIC_BASE_URL),本地
+        // jsonl 归一化钩子与本地 compat-proxy 响应流改写都拦不到。remote cc 是
+        // MVP(rewind/fork 均 throw,撞车主触发路径在远端不可用),但远端 kimi
+        // 会话一旦撞车(如中断后可见数回落)将无法自愈,持续腐蚀到会话结束。
+        // 修复需扩展 cc-mgr wire protocol + 跨包共享归一化逻辑,列为 follow-up。
+        if (resumeSdkSid) {
+          log.warn(
+            'claude-code: remote cc session not covered by kimi tool-id normalize/rewrite defenses (transcript on remote daemon, CLI bypasses local proxy); a kimi mint collision on this session cannot self-heal',
+            { remoteHostId: opts.remoteHostId, sessionId: opts.sessionId, resumeSdkSid },
+          );
+        }
+        // 网关路径(remoteRoute 为 null,即会话有效路由是 XD 网关)才依赖
+        // runtimeConfig.remoteEndpoint:host 定义了该字段但值为空 = 网关凭据尚未就绪 /
+        // 已失效,env-builder 会回落到本地 endpoint(下面 loopback guard 虽能拦,但错误
+        // 归因成「内部错误」误导排查),这里先按真实原因拒绝。(`!== undefined` 区分未注入
+        // 该字段的旧 host,保持其原有回落行为。)
+        // route 路径(native OAuth / 自定义供应商)的 endpoint 已由 resolveRemoteClaudeRoute
+        // 覆盖成供应商真上游,与网关 endpoint 就绪与否无关,跳过本判。
         if (
+          !remoteRoute &&
           this.deps.runtimeConfig.remoteEndpoint !== undefined &&
           !this.deps.runtimeConfig.remoteEndpoint.trim()
         ) {
@@ -1704,7 +2381,9 @@ export class ClaudeCodeAgent extends BaseAgent {
         // startParams shape 跟 sdkQuery options 同源 (cwd / model / env / mcpServers /
         // permissionMode / systemPrompt / additionalDirectories), JSON 序列化时
         // canUseTool / pathToClaudeCodeExecutable / stderr / hooks 等 callback/path
-        // 字段自动 strip; SDK 在 daemon 端用默认行为继续跑。
+        // 字段不能序列化。权限回调由反向 RPC 承接；host capability route 则转成
+        // 下方 JSON-safe toolGuards，由 daemon 重建 PreToolUse hook，避免远端
+        // settings allow 规则或 bypassPermissions 绕过来源选择。
         //
         // mcpServers: 远端 cc MVP 只支持 stdio / sse / http 三种 process-transport
         // server (plain JSON 可跨进程)。in-process SDK MCP (type='sdk' + 闭包 instance)
@@ -1729,13 +2408,32 @@ export class ClaudeCodeAgent extends BaseAgent {
           const dropped = Object.keys(mcpServers).filter((k) => !(k in remoteMcpServers));
           log.warn('cc remote: dropping in-process MCP servers (MVP not supported)', { dropped });
         }
-        // 远端会话实际只装到 remoteMcpServers 这一批, 被 filter 掉的 in-process server
-        // 在远端不存在 —— 审批归属必须按远端真实清单判, 否则策略会对远端根本不可能
-        // 出现的 server 名做判定。
-        registeredMcpServerNames = new Set(Object.keys(remoteMcpServers ?? {}));
+        // 远端会话的 server 基线是 remoteMcpServers (被 filter 掉的 in-process server
+        // 在远端不存在); 但 factory 还可能注入 host 侧 http server (协同恢复通道),
+        // 所以审批归属快照不在此处定稿, 挪到 factory 调用后按 startParams 重算。
         // 计划模式开启时远端 SDK 同样跑 plan; 读 mutable 值让 rewind 重建也拿到当前档。
-        const remotePermissionMode = extra?.permissionMode ?? effectiveSdkPermissionMode();
+        const requestedRemotePermissionMode = extra?.permissionMode ?? effectiveSdkPermissionMode();
+        const remoteHasMcpServers = Object.keys(remoteMcpServers ?? {}).length > 0;
+        // effectiveSdkPermissionMode() is computed from the local registration snapshot,
+        // which still includes in-process SDK MCPs that were just filtered out above.
+        // Restore native OAuth Auto when the remote query has no serializable MCP surface;
+        // the Desktop factory will still downgrade it before opening the query if it later
+        // injects a host HTTP MCP (for example the collaboration bridge).
+        const remotePermissionMode =
+          requestedRemotePermissionMode === 'default'
+          && mutablePermissionMode === 'auto'
+          && !mutablePlanMode
+          && !planTurnActive
+          && !nativeAutoReviewUnavailable
+          && mutableAutoReviewCredentialMode === 'oauth-bearer'
+          && !remoteHasMcpServers
+            ? 'auto'
+            : requestedRemotePermissionMode;
         sdkInPlanMode = remotePermissionMode === 'plan';
+        const remoteToolGuards = [
+          ...buildClaudeRemoteToolGuards(this.deps.capabilityRouting),
+          ...buildClaudeRemoteOrcaCallerGuards(vo.orcaRole === 'worker'),
+        ];
 
         const startParams: Record<string, unknown> = {
           cwd: opts.workingDir,
@@ -1752,10 +2450,15 @@ export class ClaudeCodeAgent extends BaseAgent {
           // cc-manager 的 QueryStartParams 已原生支持 allowedTools; 传副本避免 RPC
           // 序列化前后任一侧原地改写 session 快照。
           ...(claudeAllowedTools ? { allowedTools: [...claudeAllowedTools] } : {}),
+          ...(remoteToolGuards.length > 0
+            ? { toolGuards: remoteToolGuards }
+            : {}),
           systemPrompt: (() => {
             const appendText = [
               MAKER_SYSTEM_PROMPT_APPEND,
               makerMemoryRules,
+              contactsRules,
+              ghostRosterPrompt,
               hostSystemPrompt,
               makerMemoryIndex,
               opts.userPrompt,
@@ -1802,7 +2505,15 @@ export class ClaudeCodeAgent extends BaseAgent {
         const remoteQuery = await this.deps.remoteCcQueryFactory({
           remoteHostId: opts.remoteHostId,
           sessionId: opts.sessionId,
+          ...(opts.sessionInstanceId ? { sessionInstanceId: opts.sessionInstanceId } : {}),
           startParams,
+          // 协同身份以 session 自己的 vendorOptions 为准 (worker 首次创建时
+          // DB 标记尚未写入, host 现场查库会拿到空角色)。见 base-agent.ts
+          // remoteCcQueryFactory 的 vendorOptions 注释。
+          vendorOptions: vo,
+          // per-session Maker Memory 开关 — host 据此决定是否把 cindy_memory
+          // 以 http 形态注进远端 startParams.mcpServers (cc-remote-mcp.ts)。
+          makerMemoryEnabled,
           onApprovalRequest: async (rawParams: unknown) => {
             // 110s timeout — must respond before daemon's 120s server-request timeout.
             // On timeout, dismiss the pending interaction (clears UI) and reject to
@@ -1850,38 +2561,89 @@ export class ClaudeCodeAgent extends BaseAgent {
               if (decision.kind !== 'ask_user_question') {
                 return { kind: 'ask_user_question', answers: {} };
               }
+              // 远端澄清同样改变本轮授权范围(用户把范围从 src/ 收窄到 build/)→ 与本地 AskUserQuestion
+              // 分支一致地并入有界 review intent 并清空裁决缓存,否则后续工具仍按澄清前的意图裁决、
+              // 越界操作可能被静默允许(codex 报)。
+              setAutoReviewIntent(composeAutoReviewIntentWithClarification(
+                currentAutoReviewIntent,
+                Object.entries(decision.answers ?? {}).map(([question, answer]) => ({ question, answer })),
+              ));
               return { kind: 'ask_user_question', answers: decision.answers };
             }
             if (params.kind === 'plan_review') {
               const planInput = (params.input ?? {}) as { plan?: string; planFilePath?: string };
+              const plan = params.plan ?? planInput.plan ?? '';
+              // 审批等待期间用户可能继续发消息(setAutoReviewIntent 会覆盖 currentAutoReviewIntent),
+              // 实施阶段的审查意图必须锚在**发起计划时**的原始请求上,不能掺进审批期间的内部跟进
+              // (copilot 报;与本地 ExitPlanMode 分支的 planRequestAutoReviewIntent 同款)。
+              const planRequestAutoReviewIntent = currentAutoReviewIntent;
               const decision = await dispatchWithTimeout({
                 kind: 'plan_review',
                 requestId: params.requestId,
-                plan: params.plan ?? planInput.plan ?? '',
+                plan,
                 planFilePath: params.planFilePath ?? planInput.planFilePath,
               });
               if (decision.kind !== 'plan_review') {
                 return { kind: 'plan_review', behavior: 'deny', reason: 'resolver kind mismatch' };
+              }
+              if (decision.behavior === 'allow') {
+                appendActiveCapabilitySelectionText(
+                  capabilitySelectionAddedByPlanEdit(
+                    this.deps.capabilityRouting,
+                    'claude-code',
+                    plan,
+                    decision.editedPlan,
+                  ),
+                );
+                // 远端计划获批同样要把审查意图更新成"原始意图 + 最终获批计划"—— 与本地 ExitPlanMode 分支
+                // 一致,否则后续实施工具的轻量 reviewer 仍按批准前的过期意图裁决(codex 报)。
+                setAutoReviewIntent(composeAutoReviewIntentWithApprovedPlan(
+                  planRequestAutoReviewIntent,
+                  decision.editedPlan ?? plan,
+                ));
+              } else if (!decision.dismissed) {
+                appendActiveCapabilitySelectionText(decision.reason);
               }
               return {
                 kind: 'plan_review',
                 behavior: decision.behavior,
                 editedPlan: decision.editedPlan,
                 reason: decision.reason,
+                dismissed: decision.dismissed,
               };
             }
             // permission kind
-            // 没接 resolver → 与本地 canUseTool 同款 fail-closed: 只放行已知只读工具,
-            // 其余(含未知工具与所有 MCP 工具)一律 deny。这里过去 return allow, 一个
-            // misconfigured / 裸 handle 的远端会话可以在无人在场时跑破坏性工具 ——
-            // 本地那侧不允许的事, 远端没有理由更宽。
-            if (!interactionResolver) {
-              const remoteTool = params.toolName ?? '';
-              if (isReadOnlyClaudeTool(remoteTool)) {
+            const remoteToolName = params.toolName ?? '';
+            // Remote cc-manager checks the route with authoritative scoped MCP
+            // provenance before forwarding canUseTool. Old managers do not add
+            // this attestation, so retain the desktop-side fail-closed fallback.
+            const capabilityRoute = params.metadata?.capabilityRoutingChecked === true
+              ? undefined
+              : deniedCapabilityRoute(remoteToolName);
+            if (capabilityRoute) {
+              log.warn('cc remote: downstream MCP source denied by host capability route', {
+                toolName: remoteToolName,
+                capabilityId: capabilityRoute.capabilityId,
+                replacement: capabilityRoute.replacement?.id,
+              });
+              return {
+                kind: 'permission',
+                behavior: 'deny',
+                reason: capabilityRoute.replacement
+                  ? `This downstream source was not selected. Use Cindy capability ${capabilityRoute.replacement.id}.`
+                  : 'This downstream source was not selected.',
+              };
+            }
+            // 没接 resolver 时，Auto 的内置工具仍可由本地规则/轻量 reviewer 完成
+            // allow 或 block；只有真正 ask 才需要 UI。非 Auto 与 MCP 保持 fail-closed。
+            const canReviewRemoteWithoutUi =
+              mutablePermissionMode === 'auto' && !remoteToolName.startsWith('mcp__');
+            if (!interactionResolver && !canReviewRemoteWithoutUi) {
+              if (isReadOnlyClaudeTool(remoteToolName)) {
                 return { kind: 'permission', behavior: 'allow' };
               }
               log.warn('cc remote: approval without interactionResolver → fail-closed deny', {
-                tool: remoteTool || 'unknown',
+                tool: remoteToolName || 'unknown',
               });
               return {
                 kind: 'permission',
@@ -1889,16 +2651,48 @@ export class ClaudeCodeAgent extends BaseAgent {
                 reason: 'no interaction resolver attached; denying non-read-only tool (fail-closed)',
               };
             }
-            // 远端会话走同一份 host MCP 策略 —— 否则 SSH 会话里可信 server 又要逐次
-            // 弹窗, prompt-each-time 的"禁止持久化授权"保护也整套缺失。
-            const remoteMcpPolicy = classifyMcpApprovalPolicy(
-              params.toolName ?? '',
-              params.input ?? {},
-            );
-            if (remoteMcpPolicy === 'auto-approve') {
+            if (mutablePermissionMode === 'bypassPermissions') {
               return { kind: 'permission', behavior: 'allow' };
             }
-            const remoteForcePrompt = remoteMcpPolicy === 'prompt-each-time';
+            // 远端会话走同一份 host MCP 策略 —— 否则 SSH 会话里可信 server 又要逐次
+            // 弹窗, prompt-each-time 的"禁止持久化授权"保护也整套缺失。
+            const remoteTurnPolicyForcePrompt = forceTurnConfirmation(
+              remoteToolName || 'unknown',
+              params.input ?? {},
+            );
+            const remoteMcpPolicy = classifyMcpApprovalPolicy(remoteToolName, params.input ?? {});
+            let remoteForcePrompt = remoteTurnPolicyForcePrompt;
+            if (
+              mutablePermissionMode === 'auto'
+              && remoteToolName
+              && !remoteToolName.startsWith('mcp__')
+            ) {
+              const autoDecision = await reviewAutoAction(
+                normalizeBuiltinToolForAutoReview(remoteToolName, params.input ?? {}),
+                [opts.workingDir].filter(
+                  (d): d is string => typeof d === 'string' && d.length > 0,
+                ),
+                'linux',
+              );
+              if (!remoteTurnPolicyForcePrompt && autoDecision.verdict === 'allow') {
+                return { kind: 'permission', behavior: 'allow' };
+              }
+              if (!remoteTurnPolicyForcePrompt && autoDecision.verdict === 'block') {
+                // 与本地分支同口径:审阅器故障要提示一次,模型判定保持静默。
+                if (autoDecision.unavailable) autoReviewUnavailableNotice.notify();
+                return {
+                  kind: 'permission',
+                  behavior: 'deny',
+                  reason: autoDecision.reason ?? 'Cindy Auto Review blocked this action. Choose a safer alternative.',
+                };
+              }
+              remoteForcePrompt = true;
+            } else {
+              if (remoteMcpPolicy === 'auto-approve' && !remoteTurnPolicyForcePrompt) {
+                return { kind: 'permission', behavior: 'allow' };
+              }
+              remoteForcePrompt = remoteForcePrompt || remoteMcpPolicy === 'prompt-each-time';
+            }
             const decision = await dispatchWithTimeout({
               kind: 'permission',
               requestId: params.requestId,
@@ -1928,7 +2722,36 @@ export class ClaudeCodeAgent extends BaseAgent {
               reason: decision.reason,
             };
           },
+          // 订阅 token 到期续命(远端版,对齐本地 SDK options 的 getOAuthToken 回调,
+          // 见 buildQuery 本地分支):远端 cc 中途 401 → daemon 发 oauth/refresh 反向
+          // RPC → 这里向 host 要新 token。接线条件与本地同款:env 实际带订阅 token 且
+          // host 实现了强刷 —— 网关 key / 自定义供应商会话绝不接,避免 API-key 401 被
+          // 误引导去刷订阅 token。刷新语义(失败基线 / 原地写回单一事实源)与本地共用
+          // refreshSubscriptionTokenInPlace。
+          ...(remoteEnv?.CLAUDE_CODE_OAUTH_TOKEN && this.deps.auth.getFreshSubscriptionToken
+            ? {
+                onOAuthRefresh: async (): Promise<unknown> => ({
+                  token: await this.refreshSubscriptionTokenInPlace(remoteEnv),
+                }),
+              }
+            : {}),
         });
+        // factory 可能注入 host 侧 http server (远端 cc 协同恢复通道的
+        // cindy_orca / orca_worker_bridge, 见 maker-host remoteCcQueryFactory),
+        // 审批归属快照必须按注入后的最终清单定稿, 否则 canUseTool 的
+        // resolveMcpToolTarget 认不出 orca server 名, 归属判定缺失。
+        hostMcpServerNames = new Set(
+          Object.keys((startParams as { mcpServers?: Record<string, unknown> }).mcpServers ?? {}),
+        );
+        registeredMcpServerNames = hostMcpServerNames;
+        nonHarnessMcpServerNames = hostMcpServerNames;
+        // The factory may inject host HTTP MCPs and downgrade OAuth Auto to
+        // default before opening cc-manager. Track the post-factory mode so a
+        // later SDK init cannot repeat that downgrade and turn a harmless
+        // control-RPC failure into a fatal close.
+        const finalRemotePermissionMode =
+          (startParams.permissionMode as SdkPermissionMode | undefined) ?? remotePermissionMode;
+        sdkInPlanMode = finalRemotePermissionMode === 'plan';
         // 记入 closure: handle.close / U2 兜底需要 await remoteQuery.close()。
         activeRemoteQuery = remoteQuery as unknown as { close: () => Promise<void>; detach?: () => Promise<void> };
 
@@ -1964,6 +2787,7 @@ export class ClaudeCodeAgent extends BaseAgent {
           }
         })().catch(() => undefined);
 
+        if (finalRemotePermissionMode === 'auto') nativeAutoQueries.add(remoteQuery);
         return remoteQuery;
       }
 
@@ -1990,7 +2814,36 @@ export class ClaudeCodeAgent extends BaseAgent {
               resumeSdkSid,
               workingDir: opts.workingDir,
             });
-          } else if (outcome === 'missing') {
+          }
+          // kimi 系 tool_call id 归一化: moonshot 按可见历史铸造 `${name}_${index}`
+          // id, rewind/中断造成的可见数回落会让新铸 id 与历史撞车, CLI 的
+          // ensureToolResultPairing 随即将重复 id 的 tool exchange 整段丢弃并以
+          // "(no content)" 占位 user 消息 —— 模型看到"自己的工具调用被阻止 +
+          // 用户连发空消息"进入空转(2026-07-31 kimi-k3 实测)。转录就位后、spawn
+          // 前做一次幂等归一化(重复 id 去重 + 数字后缀移出铸造空间), 纯 Anthropic
+          // 会话预扫不命中、零解析开销。详见 jsonl-tool-id-normalize.ts 头注。
+          // 'target-key-inexact' 时 relocation 无法定位 CLI 转码目录, 但全局扫描
+          // 找到的最新副本大概率正是 CLI 要读的转录, 归一化它同样是正收益。
+          if (outcome !== 'missing' && resumeSdkSid) {
+            const transcriptFile = await findClaudeSessionJsonl(
+              resumeSdkSid,
+              opts.workingDir,
+              path.join(claudeConfigDir, 'projects'),
+            );
+            if (transcriptFile) {
+              const normalized = await normalizeClaudeSessionJsonlToolIds(transcriptFile);
+              if (normalized.changed) {
+                log.info('resume transcript tool ids normalized', {
+                  resumeSdkSid,
+                  dedupedBlocks: normalized.dedupedBlockCount,
+                  offsetBlocks: normalized.offsetBlockCount,
+                  duplicateIds: normalized.duplicateIdCount,
+                  backupPath: normalized.backupPath,
+                });
+              }
+            }
+          }
+          if (outcome === 'missing') {
             const cleared = await clearInvalidResumeSession(resumeSdkSid, 'transcript_preflight');
             if (cleared) {
               // 本地 CLI 没有转录就不可能恢复。spawn 前转 fresh，当前用户消息尚未
@@ -2017,7 +2870,7 @@ export class ClaudeCodeAgent extends BaseAgent {
       // 计划模式开启时 SDK 跑 plan; 读 mutable 值让 rewind/fork 重建拿到当前档而非创建时快照。
       const sdkStartPermissionMode = extra?.permissionMode ?? effectiveSdkPermissionMode();
       sdkInPlanMode = sdkStartPermissionMode === 'plan';
-      return sdkQuery({
+      const query = sdkQuery({
         prompt: inputQueue as unknown as Parameters<typeof sdkQuery>[0]['prompt'],
         options: {
           abortController,
@@ -2031,21 +2884,25 @@ export class ClaudeCodeAgent extends BaseAgent {
           includePartialMessages: true,
           ...thinkingOpts,
           pathToClaudeCodeExecutable: binaryPath,
-          // systemPrompt 六段拼接 — SDK 先输出 preset, 再追加 append 字段。
+          // systemPrompt 七段拼接(含 SDK 内嵌 preset)— SDK 先输出 preset, 再追加 append 字段。
           //   [1] cc preset                  — Claude SDK 自带 (内嵌不可见)
           //   [2] MAKER_SYSTEM_PROMPT_APPEND — maker engine (system-prompt-append.md)
           //   [3] makerMemoryRules           — maker memory 写入规范 (条件式: makerMemoryEnabled
           //                                    且 manager 注入成功才注入)
-          //   [4] hostSystemPrompt           — host runtime (runtimeConfig.systemPrompt)
-          //   [5] makerMemoryIndex           — 当前 workdir MEMORY.md 内容 (条件式, 紧邻 userPrompt
+          //   [4] contactsRules              — 智能通讯录两态段 (条件式: host 注入了
+          //                                    getContactsPromptState 才有, 开/关各一份静态文案)
+          //   [5] hostSystemPrompt           — host runtime (runtimeConfig.systemPrompt)
+          //   [6] makerMemoryIndex           — 当前 workdir MEMORY.md 内容 (条件式, 紧邻 userPrompt
           //                                    高优先级, 启动时快照 — 跟 userPrompt 同语义)
-          //   [6] opts.userPrompt            — per-call 用户级 (renderer 本地 storage,
+          //   [7] opts.userPrompt            — per-call 用户级 (renderer 本地 storage,
           //                                    每次 startSession 透传, 优先级最高)
           // 空段被 .filter 跳过 (.md 文件为空 / userPrompt 为空 = 不 append).
           systemPrompt: (() => {
             const appendText = [
               MAKER_SYSTEM_PROMPT_APPEND,
               makerMemoryRules,
+              contactsRules,
+              ghostRosterPrompt,
               hostSystemPrompt,
               makerMemoryIndex,
               opts.userPrompt,
@@ -2063,6 +2920,21 @@ export class ClaudeCodeAgent extends BaseAgent {
           ...(finalResumeAt ? { resumeSessionAt: finalResumeAt } : {}),
           ...(finalFork ? { forkSession: true } : {}),
           env,
+          ...(this.deps.registerLocalAgentProcess
+            ? {
+                spawnClaudeCodeProcess: (spawnOptions) =>
+                  spawnObservedClaudeProcess({
+                    spawnOptions,
+                    registerProcess: (pid) =>
+                      this.deps.registerLocalAgentProcess?.({
+                        pid,
+                        kind: 'claude',
+                        role: 'task-host',
+                      }),
+                    onStderr: vo.onStderrLine as ((line: string) => void) | undefined,
+                  }),
+              }
+            : {}),
           // 订阅 token 到期续命回调 —— 仅当本次 spawn 实际注入了订阅 OAuth token
           // (oauth-spawn, 见 desktop auth-adapters getAuthEnv)且 host 实现了强刷时接线。
           // cc 侧 turn 中途 401 会发 oauth_token_refresh control 请求, SDK 调本回调向
@@ -2078,25 +2950,8 @@ export class ClaudeCodeAgent extends BaseAgent {
           // 所以即使回调超时返回 null, 第二条路仍能捡到新 token, 排障时两条都要看。
           ...(env.CLAUDE_CODE_OAUTH_TOKEN && this.deps.auth.getFreshSubscriptionToken
             ? {
-                getOAuthToken: async (): Promise<string | null> => {
-                  try {
-                    // env.CLAUDE_CODE_OAUTH_TOKEN = 本会话持有 token 的**单一事实源**:
-                    // 作为失败基线传给 host(库已被后台预续期换代时直接返回库值,不再
-                    // 消耗一次轮换);拿到新 token 后原地写回 env —— rewind/fork 重建
-                    // buildQuery 复用同一 env 引用,新子进程直接以最新 token spawn,
-                    // 不会拿旧 token 起跑立即 401 再白白强刷一枚好 token。
-                    const fresh = await this.deps.auth.getFreshSubscriptionToken!(
-                      env.CLAUDE_CODE_OAUTH_TOKEN,
-                    );
-                    if (fresh) env.CLAUDE_CODE_OAUTH_TOKEN = fresh;
-                    return fresh ?? null;
-                  } catch (e) {
-                    log.warn('getOAuthToken callback failed; returning null (cc will surface auth error)', {
-                      error: e instanceof Error ? e.message : String(e),
-                    });
-                    return null;
-                  }
-                },
+                getOAuthToken: (): Promise<string | null> =>
+                  this.refreshSubscriptionTokenInPlace(env),
               }
             : {}),
           // 第一方只读工具由 host 精确列名, 直接走 SDK public allowlist, 避免
@@ -2125,12 +2980,16 @@ export class ClaudeCodeAgent extends BaseAgent {
               }
             : {}),
           ...(mcpServers ? { mcpServers } : {}),
-          // hooks 是 host 注入的 SDK in-process hook 回调表 (PreToolUse / PostToolUse / ...).
-          // maker-core 不持有任何 hook 实现, 这里只透传 deps.claudeHooks; undefined 时
-          // 跳过字段, 让 SDK 走默认 (= 无 hook). 详见 AgentDeps.claudeHooks 文档。
-          ...(this.deps.claudeHooks ? { hooks: this.deps.claudeHooks } : {}),
+          // Host hooks keep their normal behavior, while the harness adapter
+          // prepends its narrow capability-route guard. Both run in-process
+          // before Claude's permission mode (including Full access).
+          ...(Object.keys(localClaudeHooks).length > 0
+            ? { hooks: localClaudeHooks }
+            : {}),
         },
       });
+      if (sdkStartPermissionMode === 'auto') nativeAutoQueries.add(query);
+      return query;
     };
 
     // ── 死 handle 终结器 —— U2 (远端 daemon 突死) 与 crash (SDK 流异常) 共用 ──
@@ -2142,13 +3001,16 @@ export class ClaudeCodeAgent extends BaseAgent {
     // closed=true 后 finally 的 eventQueue.end() 收尾 → Session 自动 close → 下次 send
     // 走 IPC lazy create-session 重建 handle。
     function teardownDeadHandle(logLabel: string): void {
+      // Provider death is not a successful user cancellation. Session status
+      // and the queued terminal error/done must decide observer settlement.
+      discardActiveContinuation(logLabel);
       turnInFlight = false;
       // handle 死透 → 后续没有排队 turn 可跑, counter 归零避免残留污染下一 handle 重建
       // (虽然 closed=true + inputQueue.end 已经让新消息进不来, 归零是防御性一致)
-      queuedBridgeTurns = 0;
-      activeBridgeRewindResumeAt = undefined;
+      clearBridgeState();
       pendingToolIds.clear();
       runningBackgroundTasks.clear();
+      terminalBackgroundTaskIds.clear();
       closed = true;
       try { dismissAllPending('session_closed', 'deny'); } catch (e) {
         log.warn(`${logLabel}: dismissAllPending threw`, { error: String(e) });
@@ -2172,6 +3034,13 @@ export class ClaudeCodeAgent extends BaseAgent {
     }
 
     let bridgeSuppressedDoneData: Record<string, unknown> | undefined;
+    function clearBridgeState(): void {
+      queuedBridgeTurns = 0;
+      activeBridgeKind = null;
+      activeBridgeRewindResumeAt = undefined;
+      bridgeCompactUsageSnapshot = null;
+      bridgeSuppressedDoneData = undefined;
+    }
     function takeBridgeSuppressedDoneData(): Record<string, unknown> | undefined {
       const data = bridgeSuppressedDoneData;
       bridgeSuppressedDoneData = undefined;
@@ -2182,16 +3051,62 @@ export class ClaudeCodeAgent extends BaseAgent {
       bridgeSuppressedDoneData = { ...(data as Record<string, unknown>) };
     }
 
-    function emitTurnBoundary(reason: string, doneData?: Record<string, unknown>): void {
+    function emitTurnBoundary(
+      reason: string,
+      doneData?: Record<string, unknown>,
+      trackContinuationTerminal = false,
+    ): boolean {
       eventQueue.push({
         type: 'status',
         data: { status: 'Done', ...usageTracker.snapshot(), isRunning: false },
         source: 'claude-code',
       });
-      eventQueue.push({ type: 'done', data: { ...(doneData ?? {}), reason }, source: 'claude-code' });
+      const doneEvent: AgentEvent = {
+        type: 'done',
+        data: { ...(doneData ?? {}), reason },
+        source: 'claude-code',
+      };
+      if (trackContinuationTerminal) {
+        continuationTerminalBoundaryEvents.add(doneEvent);
+        pendingContinuationTerminalBoundaries += 1;
+      }
+      const accepted = eventQueue.push(doneEvent);
+      if (trackContinuationTerminal) {
+        if (!accepted) {
+          continuationTerminalBoundaryEvents.delete(doneEvent);
+          pendingContinuationTerminalBoundaries = Math.max(
+            0,
+            pendingContinuationTerminalBoundaries - 1,
+          );
+        }
+      }
+      return accepted;
     }
 
     const canceledBridgeQueries = new WeakSet<Query>();
+    // RemoteQuery.close() is asynchronous. User Stop records the in-flight
+    // close promise here so an immediate send/rewind can wait for the remote
+    // session to become dead before creating its replacement Query.
+    const canceledQueryClosePromises = new WeakMap<Query, Promise<void>>();
+    function recordCanceledQueryClose(query: Query, reason: string): void {
+      let closePromise: Promise<void>;
+      try {
+        closePromise = Promise.resolve(query.close());
+      } catch (error) {
+        log.warn(`${reason}: q.close threw`, { error: String(error) });
+        closePromise = Promise.reject(error);
+      }
+      canceledQueryClosePromises.set(query, closePromise);
+      // Attach a handler immediately so a remote close rejection cannot
+      // become unhandled before rebuild awaits the recorded promise.
+      void closePromise.catch((error) => {
+        log.warn(`${reason}: q.close rejected`, { error: String(error) });
+      });
+    }
+    // Despite the historical name, this per-query fence also marks an old
+    // Query closed after user Stop cancels an awaiting continuation. Its
+    // forward loop must silently discard any buffered tail until the next
+    // fresh Query is installed.
     // Rewind commit 会 close 当前 Query,但它的 forward loop 可能晚于下一次 send 的
     // rebuild 完成才退出。pendingRewindTo 是共享状态,会在新 q 接管后清掉;旧 q 自身仍
     // 需要一个 per-query 标记,否则迟到的 stream_end/abort 会被误判为当前新 q 的崩溃。
@@ -2215,8 +3130,246 @@ export class ClaudeCodeAgent extends BaseAgent {
       string,
       { wake: boolean; taskType?: string; toolUseId?: string; title?: string }
     >();
-    function noteBackgroundTaskEvent(e: AgentEvent): void {
-      if (e.type !== 'agent_task_update') return;
+    // SDK task progress can race behind its terminal notification. Once a task
+    // is terminal within the current Query generation, a late running/progress
+    // patch must not resurrect it into runningBackgroundTasks and manufacture
+    // a fresh continuation claim at the next done.
+    const terminalBackgroundTaskIds = new Set<string>();
+    const ignoredLateTerminalTaskEvents = new WeakSet<AgentEvent>();
+
+    type ContinuationTaskState = 'running' | 'completed' | 'failed' | 'stopped';
+    type ContinuationClaim = {
+      id: number;
+      tasks: Map<string, ContinuationTaskState>;
+      state: 'awaiting' | 'active' | 'cancelled';
+      /** Number of claim-bearing done events not yet processed by Session. */
+      pendingBoundaryEvents: number;
+      /** A later natural/synthetic done has closed the product turn. */
+      settled: boolean;
+    };
+    // Claims are created synchronously when the provider enqueues a `done`.
+    // The id is attached to that exact event, so a fast task_notification or
+    // result-only continuation cannot change what the host later observes.
+    let nextContinuationId = 1;
+    let activeContinuationId: number | null = null;
+    // User Stop can close an awaiting product continuation while the provider
+    // still has buffered activity. Suppress that cancelled tail until its
+    // Query is replaced before the next explicit user turn.
+    let continuationCancellationGeneration: number | null = null;
+    /**
+     * 本次 Stop 已经发过终态 boundary 的那一代。
+     *
+     * accept 阶段的 foreground 终态归 send 的 finishSendBeforeUserInput 发, 但
+     * abort 若同时取消了一个 awaiting continuation, 它已经先发过
+     * turn_continuation_cancelled —— 同一次 Stop 再补一个 done 就是双终态,
+     * Session 不按 generation 去重, 所有监听方都会收到两条。
+     *
+     * 单独记一个代次而不是复用 continuationCancellationGeneration: 后者在关
+     * query 分支里**无条件**设置(哪怕那一轮根本没发 boundary), 拿它当去重依据
+     * 会把 send 该发的那个终态一起吞掉。
+     */
+    let stopTerminalEmittedGeneration: number | null = null;
+    let continuationCancellationRequiresQueryRebuild = false;
+    const continuationClaims = new Map<number, ContinuationClaim>();
+    const continuationListeners = new Set<(
+      continuationId: number,
+      state: 'awaiting' | 'active' | 'cancelled',
+    ) => void>();
+    const emitContinuationState = (
+      continuationId: number,
+      state: 'awaiting' | 'active' | 'cancelled',
+    ): void => {
+      for (const listener of [...continuationListeners]) {
+        try {
+          listener(continuationId, state);
+        } catch (e) {
+          log.warn('turn continuation listener threw', { error: String(e) });
+        }
+      }
+    };
+    const activeContinuationClaim = (): ContinuationClaim | null =>
+      activeContinuationId === null
+        ? null
+        : continuationClaims.get(activeContinuationId) ?? null;
+    const releaseSettledContinuationClaim = (claim: ContinuationClaim): void => {
+      if (!claim.settled || claim.pendingBoundaryEvents > 0) return;
+      continuationClaims.delete(claim.id);
+    };
+    const retireContinuationTasks = (claim: ContinuationClaim): void => {
+      for (const taskId of claim.tasks.keys()) {
+        runningBackgroundTasks.delete(taskId);
+        terminalBackgroundTaskIds.add(taskId);
+      }
+    };
+    const cancelActiveContinuation = (reason: string): ContinuationClaim | null => {
+      const claim = activeContinuationClaim();
+      if (!claim || claim.state !== 'awaiting') return null;
+      claim.state = 'cancelled';
+      claim.settled = true;
+      activeContinuationId = null;
+      log.info('turn continuation cancelled', { reason, continuationId: claim.id });
+      emitContinuationState(claim.id, 'cancelled');
+      releaseSettledContinuationClaim(claim);
+      return claim;
+    };
+    const settleActiveContinuation = (reason: string): void => {
+      const claim = activeContinuationClaim();
+      if (!claim || claim.state !== 'active') return;
+      claim.settled = true;
+      activeContinuationId = null;
+      log.info('turn continuation settled without a follow-up turn', {
+        reason,
+        continuationId: claim.id,
+      });
+      releaseSettledContinuationClaim(claim);
+    };
+    const discardActiveContinuation = (reason: string, forceRelease = false): void => {
+      if (continuationClaims.size > 0) {
+        log.debug('discarding turn continuation claims', {
+          reason,
+          continuationIds: [...continuationClaims.keys()],
+        });
+      }
+      activeContinuationId = null;
+      for (const claim of continuationClaims.values()) {
+        claim.settled = true;
+        releaseSettledContinuationClaim(claim);
+      }
+      if (forceRelease) continuationClaims.clear();
+    };
+    const consumeTaskNotificationsForActiveSegment = (claim: ContinuationClaim): void => {
+      // The SDK may merge several task notifications that arrived before the
+      // first continuation activity into one automatic segment. Consume that
+      // whole terminal snapshot at activation; notifications arriving after
+      // the claim becomes active remain for the following segment.
+      for (const [taskId, state] of claim.tasks) {
+        if (state === 'completed' || state === 'failed') claim.tasks.delete(taskId);
+      }
+    };
+    const captureContinuationBoundary = (event: AgentEvent): boolean => {
+      if (event.type !== 'done') return false;
+      const existing = activeContinuationClaim();
+      const interruptedGeneration =
+        turnState.interruptRequested &&
+        turnState.interruptGeneration === turnState.generation;
+      if (interruptedGeneration && existing?.state === 'awaiting') {
+        // A real provider terminal can beat the interrupt ACK. It is the
+        // product terminal for this Stop, so retire the snapshotted awaiting
+        // claim instead of attaching it (or minting a successor) to this done.
+        retireContinuationTasks(existing);
+        existing.settled = true;
+        activeContinuationId = null;
+        releaseSettledContinuationClaim(existing);
+        return true;
+      }
+      if (existing?.state === 'awaiting') {
+        // Defensive duplicate done for the same boundary: preserve the same
+        // claim instead of letting the duplicate terminate host observers.
+        event.turnContinuationId = existing.id;
+        existing.pendingBoundaryEvents += 1;
+        return false;
+      }
+      const wasActiveContinuation = existing?.state === 'active';
+      const carriedTasks = existing?.state === 'active'
+        ? new Map(
+            [...existing.tasks].filter(([, state]) => state !== 'stopped'),
+          )
+        : new Map<string, ContinuationTaskState>();
+      if (existing?.state === 'active') {
+        // This is the automatic continuation's own done. It closes the product
+        // turn, so the old claim is no longer needed once its first done has
+        // been observed by the host.
+        existing.settled = true;
+        activeContinuationId = null;
+        releaseSettledContinuationClaim(existing);
+        // The continuation turn may itself launch another wake task. Preserve
+        // the original behavior by scanning the current task table below and
+        // attaching a fresh claim to this done when another automatic turn is
+        // now expected.
+      }
+      // A result produced by the generation being interrupted is already a
+      // terminal boundary. Even if a wake task remains in the provider table,
+      // user Stop has revoked the right to create another automatic segment.
+      if (
+        interruptedGeneration ||
+        continuationCancellationGeneration === turnState.generation
+      ) {
+        if (interruptedGeneration && existing) retireContinuationTasks(existing);
+        return wasActiveContinuation;
+      }
+      const wakeTasks = [...runningBackgroundTasks.entries()].filter(([, info]) => info.wake);
+      for (const [taskId] of wakeTasks) {
+        if (!carriedTasks.has(taskId)) carriedTasks.set(taskId, 'running');
+      }
+      if (carriedTasks.size === 0) return wasActiveContinuation;
+      const claim: ContinuationClaim = {
+        id: nextContinuationId++,
+        state: 'awaiting',
+        tasks: carriedTasks,
+        pendingBoundaryEvents: 1,
+        settled: false,
+      };
+      continuationClaims.set(claim.id, claim);
+      activeContinuationId = claim.id;
+      event.turnContinuationId = claim.id;
+      // 探针:claim 创建是「continuation 悬挂」vs「done 未到达」的关键区分点。
+      // 只记 id / taskId / state 枚举,不记消息文本与 task prompt(脱敏红线)。
+      log.info('turn continuation claim created', {
+        continuationId: claim.id,
+        carriedTasks: [...carriedTasks.entries()].map(([taskId, state]) => ({
+          taskId,
+          state,
+        })),
+        wasActiveContinuation,
+      });
+      return false;
+    };
+    const reconcileActiveContinuation = (): ContinuationClaim | null => {
+      const claim = activeContinuationClaim();
+      if (!claim || claim.state !== 'awaiting') return null;
+      const states = [...claim.tasks.values()];
+      // A completed/failed wake task still has the SDK continuation contract;
+      // only an all-stopped group proves that a second `done` cannot arrive.
+      // Authority model: q.interrupt ACK is required when user Stop has no
+      // provider confirmation and must revoke a completed/failed continuation
+      // contract itself. An all-stopped snapshot is already provider-confirmed
+      // fact: every tracked task can no longer continue, while an awaiting
+      // claim has no foreground turn. It therefore settles independently of a
+      // concurrent interrupt resolving or rejecting; waiting for that control
+      // result would leak the claim when no further provider event can exist.
+      if (
+        states.length > 0 &&
+        states.every((state) => state === 'stopped')
+      ) {
+        return cancelActiveContinuation('all wake tasks stopped');
+      }
+      return null;
+    };
+    const markWakeTasksStopped = (
+      taskIds: readonly string[],
+      reason: string,
+    ): ContinuationClaim | null => {
+      const claim = activeContinuationClaim();
+      for (const taskId of taskIds) {
+        const info = runningBackgroundTasks.get(taskId);
+        const claimTracksWakeTask =
+          (claim?.state === 'awaiting' || claim?.state === 'active') &&
+          claim.tasks.has(taskId);
+        if (!info?.wake && !claimTracksWakeTask) continue;
+        runningBackgroundTasks.delete(taskId);
+        terminalBackgroundTaskIds.add(taskId);
+        if (claim?.state === 'awaiting' || claim?.state === 'active') {
+          claim.tasks.set(taskId, 'stopped');
+        }
+      }
+      const cancelledClaim = reconcileActiveContinuation();
+      if (taskIds.length > 0) {
+        log.info('marked wake tasks stopped before provider notification', { reason, taskIds });
+      }
+      return cancelledClaim;
+    };
+    function noteBackgroundTaskEvent(e: AgentEvent): ContinuationClaim | null {
+      if (e.type !== 'agent_task_update') return null;
       const data = e.data as
         | {
             taskId?: unknown;
@@ -2228,9 +3381,22 @@ export class ClaudeCodeAgent extends BaseAgent {
         | null
         | undefined;
       const taskId = typeof data?.taskId === 'string' ? data.taskId : undefined;
-      if (!taskId) return;
+      if (!taskId) return null;
       const status = data?.status;
       if (status === 'running') {
+        if (continuationCancellationGeneration !== null) {
+          log.debug('ignoring task activity after user-cancelled continuation', {
+            taskId,
+            cancellationGeneration: continuationCancellationGeneration,
+          });
+          ignoredLateTerminalTaskEvents.add(e);
+          return null;
+        }
+        if (terminalBackgroundTaskIds.has(taskId)) {
+          log.debug('ignoring late running update for terminal background task', { taskId });
+          ignoredLateTerminalTaskEvents.add(e);
+          return null;
+        }
         const prev = runningBackgroundTasks.get(taskId);
         const wake =
           prev?.wake === true ||
@@ -2244,20 +3410,97 @@ export class ClaudeCodeAgent extends BaseAgent {
               : prev?.toolUseId,
           title: typeof data?.title === 'string' && data.title ? data.title : prev?.title,
         });
+        const claim = activeContinuationClaim();
+        if ((claim?.state === 'awaiting' || claim?.state === 'active') && wake) {
+          claim.tasks.set(taskId, 'running');
+        }
+        return null;
       } else if (status === 'completed' || status === 'failed' || status === 'stopped') {
+        const prev = runningBackgroundTasks.get(taskId);
         runningBackgroundTasks.delete(taskId);
+        terminalBackgroundTaskIds.add(taskId);
+        const claim = activeContinuationClaim();
+        if (
+          (claim?.state === 'awaiting' || claim?.state === 'active') &&
+          (prev?.wake || claim.tasks.has(taskId))
+        ) {
+          claim.tasks.set(taskId, status);
+          if (claim.state === 'awaiting') return reconcileActiveContinuation();
+        }
       }
+      return null;
     }
-    // fire-and-forget 逐个 stopTask:单个失败(任务恰好已自然结束 / 远端 daemon
-    // 版本差)只 warn,绝不阻塞随后的 q.interrupt()。SDK 对每个被停任务会回吐
-    // status:'stopped' 的 task_notification → 现有事件链把任务出表并让 UI 确定性收口。
-    function stopRunningWakeBackgroundTasks(reason: string): void {
-      if (runningBackgroundTasks.size === 0) return;
+    const emitCancelledContinuationBoundary = (
+      claim: ContinuationClaim,
+      reason: string,
+    ): void => {
+      log.info('emitting terminal boundary for cancelled turn continuation', {
+        reason,
+        continuationId: claim.id,
+      });
+      if (emitTurnBoundary('turn_continuation_cancelled', undefined, true)) {
+        // 这一代的终态已经出去了 —— accept 阶段的 send 醒来后不要再补一个。
+        stopTerminalEmittedGeneration = turnState.generation;
+        // Install the cancelled-tail fence at the same enqueue boundary as
+        // the synthetic product terminal. stopTask can win before interrupt
+        // resolves, so waiting for the interrupt ACK leaves a double-terminal
+        // window for a late provider result.
+        continuationCancellationGeneration = turnState.generation;
+        continuationCancellationRequiresQueryRebuild = true;
+      }
+    };
+
+    const releaseEventAccounting = (event: AgentEvent): void => {
+      if (event.turnContinuationId !== undefined) {
+        const claim = continuationClaims.get(event.turnContinuationId);
+        if (claim) {
+          claim.pendingBoundaryEvents = Math.max(0, claim.pendingBoundaryEvents - 1);
+          releaseSettledContinuationClaim(claim);
+        }
+      }
+      if (continuationTerminalBoundaryEvents.delete(event)) {
+        pendingContinuationTerminalBoundaries = Math.max(
+          0,
+          pendingContinuationTerminalBoundaries - 1,
+        );
+      }
+    };
+    const pushForwardedEvent = (event: AgentEvent): boolean => {
+      const accepted = eventQueue.push(event);
+      if (!accepted) releaseEventAccounting(event);
+      return accepted;
+    };
+
+    const consumedEventStream = async function* (): AsyncGenerator<AgentEvent> {
+      try {
+        for await (const event of eventQueue) {
+          try {
+            yield event;
+          } finally {
+            // Code after yield runs when Session asks for the next event, i.e.
+            // after its synchronous fan-out (including Hook/Scheduler queries).
+            releaseEventAccounting(event);
+          }
+        }
+      } finally {
+        activeContinuationId = null;
+        continuationClaims.clear();
+        continuationListeners.clear();
+        pendingContinuationTerminalBoundaries = 0;
+      }
+    };
+    // 逐个发起 stopTask,但不在这里等待 RPC:interrupt 必须先按控制通道顺序发出。
+    // 返回每个 RPC 的 promise,供 interrupt ACK 后只退休真正成功的任务;失败任务
+    // 仍留在本地账中,等待 provider 的真实 completed/stopped 事件继续记账。
+    function stopRunningWakeBackgroundTasks(
+      reason: string,
+    ): Array<{ taskId: string; promise: Promise<void> }> {
+      if (runningBackgroundTasks.size === 0) return [];
       const wakeIds: string[] = [];
       for (const [taskId, info] of runningBackgroundTasks) {
         if (info.wake) wakeIds.push(taskId);
       }
-      if (wakeIds.length === 0) return;
+      if (wakeIds.length === 0) return [];
       // 远端老 daemon / 老 SDK 没有 stopTask:退化为原行为(interrupt-only),
       // proxy 活动检测 + 「全部停止」兜底仍在。
       if (typeof q.stopTask !== 'function') {
@@ -2265,19 +3508,41 @@ export class ClaudeCodeAgent extends BaseAgent {
           reason,
           wakeIds,
         });
-        return;
+        return [];
       }
       log.info('stopping running background wake tasks', { reason, wakeIds });
+      const requests: Array<{ taskId: string; promise: Promise<void> }> = [];
       for (const taskId of wakeIds) {
-        void q.stopTask(taskId).catch((e: unknown) => {
-          // 两类预期失败:任务恰好已自然结束;远端老 daemon 不认识 query/stopTask
-          // (RemoteQuery 恒有本地方法,老 daemon 差异只会在这里以 RPC 错误暴露)。
-          log.warn('stopTask failed (task already finished, or remote daemon predates query/stopTask)', {
-            taskId,
-            error: String(e),
-          });
-        });
+        let stopTaskPromise: Promise<void>;
+        try {
+          stopTaskPromise = Promise.resolve(q.stopTask(taskId));
+        } catch (error) {
+          stopTaskPromise = Promise.reject(error);
+        }
+        const promise = stopTaskPromise.then(
+          () => {
+            log.debug('background wake task stop acknowledged', {
+              reason,
+              taskId,
+            });
+          },
+          (e: unknown) => {
+            // 两类预期失败:任务恰好已自然结束;远端老 daemon 不认识 query/stopTask
+            // (RemoteQuery 恒有本地方法,老 daemon 差异只会在这里以 RPC 错误暴露)。
+            log.warn('stopTask failed (task already finished, or remote daemon predates query/stopTask)', {
+              taskId,
+              error: String(e),
+            });
+            throw e;
+          },
+        );
+        // The rejection handler above preserves the rejected status needed by
+        // Promise.allSettled, while this immediate noop handler prevents an
+        // unhandled-rejection report before interrupt ACK attaches allSettled.
+        void promise.catch(() => undefined);
+        requests.push({ taskId, promise });
       }
+      return requests;
     }
 
     // ── Middle-turn 事件过滤 (Codex review 3534925347 / 3535259132 / 3535293200) ──
@@ -2322,7 +3587,7 @@ export class ClaudeCodeAgent extends BaseAgent {
       deferredResumeFailureEvents = [];
       deferredResumeTurnEnd = false;
       deferResumeFailureBoundary = false;
-      for (const event of events) eventQueue.push(event);
+      for (const event of events) forwardEventSink.push(event);
       if (shouldFinishTurn) completeTranslatedTurnEnd();
     }
     function discardDeferredResumeFailure(): void {
@@ -2334,14 +3599,21 @@ export class ClaudeCodeAgent extends BaseAgent {
       deferredResumeTurnEnd = false;
       deferResumeFailureBoundary = false;
     }
+    let pendingTerminalStatusEvent: AgentEvent | undefined;
     const forwardEventSink: AsyncQueue<AgentEvent> = {
+      // Claude's translator emits `status(isRunning=false)` immediately before
+      // the matching `done`. Hold that status long enough to copy the
+      // provider continuation claim from `done`; otherwise every generic
+      // consumer sees an unclaimed idle event and finalizes the product turn
+      // before the continuation starts.
       push(e: AgentEvent) {
         if (deferResumeFailureBoundary) {
           deferredResumeFailureEvents.push(e);
           return true;
         }
         // 后台任务表旁路观察(O(1) type check,task 事件低频,不碰热路径逻辑)。
-        noteBackgroundTaskEvent(e);
+        const cancelledContinuation = noteBackgroundTaskEvent(e);
+        if (ignoredLateTerminalTaskEvents.delete(e)) return true;
         if (queuedBridgeTurns > 0) {
           if (e.type === 'done') {
             rememberBridgeSuppressedDoneData(e.data);
@@ -2371,10 +3643,76 @@ export class ClaudeCodeAgent extends BaseAgent {
             return true;
           }
         }
-        return eventQueue.push(e);
+        if (e.type === 'status') {
+          const data = e.data as { isRunning?: unknown } | null | undefined;
+          if (data?.isRunning === false) {
+            if (pendingTerminalStatusEvent) {
+              pushForwardedEvent(pendingTerminalStatusEvent);
+            }
+            pendingTerminalStatusEvent = e;
+            return true;
+          }
+        }
+        if (e.type !== 'done' && pendingTerminalStatusEvent) {
+          pushForwardedEvent(pendingTerminalStatusEvent);
+          pendingTerminalStatusEvent = undefined;
+        }
+        const continuationBeforeCapture = activeContinuationClaim();
+        const isContinuationTerminalDone = captureContinuationBoundary(e);
+        const continuationAfterCapture = activeContinuationClaim();
+        const createdContinuationClaim =
+          e.type === 'done' &&
+          e.turnContinuationId !== undefined &&
+          continuationAfterCapture?.id === e.turnContinuationId &&
+          continuationBeforeCapture?.id !== continuationAfterCapture.id
+            ? continuationAfterCapture
+            : null;
+        if (e.type === 'done' && pendingTerminalStatusEvent) {
+          const statusEvent = pendingTerminalStatusEvent;
+          pendingTerminalStatusEvent = undefined;
+          if (e.turnContinuationId !== undefined) {
+            statusEvent.turnContinuationId = e.turnContinuationId;
+            const claim = continuationClaims.get(e.turnContinuationId);
+            if (claim) claim.pendingBoundaryEvents += 1;
+          }
+          pushForwardedEvent(statusEvent);
+        }
+        if (isContinuationTerminalDone) {
+          continuationTerminalBoundaryEvents.add(e);
+          pendingContinuationTerminalBoundaries += 1;
+        }
+        const accepted = pushForwardedEvent(e);
+        if (!accepted && createdContinuationClaim) {
+          // A claim minted for a boundary that the host can never observe has
+          // no continuation contract. Retire it after rolling back the done's
+          // own ledger entry; an accepted paired status keeps the claim object
+          // alive only until that status is acknowledged.
+          createdContinuationClaim.settled = true;
+          if (activeContinuationId === createdContinuationClaim.id) {
+            activeContinuationId = null;
+          }
+          releaseSettledContinuationClaim(createdContinuationClaim);
+        }
+        // A stopped notification is part of the visible turn history. Preserve
+        // its order, then append a real product-turn boundary so Session can
+        // close the current generation even though the SDK will not emit a
+        // second result for a cancelled wake continuation.
+        if (accepted && cancelledContinuation) {
+          emitCancelledContinuationBoundary(cancelledContinuation, 'task_notification_stopped');
+        }
+        return accepted;
       },
-      end: () => eventQueue.end(),
-      clear: () => eventQueue.clear(),
+      end: () => {
+        if (pendingTerminalStatusEvent) {
+          eventQueue.push(pendingTerminalStatusEvent);
+          pendingTerminalStatusEvent = undefined;
+        }
+        eventQueue.end();
+      },
+      clear: () => {
+        pendingTerminalStatusEvent = undefined;
+        eventQueue.clear();
+      },
       get pending() { return eventQueue.pending; },
       [Symbol.asyncIterator]: () => eventQueue[Symbol.asyncIterator](),
     };
@@ -2419,25 +3757,90 @@ export class ClaudeCodeAgent extends BaseAgent {
       // q 换代: 上一代 q 的 pending interrupted result 不可能从新 q drain 出来,
       // 残留的 interruptRequested 会错误抑制新 q 首个真实 is_error 终态 —— 兜底清。
       turnState.interruptRequested = false;
+      continuationCancellationGeneration = null;
+      // Any successfully installed replacement Query isolates the cancelled
+      // provider tail. This also covers rewind / invalid-resume rebuilds, so a
+      // later send must not create a redundant intermediate Query.
+      continuationCancellationRequiresQueryRebuild = false;
+      discardActiveContinuation('query_replaced');
       // q 换代 = 旧 CLI 子进程已死,其后台任务全部随之终止 —— 清表防 stale 条目
       // 让下次 abort 对不存在的任务空发 stopTask。
       runningBackgroundTasks.clear();
+      terminalBackgroundTaskIds.clear();
       void (async () => {
         try {
           for await (const rawMsg of currentQ) {
             if (closed) break;
-            if (canceledBridgeQueries.has(currentQ) || rewindTransitionQueries.has(currentQ)) {
+            const rawType = (rawMsg as { type?: string } | null)?.type;
+            const rawSubtype = (rawMsg as { subtype?: string } | null)?.subtype;
+            const rawStatus = (rawMsg as { status?: string } | null)?.status;
+            const isTerminalTaskNotification =
+              rawType === 'system' &&
+              rawSubtype === 'task_notification' &&
+              (rawStatus === 'completed' || rawStatus === 'failed' || rawStatus === 'stopped');
+            if (
+              (canceledBridgeQueries.has(currentQ) || rewindTransitionQueries.has(currentQ)) &&
+              !(canceledBridgeQueries.has(currentQ) && isTerminalTaskNotification)
+            ) {
               continue;
             }
-            if (activeBridgeRewindResumeAt !== undefined && queuedBridgeTurns === 0) {
+            if (activeBridgeKind !== null && queuedBridgeTurns === 0) {
               log.debug('bridge follow-up turn started — clearing bridge rewind resume point', {
+                bridgeKind: activeBridgeKind,
                 activeBridgeRewindResumeAt,
               });
-              activeBridgeRewindResumeAt = undefined;
-              bridgeCompactUsageSnapshot = null;
-              bridgeSuppressedDoneData = undefined;
+              clearBridgeState();
             }
-            const rawType = (rawMsg as { type?: string } | null)?.type;
+            if (
+              continuationCancellationGeneration !== null &&
+              (rawType === 'assistant' || rawType === 'stream_event' || rawType === 'result')
+            ) {
+              log.debug('ignoring provider activity from cancelled continuation query', {
+                rawType,
+                cancellationGeneration: continuationCancellationGeneration,
+              });
+              continue;
+            }
+            if (noteSdkInitMcpServerNames(rawMsg)) {
+              // User/project/local settings MCPs are only revealed by the SDK init
+              // payload, after the query has already started. Native OAuth Auto skips
+              // canUseTool, so immediately hand later turns back to Cindy when that
+              // payload reports any connected MCP server. Do this before the optional
+              // provenance RPC below: a slow status call must not prolong native Auto.
+              if (
+                mutablePermissionMode === 'auto'
+                && !mutablePlanMode
+                && !planTurnActive
+                && mutableAutoReviewCredentialMode === 'oauth-bearer'
+                && hasRegisteredMcpServers()
+                && nativeAutoQueries.has(currentQ)
+              ) {
+                try {
+                  await currentQ.setPermissionMode(effectiveSdkPermissionMode());
+                  nativeAutoQueries.delete(currentQ);
+                } catch (error) {
+                  // Keeping this query alive would leave connected MCP tools under the
+                  // native classifier, which bypasses Cindy's canUseTool policy. Close
+                  // and surface a terminal stream failure instead of failing open.
+                  log.error('failed to downgrade native Auto after SDK settings MCP init', {
+                    error: String(error),
+                  });
+                  try {
+                    await currentQ.close();
+                  } catch (closeError) {
+                    log.warn('failed to close query after native Auto downgrade failure', {
+                      error: String(closeError),
+                    });
+                  }
+                  throw new Error(
+                    `[MCP_APPROVAL_MODE_DOWNGRADE_FAILED] ${
+                      error instanceof Error ? error.message : String(error)
+                    }`,
+                  );
+                }
+              }
+              await refreshSdkMcpProvenance(currentQ);
+            }
             const expectedResumeSessionId = resumeValidationPending ? configuredResumeSessionId : undefined;
             const inBandInvalidConversationId =
               expectedResumeSessionId ?? (freshSessionValidationPending ? sdkSessionId : undefined);
@@ -2459,7 +3862,9 @@ export class ClaudeCodeAgent extends BaseAgent {
             // 停留在 false → isTurnRunning() 误报空闲,session.send 的 SESSION_RUNNING
             // 守卫失守(scheduler 心跳曾借此把 prompt 注入运行中的 turn)、tool-loop
             // guard / upstream-idle watchdog 也整段失效。这里以"turn 内才会出现的
-            // 消息"(assistant / stream_event)为证据补登记,并镜像 send 入口的
+            // 消息"(assistant / stream_event)为证据补登记；若 provider 已给上一
+            // done 锁存 continuation claim，result-only 也能证明自动续 turn 已开始。
+            // 随后镜像 send 入口的
             // per-turn 状态重置(beginNewTurn + toolLoopGuard.resetTurn),否则 guard
             // 会带着上一轮的陈旧计数误判。
             // 排除两种非新 turn 场景:
@@ -2469,12 +3874,35 @@ export class ClaudeCodeAgent extends BaseAgent {
             //    而吞掉终态,turn 永远收不了尾。
             //  - queuedBridgeTurns > 0:桥接 /compact 序列里 turnInFlight 本就被
             //    onTurnEnd 保持,不会走进本分支;计数守卫只是防御性一致。
+            // 子 Agent 的 sidechain assistant/stream_event 也会穿过同一 Query，且
+            // 常在它自己的 task_notification 之前到达。它只证明后台任务仍在跑，
+            // 不能证明顶层自动 continuation 已开始；否则会过早把 awaiting claim
+            // 转 active，随后同一任务的 completed 会被误当成“active 段期间完成的
+            // 下一任务”，让第二个顶层 result 再铸造一个永远等不到后续活动的 claim。
+            const rawParentToolUseId = (
+              rawMsg as { parent_tool_use_id?: unknown } | null
+            )?.parent_tool_use_id;
+            const isTopLevelProviderActivity =
+              typeof rawParentToolUseId !== 'string' || rawParentToolUseId.length === 0;
             if (
               !turnInFlight &&
               !turnState.interruptRequested &&
               queuedBridgeTurns === 0 &&
-              (rawType === 'assistant' || rawType === 'stream_event')
+              (
+                ((rawType === 'assistant' || rawType === 'stream_event') &&
+                  isTopLevelProviderActivity) ||
+                (activeContinuationClaim()?.state === 'awaiting' && rawType === 'result')
+              )
             ) {
+              const claim = activeContinuationClaim();
+              if (claim?.state === 'awaiting') {
+                // Each task notification queues one SDK continuation segment.
+                // Consume only the notification that activated this segment;
+                // other terminal tasks must keep the next boundary claimed.
+                consumeTaskNotificationsForActiveSegment(claim);
+                claim.state = 'active';
+                emitContinuationState(claim.id, 'active');
+              }
               log.debug('SDK ▶ turn activity without send — marking auto-continued turn in-flight', {
                 rawType,
                 sdkSessionId,
@@ -2530,18 +3958,24 @@ export class ClaudeCodeAgent extends BaseAgent {
                 if (turnInFlight) {
                   const verdict = toolLoopGuard?.onToolResult(id, output);
                   if (verdict?.kind === 'hard') {
-                    const loopHint =
-                      verdict.reason === 'consecutive'
-                        ? `连续 ${verdict.count} 次发起完全相同的 ${verdict.toolName} 调用`
-                        : verdict.reason === 'pingpong'
-                          ? `最近 ${verdict.count} 次工具调用一直在极少数几种(含 ${verdict.toolName})之间反复打转`
-                          : `单轮已累计 ${verdict.count} 次工具调用仍未收敛`;
+                    const loopHint = verdict.reason === 'consecutive'
+                      ? `连续 ${verdict.count} 次发起完全相同的 ${verdict.toolName} 调用`
+                      : `最近 ${verdict.count} 次工具调用一直在极少数几种(含 ${verdict.toolName})之间反复打转`;
                     // 与 upstream-idle watchdog 同款兜底: tool-loop 中断 = "整个 turn 序列已死",
                     // bridge counter 归零避免 filter 吞掉本条 error / counter 永久停在 >0。
                     // 实践上 bridge /compact turn 不用 tool, 该分支难以触发, 归零是防御性一致。
-                    if (queuedBridgeTurns > 0) {
-                      log.warn('tool-loop hard interrupt fired during bridge — clearing bridge counter', { queuedBridgeTurns });
-                      queuedBridgeTurns = 0;
+                    if (bridgeStateActive()) {
+                      const interruptedBridgeKind = activeBridgeKind;
+                      const interruptedRewindResumeAt = activeBridgeRewindResumeAt;
+                      log.warn('tool-loop hard interrupt fired during bridge — clearing bridge state', {
+                        queuedBridgeTurns,
+                        activeBridgeKind,
+                        activeBridgeRewindResumeAt,
+                      });
+                      restoreBridgeAutoCompactSnapshot('tool_loop_hard_interrupt');
+                      autoCompactController?.onCompactCanceled('tool_loop_hard_interrupt');
+                      clearBridgeState();
+                      preserveBridgeRetryTarget(interruptedBridgeKind, interruptedRewindResumeAt);
                     }
                     eventQueue.push({
                       type: 'error',
@@ -2612,17 +4046,17 @@ export class ClaudeCodeAgent extends BaseAgent {
                 rewindTransition: rewindTransitionQueries.has(currentQ),
                 canceledBridge: canceledBridgeQueries.has(currentQ),
               });
-              queuedBridgeTurns = 0;
+              clearBridgeState();
             }
             if (isCurrentQuery(currentQ)) {
               pendingToolIds.clear();
             }
-          } else if (activeBridgeRewindResumeAt) {
+          } else if (activeBridgeKind !== null) {
             // Bridge /compact query 自发结束(非 Stop/watchdog 主动 close)说明底层 SDK
             // stream 已死;不能当 rewind transition 静默,否则 queuedBridgeTurns/turnInFlight
             // 会污染下一条真实用户 turn。
             log.warn('event loop ended unexpectedly during bridge turn');
-            queuedBridgeTurns = 0;
+            clearBridgeState();
             eventQueue.push({
               type: 'error',
               data: {
@@ -2714,21 +4148,21 @@ export class ClaudeCodeAgent extends BaseAgent {
                 rewindTransition: rewindTransitionQueries.has(currentQ),
                 canceledBridge: canceledBridgeQueries.has(currentQ),
               });
-              queuedBridgeTurns = 0;
+              clearBridgeState();
             }
             // rewind/bridge cancel 过渡: 老 q 留下的 pending tool_use_id 不能跨到新 q, 否则新 turn
             // 起来 armUpstreamResponseIdle 被旧 id 短路, watchdog 永久失效。
             if (isCurrentQuery(currentQ)) {
               pendingToolIds.clear();
             }
-          } else if (activeBridgeRewindResumeAt) {
+          } else if (activeBridgeKind !== null) {
             flushDeferredResumeFailure();
             log.error('event loop crashed during bridge turn', {
               error: String(e),
               activeBridgeRewindResumeAt,
               queuedBridgeTurns,
             });
-            queuedBridgeTurns = 0;
+            clearBridgeState();
             eventQueue.push({
               type: 'error',
               data: { message: String(e), isTerminal: true, reason: 'bridge_sdk_stream_crashed' },
@@ -2849,6 +4283,12 @@ export class ClaudeCodeAgent extends BaseAgent {
       );
       clearUpstreamResponseIdle();
       pendingToolIds.clear();
+      // A fresh invalid-resume recovery must not inherit a half-consumed
+      // compact bridge from the dead query. There is no rewind target to
+      // preserve here: the replacement query intentionally starts fresh.
+      restoreBridgeAutoCompactSnapshot('invalid_resume_recovery');
+      autoCompactController?.onCompactCanceled('invalid_resume_recovery');
+      clearBridgeState();
       try { inputQueue.end(); } catch (error) {
         log.debug('invalid resume recovery: old input queue end failed', { error: String(error) });
       }
@@ -2962,6 +4402,8 @@ export class ClaudeCodeAgent extends BaseAgent {
     // onAccepted 已持久化/ack 消息,抛普通 Error 会把瞬时重建变成孤儿用户消息(desktop
     // 只对 SESSION_RUNNING 前缀 requeue)。恢复结束(成功或失败)后 resolve 放行。
     let idleResumeRebuildGate: Promise<void> | null = null;
+    // Idle-resume recovery and cancelled-continuation rebuilds have independent gates.
+    let cancellationRebuildGate: Promise<void> | null = null;
     // runtime control request 可写性判定: commitRewindFiles 后旧 Query 已 close、新 Query
     // 等下一次 send 重建;或 bridge Stop/watchdog 已 close 当前 Query、等待下一次
     // send 从同一 rewind point 重建。这些窗口里对 q 发 control request 会抛
@@ -2972,7 +4414,11 @@ export class ClaudeCodeAgent extends BaseAgent {
     // 窗口里用户切模型/权限档只会改闭包,不会影响当前和后续 turn。只有当前 q 已被
     // 主动 close 并登记到 canceledBridgeQueries 时才阻塞 control request。
     const controlRequestsBlocked = (): boolean =>
-      pendingRewindTo !== undefined || acceptingRebuiltSend || idleResumeRebuildGate !== null || canceledBridgeQueries.has(q);
+      pendingRewindTo !== undefined ||
+      acceptingRebuiltSend ||
+      idleResumeRebuildGate !== null ||
+      continuationCancellationRequiresQueryRebuild ||
+      canceledBridgeQueries.has(q);
     type QueryRuntimeSnapshot = {
       model: string;
       effort: Effort;
@@ -3043,10 +4489,107 @@ export class ClaudeCodeAgent extends BaseAgent {
       }
       log.warn(`${label}: runtime drift kept changing while replaying; leaving remaining drift to the next setter/rebuild`);
     }
+    async function rebuildCancelledContinuationQuery(
+      signal?: AbortSignal,
+      options?: { queueCompactBridge?: boolean },
+    ): Promise<boolean> {
+      while (cancellationRebuildGate) {
+        await cancellationRebuildGate;
+      }
+      if (!continuationCancellationRequiresQueryRebuild) return false;
+
+      let releaseCancellationRebuildGate: (() => void) | undefined;
+      cancellationRebuildGate = new Promise<void>((resolve) => {
+        releaseCancellationRebuildGate = resolve;
+      });
+      try {
+        const staleQuery = q;
+        const runtimeSnapshot: QueryRuntimeSnapshot = {
+          model: mutableModel,
+          effort: mutableEffort,
+          fastMode: mutableFastMode,
+          sdkPermissionMode: currentTurnSdkPermissionMode(),
+        };
+        acceptingRebuiltSend = true;
+        inputQueue.end();
+        inputQueue = createAsyncQueue<SdkUserInput>();
+        abortController = new AbortController();
+        runtimeState.lastResultUsageAggregate = null;
+        rewindTransitionQueries.add(staleQuery);
+        const recordedClose = canceledQueryClosePromises.get(staleQuery);
+        if (recordedClose) {
+          try {
+            await recordedClose;
+          } catch (error) {
+            log.warn('cancelled continuation query close rejected before rebuild', { error: String(error) });
+          }
+        } else {
+          try {
+            await Promise.resolve(staleQuery.close());
+          } catch (e) {
+            log.warn('cancelled continuation query close threw before rebuild', { error: String(e) });
+          }
+        }
+        try {
+          q = await buildQuery({
+            permissionMode: runtimeSnapshot.sdkPermissionMode,
+            fresh: true,
+          });
+          if (signal?.aborted) {
+            inputQueue.end();
+            rewindTransitionQueries.add(q);
+            try {
+              await Promise.resolve(q.close());
+            } catch (e) {
+              log.warn('cancelled continuation rebuild close threw after send cancellation', {
+                error: String(e),
+              });
+            }
+            throw new Error('Claude send cancelled before acceptance');
+          }
+          startForwardLoop(q);
+          notifySupportedModels(q);
+          await replayRuntimeDrift(runtimeSnapshot, 'cancelled continuation rebuild');
+          // Cancellation rebuilds used by send need the compact→user bridge for deferred
+          // model/window drift. Rewind preview/commit use the same fresh-query isolation but
+          // must not start a product turn or inject /compact before rewindFiles runs.
+          const skipCompactBridge = options?.queueCompactBridge === false;
+          const bridgeCompactQueued = skipCompactBridge
+            ? false
+            : queueAutoCompactBridge('cancellation');
+          // Preview/commit must not generate, but a deferred compact caused by a
+          // blocked model/window switch must survive until the next send. Keep
+          // the tombstone only for that case; otherwise the fresh Query is ready
+          // and the cancellation rebuild state can be cleared normally.
+          continuationCancellationRequiresQueryRebuild = skipCompactBridge
+            ? shouldRearmAutoCompactAfterRewindControl()
+            : false;
+          return bridgeCompactQueued;
+        } finally {
+          acceptingRebuiltSend = false;
+        }
+      } finally {
+        cancellationRebuildGate = null;
+        releaseCancellationRebuildGate?.();
+      }
+    }
     const handle: AgentSessionHandle = {
       get id() { return sdkSessionId ?? '<pending>'; },
       agentKind: 'claude-code',
       get model() { return mutableModel; },
+
+      validateSendOptions(sendOpts: SendOptions) {
+        if (
+          sendOpts.turnPermissionPolicy &&
+          (mutablePermissionMode === 'acceptEdits' ||
+            mutablePermissionMode === 'bypassPermissions')
+        ) {
+          throw new TurnPermissionPolicyUnsupportedError(
+            'claude-code',
+            mutablePermissionMode,
+          );
+        }
+      },
 
       async send(message: UserMessage, sendOpts?: SendOptions) {
         // idle resume fallback 正在重建(亚秒窗):等它完成再走正常受理。重建成功时
@@ -3058,6 +4601,20 @@ export class ClaudeCodeAgent extends BaseAgent {
         if (sendOpts?.signal?.aborted) {
           throw new Error('Claude send cancelled before acceptance');
         }
+        if (sendOpts) handle.validateSendOptions?.(sendOpts);
+        let bridgeCompactQueued = false;
+        // 保持普通 send / rewind send 原有的同步前置语义：即使 async helper 立即
+        // return，裸 await 也会让出一个 microtask，导致调用方在 Query rebuild 真正
+        // 开始前观察到半初始化窗口。只有确实存在 cancellation tombstone 时才进入
+        // 异步重建。
+        if (
+          continuationCancellationRequiresQueryRebuild &&
+          pendingRewindTo === undefined &&
+          activeBridgeRewindResumeAt === undefined
+        ) {
+          bridgeCompactQueued = await rebuildCancelledContinuationQuery(sendOpts?.signal);
+        }
+        activeTurnPermissionPolicy = sendOpts?.turnPermissionPolicy ?? null;
         // 仅用于诊断日志: 调用方每次 send 都可以带 logTitle (取自 storage 的最新值);
         // 缺省时保留上一次的值 (没传不等于"清空")。
         if (sendOpts?.logTitle !== undefined) lastSendTitle = sendOpts.logTitle;
@@ -3125,22 +4682,24 @@ export class ClaudeCodeAgent extends BaseAgent {
         // ── Rewind 三件套重启 ──────────────────────────────────────────────
         // commitRewindFiles 只设标记, 真正的 SDK Query 重起延迟到这里 —— 老 agentManager
         // 同款设计 (CLI 拿到 input 才会发 init, 避免"无 input → 30s timeout"死锁)。
-        let bridgeCompactQueued = false;
         let runtimeReplaySnapshot: QueryRuntimeSnapshot | undefined;
         const finishSendBeforeUserInput = (reason: string, error?: unknown): void => {
           if (
             bridgeCompactQueued &&
             !canceledBridgeQueries.has(q) &&
-            (queuedBridgeTurns > 0 || activeBridgeRewindResumeAt !== undefined)
+            bridgeStateActive()
           ) {
             log.warn('send failed after bridge /compact injection — canceling bridge query and preserving rewind resume point', {
               error: error === undefined ? undefined : String(error),
               queuedBridgeTurns,
               activeBridgeRewindResumeAt,
             });
-            queuedBridgeTurns = 0;
+            const abandonedBridgeKind = activeBridgeKind;
+            const abandonedRewindResumeAt = activeBridgeRewindResumeAt;
             restoreBridgeAutoCompactSnapshot('bridge_send_abandoned');
             autoCompactController?.onCompactCanceled('bridge_send_abandoned');
+            const suppressedDoneData = takeBridgeSuppressedDoneData();
+            clearBridgeState();
             inputQueue.clear();
             try {
               inputQueue.end();
@@ -3148,18 +4707,14 @@ export class ClaudeCodeAgent extends BaseAgent {
               log.warn('send failed after bridge /compact injection: inputQueue.end threw', { error: String(endError) });
             }
             canceledBridgeQueries.add(q);
-            try {
-              q.close();
-            } catch (closeError) {
-              log.warn('send failed after bridge /compact injection: q.close threw', { error: String(closeError) });
-            }
+            recordCanceledQueryClose(q, 'bridge send abandoned');
             turnInFlight = false;
+            sendInAcceptPhase = false;
             turnState.interruptRequested = false;
             pendingToolIds.clear();
             acceptingRebuiltSend = false;
-            pendingRewindTo = activeBridgeRewindResumeAt;
-            activeBridgeRewindResumeAt = undefined;
-            emitTurnBoundary('bridge_send_abandoned', takeBridgeSuppressedDoneData());
+            preserveBridgeRetryTarget(abandonedBridgeKind, abandonedRewindResumeAt);
+            emitTurnBoundary('bridge_send_abandoned', suppressedDoneData);
             return;
           }
           if (!turnInFlight) return;
@@ -3168,11 +4723,16 @@ export class ClaudeCodeAgent extends BaseAgent {
             error: error === undefined ? undefined : String(error),
           });
           turnInFlight = false;
+          sendInAcceptPhase = false;
           turnState.interruptRequested = false;
           pendingToolIds.clear();
           acceptingRebuiltSend = false;
           clearUpstreamResponseIdle();
-          emitTurnBoundary(reason);
+          // 同一次 Stop 只发一个终态: abort 若已为被取消的 continuation 发过
+          // turn_continuation_cancelled(同一代), 这里只清状态、不再补 done。
+          if (stopTerminalEmittedGeneration !== turnState.generation) {
+            emitTurnBoundary(reason);
+          }
         };
         if (pendingRewindTo || activeBridgeRewindResumeAt) {
           const resumeAt = pendingRewindTo ?? activeBridgeRewindResumeAt;
@@ -3235,7 +4795,7 @@ export class ClaudeCodeAgent extends BaseAgent {
           //    后续消息推进已死旧 q 的黑洞。
           // 新 forward loop 是 async 任务, 在本同步段之后才起跑, 不会误读到 true。
           pendingRewindTo = undefined;
-          activeBridgeRewindResumeAt = undefined;
+          clearBridgeState();
           runtimeReplaySnapshot = {
             model: snapModel,
             effort: snapEffort,
@@ -3245,8 +4805,7 @@ export class ClaudeCodeAgent extends BaseAgent {
           await replayRuntimeDrift(runtimeReplaySnapshot, 'rewind rebuild');
           if (sendOpts?.signal?.aborted) {
             pendingRewindTo = resumeAt;
-            activeBridgeRewindResumeAt = undefined;
-            queuedBridgeTurns = 0;
+            clearBridgeState();
             acceptingRebuiltSend = false;
             inputQueue.end();
             canceledBridgeQueries.add(q);
@@ -3266,16 +4825,7 @@ export class ClaudeCodeAgent extends BaseAgent {
           // 轮直接撞上下文上限。
           // 桥接 turn 计数: 实际 push /compact 时 +1, 让后续 middle-turn suppress /
           // onTurnEnd 保持 turnInFlight 靠精确计数, 不受 SDK prompt 消费模式影响。
-          bridgeCompactQueued = triggerAutoCompactIfNeeded();
-          if (bridgeCompactQueued) {
-            bridgeCompactUsageSnapshot = autoCompactController?.getLatestSnapshot() ?? null;
-            activeBridgeRewindResumeAt = resumeAt;
-            queuedBridgeTurns += 1;
-            log.debug('rebuild: bridge /compact injected', {
-              queuedBridgeTurns,
-              activeBridgeRewindResumeAt,
-            });
-          }
+          bridgeCompactQueued = queueAutoCompactBridge('rewind', resumeAt);
           // 本次 send 的 bridge state 已注册;guard 继续保持到下面 turnInFlight=true,
           // 防止 runtime setter 在 user turn 尚未登记时把 /compact 注入成未标记 turn。
         }
@@ -3286,6 +4836,7 @@ export class ClaudeCodeAgent extends BaseAgent {
         toolLoopGuard?.resetTurn();
         // 标记 turn 进入 in-flight 态 (translator.onTurnEnd 在 result 事件回调时清);
         // rewind preview/commit 守卫读 isTurnRunning() 决定能否操作。
+        sendInAcceptPhase = true;
         turnInFlight = true;
         // 对齐老 agentManager.ts:1623 — send 入口立刻 emit "Thinking...", 让 renderer 的
         // RunningStatusBar 一发就亮; 否则从 send 到 SDK message_start 之间的几百 ms~几秒 gap
@@ -3368,7 +4919,10 @@ export class ClaudeCodeAgent extends BaseAgent {
             throw new Error('Claude input queue is closed');
           }
           userInputAccepted = true;
+          activeCapabilitySelectionText = userMessageTextForCapabilityRouting(message.content);
+          setAutoReviewIntent(message.content);
           replayableUserInput = sdkInput;
+          sendInAcceptPhase = false;
           // upstream-response-idle watchdog 起表 — 放在 inputQueue.push 之后, 避免把
           // client 端的 toClaudeSdkContent (多模态 image-resizer 同步等几秒) 算进上游
           // 响应配额。否则 warn 日志里 lastEventType=null + msSinceLast=null 会指错方向
@@ -3378,7 +4932,7 @@ export class ClaudeCodeAgent extends BaseAgent {
           if (
             bridgeCompactQueued &&
             !canceledBridgeQueries.has(q) &&
-            (queuedBridgeTurns > 0 || activeBridgeRewindResumeAt !== undefined)
+            bridgeStateActive()
           ) {
             finishSendBeforeUserInput('bridge_send_abandoned', e);
           } else if (sendOpts?.signal?.aborted) {
@@ -3437,6 +4991,10 @@ export class ClaudeCodeAgent extends BaseAgent {
           // received it.
           throw new Error('No active Claude turn to steer: input queue is closed');
         }
+        appendActiveCapabilitySelectionText(
+          userMessageTextForCapabilityRouting(message.content),
+        );
+        setAutoReviewIntent(message.content);
         armUpstreamResponseIdle();
       },
 
@@ -3457,15 +5015,18 @@ export class ClaudeCodeAgent extends BaseAgent {
         // inputQueue.clear() 只能丢 maker-core 本地尚未被拉取的 item;SDK 可能已经 eager-drain
         // 了真实用户消息。此时必须 close 当前 Query 并保留 activeBridgeRewindResumeAt,让下一次
         // send 从同一个 rewind resume point 重建,从 SDK 侧取消已 drain 的后续输入。
-        if (turnInFlight && (queuedBridgeTurns > 0 || activeBridgeRewindResumeAt !== undefined)) {
+        if (turnInFlight && bridgeStateActive()) {
+          const abortedBridgeKind = activeBridgeKind;
+          const abortedRewindResumeAt = activeBridgeRewindResumeAt;
           log.info('abort during bridge turn — closing query and preserving rewind resume point', {
             queuedBridgeTurns,
             queuedInput: inputQueue.pending,
             activeBridgeRewindResumeAt,
           });
-          queuedBridgeTurns = 0;
           restoreBridgeAutoCompactSnapshot('bridge_aborted');
           autoCompactController?.onCompactCanceled('bridge_aborted');
+          const suppressedDoneData = takeBridgeSuppressedDoneData();
+          clearBridgeState();
           inputQueue.clear();
           try {
             inputQueue.end();
@@ -3473,39 +5034,184 @@ export class ClaudeCodeAgent extends BaseAgent {
             log.warn('abort during bridge turn: inputQueue.end threw', { error: String(e) });
           }
           canceledBridgeQueries.add(q);
-          try {
-            q.close();
-          } catch (e) {
-            log.warn('abort during bridge turn: q.close threw', { error: String(e) });
-          }
+          recordCanceledQueryClose(q, 'bridge aborted');
           // close 本地会连 CLI 子进程一起杀(远端为 daemon 侧 interrupt + 输入流收口,
           // SDK 退出前有极窄残留窗口,由下次 q 换代清表兜底),后台任务随之终止,清表即可。
+          const cancelledContinuation = cancelActiveContinuation('bridge_aborted');
+          if (!cancelledContinuation) settleActiveContinuation('bridge_aborted');
           runningBackgroundTasks.clear();
+          terminalBackgroundTaskIds.clear();
           turnInFlight = false;
+          // 本分支自己发 bridge_aborted 终态, send 的收尾责任就此交接完毕 ——
+          // 一并清 sendInAcceptPhase。不清的话: send 醒来走进
+          // finishSendBeforeUserInput, 入口守卫见 turnInFlight=false 直接返回,
+          // sendInAcceptPhase 悬置 true, 后续每次 abort 都被 accept 让位守卫
+          // 错误短路。boundary 只从这里发一次, send 那侧早退不再补发。
+          sendInAcceptPhase = false;
           turnState.interruptRequested = false;
-          emitTurnBoundary('bridge_aborted', takeBridgeSuppressedDoneData());
+          preserveBridgeRetryTarget(abortedBridgeKind, abortedRewindResumeAt);
+          emitTurnBoundary(
+            'bridge_aborted',
+            suppressedDoneData,
+            cancelledContinuation !== null,
+          );
           return;
         }
         // 用户主动停止: SDK 被 interrupt 后会 drain 出 error_during_execution 的
         // is_error result, 打标记让 translator turn-end 跳过"失败兜底 error",
         // 否则用户点停止会被误报成"执行失败"通知。
-        // turnInFlight 守卫(与 watchdog / tool-loop 对齐): turn 已自然结束时的
-        // 迟到 Stop 不置位 —— idle query 上的 interrupt 不保证产出 result 来消费
-        // 标记, 残留会泄漏到下一真实 turn 吞掉其失败兜底(review P2)。
-        if (turnInFlight) {
+        // 前台仍在跑或 provider continuation 正在 awaiting 时都要锁定本代 Stop。
+        // 后者的 turnInFlight 已经是 false，但 interrupt ACK 前的迟到 result 同样
+        // 不得重新铸造 continuation claim。
+        const awaitingContinuationAtUserStop = activeContinuationClaim();
+        if (turnInFlight || awaitingContinuationAtUserStop?.state === 'awaiting') {
           turnState.interruptRequested = true;
           turnState.interruptGeneration = turnState.generation;
         }
+        // 保持 turnInFlight 为 true 直到 interrupt 返回(或超时关 query)：
+        // 提前清掉会让 Session.isTurnRunning() 报 idle，并发 send 通过守卫后
+        // 把用户消息推进旧 q 的 inputQueue，然后在 interrupt 返回后被
+        // inputQueue.clear() 抹掉 → 用户消息丢失(review P1-A)。
+        // 5s 超时 + catch 兜底保证 turnInFlight 最终一定被清除，不会造成
+        // SESSION_RUNNING 永拒。generation 守卫(translator handleResult)保证
+        // 旧 q 的迟到 error_during_execution result 被丢弃、不污染新 turn。
+        // sendInAcceptPhase 守卫: 并发 send 处于 accept 阶段时, 由 send 自己的
+        // finishSendBeforeUserInput 负责清 turnInFlight + emit boundary,
+        // abort 不能抢清, 否则 boundary 丢失(review 3541310178)。
+        // 快照 turnInFlight 用于后续 close-query 分支判定(下方 foregroundNeedsTerminal
+        // 需要旧值)。
+        const foregroundWasInFlight = turnInFlight;
+        if (!sendInAcceptPhase) {
+          pendingToolIds.clear();
+        }
         // 用户 Stop 的产品语义 = 本会话所有模型调用停止:先发 stopTask 再 interrupt
-        // (同一控制通道按序处理),封掉「interrupt 后任务恰好完成 → task_notification
-        // 自动续跑新 turn」的竞态窗口。fire-and-forget,不阻塞 interrupt。
-        stopRunningWakeBackgroundTasks('user_stop');
+        // (同一控制通道按序处理)。interrupt 用 5s 超时防止 SDK retry backoff 死等；
+        // 超时或失败时关 query 让下次 send 走 lazy rebuild。
+        const stopRequests = stopRunningWakeBackgroundTasks('user_stop');
+        const ABORT_INTERRUPT_TIMEOUT_MS = 5_000;
         try {
-          await q.interrupt();
+          await Promise.race([
+            q.interrupt(),
+            new Promise<void>((_, reject) =>
+              setTimeout(() => reject(new Error('INTERRUPT_TIMEOUT')), ABORT_INTERRUPT_TIMEOUT_MS),
+            ),
+          ]);
+          // stopTask and interrupt share an ordered control channel: an
+          // interrupt ACK guarantees these earlier stop requests have settled,
+          // so allSettled intentionally has no extra timeout here.
+          const settledStops = await Promise.allSettled(stopRequests.map(({ promise }) => promise));
+          const hasRejectedStops = settledStops.some((stop) => stop.status === 'rejected');
+          const fulfilledWakeIds = stopRequests
+            .filter((_, index) => settledStops[index]?.status === 'fulfilled')
+            .map(({ taskId }) => taskId);
+          // interrupt ACK authorizes retiring only wake tasks whose stop RPC
+          // also succeeded. Rejected stops remain tracked for provider events,
+          // preserving their continuation contract instead of creating an
+          // unaccounted auto-continue.
+          const stoppedClaim = markWakeTasksStopped(fulfilledWakeIds, 'user_stop');
+          // Stop is the authoritative cancellation boundary. An awaiting
+          // continuation may already have lost every task from the running
+          // table, so neither stopTask nor an idle interrupt is guaranteed to
+          // produce another provider result. A rejected stop is likewise
+          // unconfirmed even when a completed notification already removed
+          // that task from the local table; the old Query must still be closed
+          // to prevent a queued automatic continuation from escaping Stop.
+          const cancelledContinuation = stoppedClaim ?? cancelActiveContinuation('user_stop');
+          const hasUnconfirmedWakeTasks = [...runningBackgroundTasks.values()].some((info) => info.wake);
+          if (cancelledContinuation || hasUnconfirmedWakeTasks || hasRejectedStops) {
+            // All cancellation sources share one terminal state: a cancelled
+            // continuation claim, an unconfirmed wake task, or a rejected stop
+            // means this Query must be retired. The provider tail is fenced by
+            // the per-query marker, then the next send/rewind installs a fresh
+            // Query.
+            const cancelledQuery = q;
+            // 用 Stop 之前的 turnInFlight 快照判定 foreground 是否需要终态。
+            // close-query 分支需要旧值决定是否补 boundary。
+            canceledBridgeQueries.add(cancelledQuery);
+            // Query retirement always leaves a rebuild tombstone, even if the
+            // synthetic boundary is rejected because the event queue is
+            // already closing. The next explicit send/rewind must never push
+            // into this retired query.
+            continuationCancellationGeneration = turnState.generation;
+            continuationCancellationRequiresQueryRebuild = true;
+            if (cancelledContinuation) {
+              // The successful Stop revokes the continuation contract. Retire
+              // its task ledger before closing the provider process.
+              retireContinuationTasks(cancelledContinuation);
+              emitCancelledContinuationBoundary(cancelledContinuation, 'user_stop');
+            } else {
+              log.info('closing Query after user Stop with unconfirmed wake tasks', {
+                generation: turnState.generation,
+              });
+              // close() prevents the interrupted result from arriving. If the
+              // foreground turn has not already produced a terminal, replace
+              // it with one synthetic boundary; a raced natural result leaves
+              // foregroundWasInFlight=false and therefore does not get a duplicate.
+              // accept 阶段的 foreground 终态归 send 的 finishSendBeforeUserInput:
+              // 它醒来后按 signal.aborted / push 失败走到自己的 boundary。这里
+              // 抢发会重复——一次 Stop 冒出两个终态。
+              if (foregroundWasInFlight && !sendInAcceptPhase) {
+                emitTurnBoundary('user_stop_unconfirmed_wake_tasks');
+              }
+            }
+            inputQueue.clear();
+            try {
+              inputQueue.end();
+            } catch (e) {
+              log.warn('user_stop cancellation: inputQueue.end threw', { error: String(e) });
+            }
+            recordCanceledQueryClose(cancelledQuery, 'user_stop cancellation');
+            runningBackgroundTasks.clear();
+            terminalBackgroundTaskIds.clear();
+            // main 上 #2151 已给 interrupt 成功分支挂了同一守卫; 本 PR 的差异是
+            // close-query / 超时 / 抛错 / bridge 分支也一并纳入同一契约。
+            if (!sendInAcceptPhase) turnInFlight = false;
+          } else {
+            // interrupt 成功且无后台任务需要清：被中断的 turn 会收到
+            // error_during_execution result → translator 在 onTurnEnd 清
+            // turnInFlight。这里显式补清以防 SDK 未 drain result 的极端
+            // 情况(确保不会 SESSION_RUNNING 永拒)。
+            //
+            // accept 阶段除外——finishSendBeforeUserInput 的入口守卫是
+            // `if (!turnInFlight) return`,abort 抢清会让它以为已被收口而直接
+            // 返回,send_cancelled_before_acceptance 的终态 boundary 从此丢失,
+            // isTurnRunning 悬置(review 3541310178 的反馈原型用例钉的就是它)。
+            if (!sendInAcceptPhase) turnInFlight = false;
+          }
         } catch (e) {
-          // interrupt 失败 → 无 result 消费标记, 回收防误抑制(同 watchdog)。
-          turnState.interruptRequested = false;
-          log.warn('abort threw', { error: String(e) });
+          const errMsg = e instanceof Error ? e.message : String(e);
+          if (errMsg === 'INTERRUPT_TIMEOUT') {
+            // SDK 长时间不响应 interrupt(在 retry backoff 中) → 关 query 让
+            // 下次 send 走 lazy rebuild。
+            log.warn('interrupt timed out during user stop — closing query', {
+              sdkSessionId,
+            });
+            const cancelledContinuation = cancelActiveContinuation('user_stop');
+            if (cancelledContinuation) {
+              retireContinuationTasks(cancelledContinuation);
+              emitCancelledContinuationBoundary(cancelledContinuation, 'user_stop');
+            }
+            continuationCancellationGeneration = turnState.generation;
+            continuationCancellationRequiresQueryRebuild = true;
+            canceledBridgeQueries.add(q);
+            inputQueue.clear();
+            try {
+              inputQueue.end();
+            } catch (ee) {
+              log.warn('user_stop cancellation: inputQueue.end threw', { error: String(ee) });
+            }
+            recordCanceledQueryClose(q, 'user_stop interrupt timeout');
+            runningBackgroundTasks.clear();
+            terminalBackgroundTaskIds.clear();
+            // accept 阶段同上——终态与清理归 send 自己(query 已被关闭, send 的
+            // push 会失败并走 finishSendBeforeUserInput)。
+            if (!sendInAcceptPhase) turnInFlight = false;
+          } else {
+            // interrupt 真正抛错(非超时)，回收标记防误抑制(同 watchdog)。
+            turnState.interruptRequested = false;
+            if (!sendInAcceptPhase) turnInFlight = false;
+            log.warn('abort threw', { error: String(e) });
+          }
         }
       },
 
@@ -3520,9 +5226,18 @@ export class ClaudeCodeAgent extends BaseAgent {
         if (typeof q.stopTask !== 'function') {
           throw new Error('stopTask is not supported by the current Claude SDK or remote daemon');
         }
-        // 成功后 SDK 会回吐 status:'stopped' 的 task_notification → 现有事件链
-        // 把任务出表并让 UI 收口;这里不主动改表,保持单一事实源。
+        // The foreground `done` may arrive while stopTask is in flight. That is
+        // safe: observers first enter provider continuation wait, then this
+        // successful stop cancels it. Do not mark before the RPC resolves — a
+        // rejected stop must leave the still-running task visible and pending.
         await q.stopTask(taskId);
+        // Some older SDK/daemon pairs acknowledge stopTask without echoing a
+        // task_notification(stopped). The accepted control action is already
+        // authoritative enough to cancel the provider continuation wait.
+        const cancelledClaim = markWakeTasksStopped([taskId], 'user_stop_task');
+        if (cancelledClaim) {
+          emitCancelledContinuationBoundary(cancelledClaim, 'user_stop_task');
+        }
       },
 
       listBackgroundTasks() {
@@ -3537,8 +5252,30 @@ export class ClaudeCodeAgent extends BaseAgent {
         }));
       },
 
+      beginTurnContinuationWait(continuationId?: number) {
+        if (continuationId === undefined) return null;
+        return continuationClaims.get(continuationId)?.state ?? null;
+      },
+
+      onTurnContinuationChange(
+        listener: (
+          continuationId: number,
+          state: 'awaiting' | 'active' | 'cancelled',
+        ) => void,
+      ) {
+        continuationListeners.add(listener);
+        return () => continuationListeners.delete(listener);
+      },
+
       async close() {
         if (closed) return;
+        // Closing/dead sessions settle through Session status (or their queued
+        // terminal event), never through the successful task-stop path.
+        discardActiveContinuation('session_closed');
+        clearUpstreamResponseIdle();
+        pendingToolIds.clear();
+        turnInFlight = false;
+        clearBridgeState();
         closed = true;
         try {
           // 任何挂着的 interaction 强制 deny + emit dismissed, 防止 host 卡住等永远不会来的回应
@@ -3547,6 +5284,7 @@ export class ClaudeCodeAgent extends BaseAgent {
           abortController.abort();
           // close 会终结 CLI 子进程(本地)/ 远端 session,后台任务随之死亡。
           runningBackgroundTasks.clear();
+          terminalBackgroundTaskIds.clear();
         } catch (e) {
           log.warn('close threw', { error: String(e) });
         }
@@ -3568,11 +5306,18 @@ export class ClaudeCodeAgent extends BaseAgent {
         ? {
             async detach() {
               if (closed) return;
+              discardActiveContinuation('session_detached', true);
+              clearUpstreamResponseIdle();
+              pendingToolIds.clear();
+              turnInFlight = false;
+              clearBridgeState();
               closed = true;
               try {
                 dismissAllPending('session_closed', 'deny');
                 inputQueue.end();
                 abortController.abort();
+                runningBackgroundTasks.clear();
+                terminalBackgroundTaskIds.clear();
               } catch (e) {
                 log.warn('detach threw', { error: String(e) });
               }
@@ -3588,7 +5333,7 @@ export class ClaudeCodeAgent extends BaseAgent {
         : {}),
 
       events(): AsyncIterable<AgentEvent> {
-        return eventQueue;
+        return consumedEventStream();
       },
 
       getUsageSnapshot(): UsageSnapshot {
@@ -3623,14 +5368,133 @@ export class ClaudeCodeAgent extends BaseAgent {
       // buildQuery 重建时读的就是 mutableModel / mutableEffort / mutableFastMode /
       // effectiveSdkPermissionMode() 的最新值, 新设置会自然带上。
 
-      async setModel(newModel: string) {
+      async setModel(newModel: string, setModelOpts?: { providerId?: string | null }) {
+        const targetProviderId = setModelOpts?.providerId !== undefined
+          ? setModelOpts.providerId
+          : mutableProviderId;
+        // 远端会话切换模型/来源:远端 env 在 spawn 时已烤进 daemon,无法热改。若新
+        // 模型/来源解析出的路由与当前不一致(路由类型或 env 内容变化),继续用旧
+        // env 会以错误 endpoint/凭证打新模型(401/404/错租户)。重新解析比对,
+        // 不一致则拒绝并提示重建会话;完全一致才放行。
+        // providerId 用调用方给的目标来源(可能正在切 provider),缺省回落会话启动值。
+        if (opts.remoteHostId && resolveRemoteClaudeRoute) {
+          const nextRoute = await resolveRemoteClaudeRoute({
+            providerId: targetProviderId,
+            model: newModel,
+          });
+          const routeChanged =
+            (nextRoute === null) !== (remoteRoute === null) ||
+            (nextRoute !== null &&
+              remoteRoute !== null &&
+              (() => {
+                // 与「当前生效的 remoteEnv」比对,而不是 spawn 时冻结的 remoteRoute.env:
+                // refreshSubscriptionTokenInPlace 会原地写回 remoteEnv,因此它始终是最新
+                // 凭证;nextRoute 也是现解析的最新值。
+                //
+                // 比对规则(四轮 review 的折中):
+                // - endpoint + 非 token env 值:任一变化 → 拒绝(真路由/定制头变化);
+                // - CLAUDE_CODE_OAUTH_TOKEN(订阅 token,有 oauth/refresh 通道)的**值**:
+                //   不比对 —— 后台刷新先更新 nextRoute、远端 daemon 尚未 401 的轮换
+                //   窗口会误拒;daemon 撞 401 时经 refresh 拿最新值。
+                // - ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN(自定义供应商 key,**无**
+                //   refresh 通道)的**值**:仍比对 —— 用户改 key 后远端 daemon 会持续
+                //   401,必须拒绝(Greptile 六轮)。存在性(在/不在)同样比对(路由类型)。
+                const SUBSCRIPTION_TOKEN_KEY = 'CLAUDE_CODE_OAUTH_TOKEN';
+                const PROVIDER_KEY_KEYS = new Set(['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN']);
+                // 订阅身份元数据(scopes/subscriptionType/rateLimitTier)与 token 同源,
+                // 会在用户零操作下漂移(登录后 backfill 补齐 / 订阅计划变更刷新)——
+                // 与 token 同组按存在性比对,不按值(Fable 5 评估 B1:值比对会误拒)。
+                const SUBSCRIPTION_METADATA_KEYS = new Set([
+                  'CLAUDE_CODE_OAUTH_TOKEN',
+                  'CLAUDE_CODE_OAUTH_SCOPES',
+                  'CLAUDE_CODE_SUBSCRIPTION_TYPE',
+                  'CLAUDE_CODE_RATE_LIMIT_TIER',
+                ]);
+                const routeKeys = new Set([
+                  ...Object.keys(remoteRoute.env),
+                  ...Object.keys(nextRoute.env),
+                ]);
+                // 非订阅字段的值(含自定义供应商 key + 定制头)按全并集比对;
+                // 订阅字段(token + 元数据)只按「spawn 时声明过的字段」(remoteRoute.env
+                // 的 key 集)比存在性 —— nextRoute 新增的元数据字段(backfill 后才有)
+                // 不算变化,remoteEnv 烤的是 spawn 时快照(Fable 5 B1 修正)。
+                const nonSubscriptionPick = (env: Record<string, string>): Record<string, string> =>
+                  Object.fromEntries(
+                    [...routeKeys]
+                      .filter((k) => !SUBSCRIPTION_METADATA_KEYS.has(k) && env[k] !== undefined)
+                      .map((k) => [k, env[k]]),
+                  );
+                const spawnDeclares = new Set(Object.keys(remoteRoute.env));
+                const subscriptionPresenceOf = (env: Record<string, string>): string[] =>
+                  [...spawnDeclares]
+                    .filter((k) => SUBSCRIPTION_METADATA_KEYS.has(k) && env[k] !== undefined)
+                    .sort();
+                return (
+                  nextRoute.endpoint !== remoteRoute.endpoint ||
+                  JSON.stringify(nonSubscriptionPick(nextRoute.env)) !==
+                    JSON.stringify(nonSubscriptionPick(remoteEnv ?? {})) ||
+                  JSON.stringify(subscriptionPresenceOf(nextRoute.env)) !==
+                    JSON.stringify(subscriptionPresenceOf(remoteEnv ?? {}))
+                );
+              })()) ||
+            // 网关路径(route null):切模时重新读当前网关 key,与 remoteEnv 里 spawn 时
+            // 烤进的比对——用户在设置里更新网关 key 后,远端 daemon 仍带旧 key,继续
+            // 切模会放行到 401(Greptile 三轮)。
+            (nextRoute === null &&
+              remoteRoute === null &&
+              (async () => {
+                const currentAuthEnv = await getAuthEnv({ credentialMode: 'gateway-key' });
+                return currentAuthEnv.ANTHROPIC_API_KEY !== remoteEnv?.ANTHROPIC_API_KEY;
+              })());
+          if (await routeChanged) {
+            throw new Error(
+              `[REMOTE_MODEL_SWITCH_ROUTE_CHANGE] switching to "${newModel}" requires a different remote route; close and recreate the remote session to apply it`,
+            );
+          }
+          // 放行后**不**更新 remoteRoute:它是「spawn 时的路由指纹」,spawnDeclares
+          // 永远用初次 spawn 的 key 集 —— nextRoute 新增的元数据字段(backfill 后
+          // 才有)若被当成 spawn 声明,下次切模会与仍烤着旧快照的 remoteEnv 比对
+          // 误拒(codex P2 #1035)。
+        }
         const sdkModel = sdkModelFor(newModel);
         const isControlBlocked = controlRequestsBlocked();
         log.debug('setModel', { from: mutableModel, to: newModel, sdk: sdkModel, controlRequestsBlocked: isControlBlocked });
         if (!isControlBlocked) {
           await q.setModel(sdkModel);
         }
+        const usedNativeAutoReview = usesNativeClaudeAutoReview();
+        mutableProviderId = targetProviderId ?? null;
+        mutableAutoReviewCredentialMode = resolveEffectiveCredentialModeFromAuthSource(
+          resolveAgentCredentialMode({
+            agentKind: 'claude-code',
+            providerId: mutableProviderId,
+            model: newModel,
+          }),
+          authState.authSource,
+        );
         mutableModel = newModel;
+        autoReviewDecisionCache.clear();
+        // 换模型 / 换路由可能正好修掉了审阅器不可用的原因(目录解析失败、provider 被停用
+        // 等);若换完又不可用,值得再提醒一次。
+        autoReviewUnavailableNotice.reset();
+        if (
+          !isControlBlocked
+          && mutablePermissionMode === 'auto'
+          && usedNativeAutoReview !== usesNativeClaudeAutoReview()
+        ) {
+          // 切模(主操作)已生效、mutableModel/mutableProviderId/credentialMode 已同步为新值。
+          // 这里的 auto 审查重配是附带的二次 apply:若它因 transport/SDK 失败仍抛,会把整个
+          // setModel 报成失败、上层保留旧持久配置,而运行态其实已在新模型/路由 → 计费/凭证
+          // 路由错配。与其它 post-hoc setPermissionMode 调用点(plan 审批后 / plan turn 结束)
+          // 同款 best-effort:失败只 warn,不回退已成功的切模,让持久配置与运行态保持一致
+          // (codex review)。
+          await q.setPermissionMode(toSdkPermissionMode('auto')).catch((e) => {
+            log.warn('setModel: auto-review permission-mode reapply failed; model switch kept', {
+              model: newModel,
+              error: String(e),
+            });
+          });
+        }
         const newContextWindow = modelContextWindows.get(mutableModel);
         if (newContextWindow === undefined) {
           // setContextWindow(0) 是 no-op —— tracker 会静默沿用旧模型窗口直到下一个
@@ -3700,6 +5564,16 @@ export class ClaudeCodeAgent extends BaseAgent {
       },
 
       async setPermissionMode(newMode) {
+        // 用户自己动过权限档之后,「自动审核不可用」这条一次性提示重新武装:再回到 Auto
+        // 又不可用时,他有权再看到一次(否则一个会话里只提示一次会显得像偶发)。
+        // 档位变了 → 连**裁决缓存**一起清。缓存 key 不含 permissionMode,切离 Auto 再切回时
+        // 会命中先前那条 `unavailable` block —— 审阅器早就恢复了,同一个动作还是被拒
+        // (greptile P1 of #1574)。一次性提示同步重新武装:用户既然接管过,之后又不可用
+        // 值得再提醒一次。
+        if (newMode !== mutablePermissionMode) {
+          autoReviewDecisionCache.clear();
+          autoReviewUnavailableNotice.reset();
+        }
         // 计划模式武装中 / 本轮 plan turn 进行中 SDK 恒在 plan 档: 只记录底层权限档
         // (循环收尾切回时生效), 不 push SDK、不动挂起交互(挂着的多半是 plan_review)。
         if (mutablePlanMode || planTurnActive) {
@@ -3709,7 +5583,11 @@ export class ClaudeCodeAgent extends BaseAgent {
         }
         // 老 agentManager.ts:1850-1893 的"切到更宽松 mode 时挂着的 ask 自动 allow,
         // 切到更严 mode 时 deny" 行为, 复用 dismissAllPending 钩子。
-        const moreOpen = newMode === 'auto' || newMode === 'bypassPermissions';
+        // **auto 不再算"更宽松"**:Auto-review 语义已从"全放行"变成"区内放行、越界升级",
+        // 挂起的授权请求本就是被升级的越界/风险动作,切到 auto 时应 fail-closed(deny),
+        // 否则等于把待确认的越界动作橡皮图章掉。只有 bypassPermissions(Full access)才是
+        // 真"全开"。与 Codex 侧 #767"切档时挂起请求统一拒绝"对称。
+        const moreOpen = newMode === 'bypassPermissions';
         dismissAllPending(`permission_mode_changed_to_${newMode}`, moreOpen ? 'allow' : 'deny');
         // SDK PermissionMode union 没有 'ask' (我们对 ChatInput 暴露的统一名字),
         // SDK 侧把 ask 当 default —— 与 startSession 的处理一致。
@@ -3720,6 +5598,24 @@ export class ClaudeCodeAgent extends BaseAgent {
           await q.setPermissionMode(sdkMode);
         }
         mutablePermissionMode = newMode;
+      },
+
+      async useCindyAutoReviewFallback() {
+        if (nativeAutoReviewUnavailable) return;
+        nativeAutoReviewUnavailable = true;
+        autoReviewDecisionCache.clear();
+        if (
+          mutablePermissionMode === 'auto'
+          && !mutablePlanMode
+          && !planTurnActive
+          && !controlRequestsBlocked()
+        ) {
+          await q.setPermissionMode('default');
+        }
+        log.warn('Claude native Auto reviewer unavailable; keeping Auto with Cindy fallback', {
+          providerId: mutableProviderId,
+          model: mutableModel,
+        });
       },
 
       async setPlanMode(enabled: boolean) {
@@ -3734,9 +5630,9 @@ export class ClaudeCodeAgent extends BaseAgent {
           return;
         }
         // 进计划模式 = 收紧(deny 挂起授权); 退出按底层档宽松度决定 —— 与
-        // setPermissionMode 的 moreOpen 语义一致。(idle 时通常无挂起交互,保留兜底。)
-        const moreOpen = !enabled &&
-          (mutablePermissionMode === 'auto' || mutablePermissionMode === 'bypassPermissions');
+        // setPermissionMode 的 moreOpen 语义一致(auto 不再算"更宽松",挂起的越界请求
+        // 退出 plan 回到 auto 时仍 fail-closed;只有 bypassPermissions 是真"全开")。
+        const moreOpen = !enabled && mutablePermissionMode === 'bypassPermissions';
         dismissAllPending(`plan_mode_${enabled ? 'enabled' : 'disabled'}`, moreOpen ? 'allow' : 'deny');
         const sdkMode = effectiveSdkPermissionMode();
         log.debug('setPlanMode', { enabled, sdk: sdkMode, underlying: mutablePermissionMode, controlRequestsBlocked: controlRequestsBlocked() });
@@ -3776,7 +5672,15 @@ export class ClaudeCodeAgent extends BaseAgent {
       // ── Rewind (Stage 2 C2) ────────────────────────────────────────────────
 
       isTurnRunning(): boolean {
-        return turnInFlight;
+        // 前台 result/done 到后台 wake 任务自动续 turn 之间，SDK 会短暂把
+        // turnInFlight 清成 false，但从产品/Session 视角 Agent 仍未执行结束。
+        // 把 provider 已锁存的 continuation claim 纳入权威 busy 判据，统一阻止
+        // 新 send、rewind 与 closeIfIdle 插入该窗口。
+        return (
+          turnInFlight ||
+          activeContinuationClaim()?.state === 'awaiting' ||
+          pendingContinuationTerminalBoundaries > 0
+        );
       },
 
       async previewRewindFiles(userUuid: string): Promise<RewindFilesResult> {
@@ -3784,6 +5688,14 @@ export class ClaudeCodeAgent extends BaseAgent {
         // 替换 query 就绪后再操作(dryRun 在全新会话上自然返回 canRewind:false 软拒绝)。
         while (idleResumeRebuildGate) {
           await idleResumeRebuildGate;
+        }
+        if (continuationCancellationRequiresQueryRebuild) {
+          // Stop may have already closed the old Query while leaving the
+          // cancellation rebuild tombstone for the next explicit turn. A
+          // rewind preview is also a valid next control action: install an
+          // isolated fresh Query first, but do not inject the send-only
+          // /compact bridge or start a product turn.
+          await rebuildCancelledContinuationQuery(undefined, { queueCompactBridge: false });
         }
         log.info('previewRewindFiles', { userUuid, sdkSessionId });
         try {
@@ -3817,6 +5729,11 @@ export class ClaudeCodeAgent extends BaseAgent {
         while (idleResumeRebuildGate) {
           await idleResumeRebuildGate;
         }
+        if (continuationCancellationRequiresQueryRebuild) {
+          // See previewRewindFiles: rebuild the fenced Query without the
+          // compact bridge so rewindFiles retains its checkpoint semantics.
+          await rebuildCancelledContinuationQuery(undefined, { queueCompactBridge: false });
+        }
         log.info('commitRewindFiles ▶', { userUuid, priorAssistantUuid, sdkSessionId });
         // ① 立即把文件回滚到 target 时点 (失败 warn + 继续, forkSession=true 兜底)
         try {
@@ -3846,7 +5763,7 @@ export class ClaudeCodeAgent extends BaseAgent {
         turnInFlight = false;
         // bridge counter 兜底: rewind idle 时应该已经归零, 但如果上一轮 bridge 中途异常
         // (SDK 崩 / abort 未 drain result) counter 可能残留, 会污染 rebuild 后的第一 turn。
-        queuedBridgeTurns = 0;
+        clearBridgeState();
         log.info('commitRewindFiles ◀ pendingRewindTo set, awaiting next send to rebuild');
         return undefined;
       },

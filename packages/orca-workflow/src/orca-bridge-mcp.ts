@@ -2,8 +2,17 @@ import { randomUUID } from 'node:crypto';
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { isTerminalAgentErrorEvent, toSessionDispatchOutcome } from '@cindy/maker-core';
+import {
+  isTerminalAgentErrorEvent,
+  ORCA_NESTED_REPORT_ERROR_CODE,
+  ORCA_NESTED_REPORT_ERROR_MESSAGE,
+  toSessionDispatchOutcome,
+} from '@cindy/maker-core';
 import type { AgentEvent, AgentKind, Logger, Maker, McpProvider, McpProviderContext, Session } from '@cindy/maker-core';
+import {
+  isProductTurnDoneEvent,
+  isTurnContinuationBoundaryEvent,
+} from '@cindy/maker-shared/turn-continuation';
 
 const MAX_CAPTURED_TEXT = 64 * 1024;
 
@@ -20,6 +29,12 @@ export interface OrcaPersistedSession {
   fastMode?: boolean;
   sdkSessionId?: string;
   title?: string;
+  /**
+   * SSH 远端 session 的 host id。rehydrate (ensureSessionFromMeta) 必须把它
+   * 带回 createSession — 缺失时远端 lead 会以远端 workingDir 在本机重建
+   * (workdir check 失败或建出错误的本地 session)。
+   */
+  remoteHostId?: string | null;
 }
 
 export interface OrcaWorkerLink {
@@ -83,6 +98,29 @@ export interface OrcaBridgeMcpDeps {
   ) => Promise<void>;
   wireSession: (session: Session) => void;
   hydrateSessionRoute?: (sessionId: string, providerId: string | null) => void | Promise<void>;
+  /**
+   * 远端 session 重建前的 preflight (SSH 重连 / agent install / 远端 MCP
+   * 注入), 与宿主 IPC create/send 路径的 remote ensure 同语义。bridge
+   * rehydrate (ensureSessionFromMeta) 直调 core createSession 不经 IPC 层,
+   * 必须由宿主注入本回调补齐 — 缺失时 app 重启后 worker 回报会在 SSH 未
+   * 重连 / agent 未安装 / 远端无协同 MCP 的状态下重建 lead
+   * (review: PR #778 codex-connector R17 P1)。仅远端 capable 的宿主注入,
+   * 缺省 no-op。
+   */
+  ensureRemoteSessionStart?: (params: {
+    sessionId: string;
+    agentKind: AgentKind;
+    remoteHostId: string;
+    workingDir: string;
+  }) => Promise<void | {
+    /**
+     * 宿主 preflight 归一化后的 per-session Maker Memory 开关 (全局设置
+     * backfill + stale-bridge 钳制, 与 IPC create/send 路径同一套 mutate)。
+     * rehydrate 的 createSession 必须用它 — 缺省 (老宿主 / no-op) 按 false
+     * 保守处理, 不得在未归一化的情况下注入记忆 (review R6 P2)。
+     */
+    makerMemoryEnabled?: boolean;
+  }>;
   orcaTeamStore?: OrcaTeamStore;
   dispatchInterAgentMessage?: (params: {
     targetSessionId: string;
@@ -142,6 +180,37 @@ interface SanitizedOrcaSendError {
 const ORCA_SEND_OWNER = 'orca-workflow';
 const SAFE_ERROR_NAME_RE = /^[A-Za-z][A-Za-z0-9]{0,63}$/;
 const SAFE_SEND_ERROR_CODES = new Set(['SESSION_RUNNING']);
+
+export const SEND_TO_LEAD_TOOL_DESCRIPTION = [
+  'Pass the worker_id from the latest Lead message.',
+  'This tool is the assigned Orca Worker\'s direct reporting channel to the Lead.',
+  'Native subagents are internal helpers, so they return findings to the Worker instead of calling this tool.',
+  'Call once per turn, only with the final report or one blocking question.',
+  'After a question, stop and wait for send_to_worker.',
+  'Combine all results; do not send progress, partial findings, or same-turn corrections.',
+].join(' ');
+
+export function authorizeSendToLeadCaller(ctx: McpProviderContext):
+  | { ok: true }
+  | { ok: false; error: { error: string; code: 'NESTED_AGENT_NOT_ALLOWED' | 'CALLER_PROVENANCE_REQUIRED' } } {
+  if (ctx.mcpCallerAttested === true && ctx.mcpCallerKind === 'root') return { ok: true };
+  if (ctx.mcpCallerAttested === true && ctx.mcpCallerKind === 'descendant') {
+    return {
+      ok: false,
+      error: {
+        error: ORCA_NESTED_REPORT_ERROR_MESSAGE,
+        code: ORCA_NESTED_REPORT_ERROR_CODE,
+      },
+    };
+  }
+  return {
+    ok: false,
+    error: {
+      error: 'caller provenance is required to report directly to the lead',
+      code: 'CALLER_PROVENANCE_REQUIRED',
+    },
+  };
+}
 
 function makeOrcaSendContext(entrypoint: string, sessionId: string, action: string): string {
   return `${entrypoint}/${sessionId}/${action}`;
@@ -329,10 +398,10 @@ function captureSessionOutput(
     if (typeof result === 'string' && result.length > 0) {
       entry.finalText = result;
     }
-    entry.status = 'done';
+    if (isProductTurnDoneEvent(ev)) entry.status = 'done';
     return;
   }
-  if (isTerminalAgentErrorEvent(ev)) {
+  if (isTerminalAgentErrorEvent(ev) && !isTurnContinuationBoundaryEvent(ev)) {
     entry.status = 'error';
   }
 }
@@ -357,6 +426,10 @@ function peekAutoBridgeState(workerId: string): AutoBridgeState | null {
 }
 
 function setAutoBridgePending(workerId: string, pending: boolean): void {
+  if (!pending) {
+    workerAutoBridgePending.delete(workerId);
+    return;
+  }
   let state = peekAutoBridgeState(workerId);
   if (!state) {
     state = { pending: false, ready: false, inFlight: false, version: 0 };
@@ -381,6 +454,7 @@ export const __testing = {
   autoBridgeStateCount: () => workerAutoBridgePending.size,
   clearAutoBridgeState: clearAutoBridgePending,
   hasAutoBridgePending,
+  setAutoBridgePending,
 };
 
 function attachSessionCapture(entry: CapturedSessionEntry): void {
@@ -389,7 +463,9 @@ function attachSessionCapture(entry: CapturedSessionEntry): void {
   entry.captureDispose = entry.session.onEvent((ev) => {
     entry.eventSeq += 1;
     const eventSeq = entry.eventSeq;
-    const isTerminalEvent = ev.type === 'done' || isTerminalAgentErrorEvent(ev);
+    const isTerminalEvent =
+      isProductTurnDoneEvent(ev) ||
+      (isTerminalAgentErrorEvent(ev) && !isTurnContinuationBoundaryEvent(ev));
     captureSessionOutput(entry, ev);
     if (isTerminalEvent) {
       entry.terminalEventSeq = eventSeq;
@@ -407,18 +483,42 @@ async function ensureSessionFromMeta(
   await deps.hydrateSessionRoute?.(meta.sessionId, meta.providerId ?? null);
   const active = maker.getSession(meta.sessionId);
   if (active) return active;
+  // 远端 lead 重建前必须跑宿主 remote preflight (SSH 重连 / agent install /
+  // 远端 MCP 注入):bridge 直调 core createSession 不经 maker-ipc, 跳过这步
+  // 会让 app 重启后的首次 worker 回报 host-not-ready 或远端无协同 MCP。
+  let remoteMakerMemoryEnabled = false;
+  if (meta.remoteHostId) {
+    const preflight = await deps.ensureRemoteSessionStart?.({
+      sessionId: meta.sessionId,
+      agentKind: meta.agentKind,
+      remoteHostId: meta.remoteHostId,
+      workingDir: meta.workingDir,
+    });
+    // SSH remote 的 Maker Memory 与 IPC create/send 路径同语义:开关由
+    // preflight 归一化 (全局设置 backfill + stale-bridge 钳制) 后回传;
+    // 老宿主 / 未注入 preflight 时保守按 false — 不得在未归一化的情况下
+    // 注入 (review R6 P2:此前这里硬编码 false, 把远端 rehydrate 会话的
+    // 记忆永久关死, 与已放开的其余路径分叉)。
+    remoteMakerMemoryEnabled = preflight?.makerMemoryEnabled === true;
+  }
   const session = await maker.createSession({
     id: meta.sessionId,
     agentKind: meta.agentKind,
     workingDir: meta.workingDir,
     model: meta.model,
-    providerId: meta.providerId ?? undefined,
+    // null 表示「清除显式来源，走 Cindy 默认路由」；不能塌缩成 undefined，后者会让
+    // Pi core 反查同名 BYOM provider。
+    providerId: meta.providerId,
     effort: meta.effort,
     permissionMode: meta.permissionMode,
     fastMode: meta.fastMode,
     title: meta.title,
     ...(vendorOptions ? { vendorOptions } : {}),
     ...(meta.sdkSessionId ? { resumeSessionId: meta.sdkSessionId } : {}),
+    // 远端 lead 在同一台 SSH 主机上重建; 本地 lead 无这两个字段。
+    ...(meta.remoteHostId
+      ? { remoteHostId: meta.remoteHostId, makerMemoryEnabled: remoteMakerMemoryEnabled }
+      : {}),
   });
   deps.wireSession(session);
   return session;
@@ -567,9 +667,19 @@ export function createOrcaWorkerBridgeMcpProvider(deps: OrcaBridgeMcpDeps): McpP
   const leadCaptures = new CapturedSessionRegistry();
   return {
     name: 'orca_worker_bridge',
-    isEnabled: (ctx) => ctx.vendorOptions?.orcaRole === 'worker' || ctx.agentKind === 'codex',
+    // Global HTTP bridges (Codex and Pi) bind the real session only at request time.
+    // Keep the server registered when a dynamic context resolver exists; every tool
+    // call still fails closed in resolveWorkerLink against that runtime identity.
+    isEnabled: (ctx) =>
+      ctx.vendorOptions?.orcaRole === 'worker'
+      || ctx.agentKind === 'codex'
+      || typeof ctx.getSessionContext === 'function',
     toClaudeSdkConfig: (ctx) => {
-      if (ctx.vendorOptions?.orcaRole !== 'worker' && ctx.agentKind !== 'codex') return null;
+      if (
+        ctx.vendorOptions?.orcaRole !== 'worker'
+        && ctx.agentKind !== 'codex'
+        && typeof ctx.getSessionContext !== 'function'
+      ) return null;
       const server = new McpServer({ name: 'orca_worker_bridge', version: '0.1.0' });
 
       async function resolveLead(workerId?: string) {
@@ -591,12 +701,14 @@ export function createOrcaWorkerBridgeMcpProvider(deps: OrcaBridgeMcpDeps): McpP
 
       server.tool(
         'send_to_lead',
-        'You MUST pass your worker_id (see the Bridge note at the end of the most recent lead message). Report results or ask a question to the lead session.',
+        SEND_TO_LEAD_TOOL_DESCRIPTION,
         {
           message: z.string().min(1),
           worker_id: z.string().min(1).describe('Required. Your assigned worker_id. Find it in the Bridge note at the end of the most recent lead message, or in the system prompt Identity line.'),
         },
         async ({ message, worker_id }) => {
+          const authorization = authorizeSendToLeadCaller(resolveRuntimeMcpContext(ctx));
+          if (!authorization.ok) return text(authorization.error, true);
           const resolved = await resolveLead(worker_id);
           if (!resolved.ok) return text(resolved.error, true);
           const { link, entry } = resolved;
