@@ -25,6 +25,7 @@ import { markAppContentWindow } from './windowFocusClassifier.js';
 import { readWindowBehaviorSettings } from './window-behavior-settings-store.js';
 import { resolveVibrancyConfig, type WindowsBackdropMaterial } from './vibrancyConfig.js';
 import { installSelectionContextMenu } from './selection-context-menu.js';
+import { applyAppearanceToWindow } from './appearance-settings-ipc.js';
 
 const log = createLogger('secondary-windows');
 
@@ -79,10 +80,7 @@ export function installExternalLinkGuards(win: BrowserWindow): void {
  * 新开一个完整应用窗口并定位到指定 session。
  * @param mainWindow 主窗口,用来取当前 bounds 作为新窗初始大小(右下错开);可为 null。
  */
-export function openSessionInNewWindow(
-  sessionId: string,
-  mainWindow: BrowserWindow | null,
-): void {
+export function openSessionInNewWindow(sessionId: string, mainWindow: BrowserWindow | null): void {
   // frame 配置复刻主窗(bootstrap-electron.ts createWindow): Mac 隐藏标题栏留红绿灯,
   // Windows 无边框 + 自绘标题栏。
   const platformOptions =
@@ -120,11 +118,18 @@ export function openSessionInNewWindow(
     },
   });
   markAppContentWindow(win);
+  applyAppearanceToWindow(win);
+  win.webContents.on('did-finish-load', () => {
+    if (win.isDestroyed()) return;
+    applyAppearanceToWindow(win);
+  });
   installNewMakerWindowShortcut(win);
   installSelectionContextMenu(win);
   // E4D:副窗加入 set,供 vibrancy 动态开关;关闭时移除。
   secondaryWindows.add(win);
-  win.once('closed', () => { secondaryWindows.delete(win); });
+  win.once('closed', () => {
+    secondaryWindows.delete(win);
+  });
 
   installExternalLinkGuards(win);
 
@@ -147,16 +152,27 @@ export function openSessionInNewWindow(
     url.hash = hash;
     void win.loadURL(url.toString());
   } else {
-    void win.loadFile(
-      path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`),
-      { query: { secondaryWindow: '1', bootSession: sessionId }, hash },
-    );
+    void win.loadFile(path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`), {
+      query: { secondaryWindow: '1', bootSession: sessionId },
+      hash,
+    });
   }
 
   log.info('opened session in new window', { sessionId });
 }
 
 // E4D 毛玻璃(lead 裁决副窗同处理):遍历副窗 set,用同 resolveVibrancyConfig 映射
+/**
+ * 是不是本模块开出来的会话副窗口。
+ *
+ * 给 main 侧那些「只想放行承载应用外壳(router / MainLayout)的窗口」的闸用：副窗口跑的是
+ * 同一套路由,设置页在里面照样打得开;而 appContentWindows 那个 WeakSet 还包含右侧栏、
+ * Ghost 面板 —— 它们不承载路由,不该拿到这类能力。
+ */
+export function isSecondaryAppWindow(win: BrowserWindow | null | undefined): boolean {
+  return Boolean(win && !win.isDestroyed() && secondaryWindows.has(win));
+}
+
 // 开关 vibrancy(仅 CINDY 透壁纸)。副窗 renderer 首帧/切 family 时 IPC theme:apply-vibrancy
 // → main applyWindowVibrancy → 调主窗 + 本函数(副窗)。
 export function applyVibrancyToSecondaryWindows(familyId: string, isDark: boolean): void {

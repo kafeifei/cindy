@@ -7,6 +7,7 @@ import type {
   SessionSendResult,
 } from '@cindy/maker-core';
 import type { Scheduler } from '@cindy/maker-scheduler';
+import { SCHEDULER_RUN_ID_VENDOR_OPTION } from '@cindy/maker-scheduler';
 import type {
   FireContext,
   Logger,
@@ -61,15 +62,20 @@ type SendImpl = (
 
 interface FakeSessionHarness {
   session: Session;
+  vendorOptions: Record<string, unknown>;
   emit(event: AgentEvent): void;
 }
 
 function createSessionHarness(sendImpl: SendImpl): FakeSessionHarness {
   const listeners: Array<(event: AgentEvent) => void> = [];
+  const vendorOptions: Record<string, unknown> = {};
   const session = {
     id: 'scheduler-session',
     agentKind: 'codex',
     send: vi.fn<SendImpl>(sendImpl),
+    setVendorOptions: vi.fn(async (patch: Record<string, unknown>) => {
+      Object.assign(vendorOptions, patch);
+    }),
     onEvent(listener: (event: AgentEvent) => void) {
       listeners.push(listener);
       return vi.fn(() => {
@@ -82,6 +88,7 @@ function createSessionHarness(sendImpl: SendImpl): FakeSessionHarness {
 
   return {
     session,
+    vendorOptions,
     emit(event: AgentEvent) {
       for (const listener of [...listeners]) listener(event);
     },
@@ -112,18 +119,25 @@ function baseSchedule(overrides: Partial<Schedule> = {}): Schedule {
   };
 }
 
-function createFireContext(): FireContext {
+function createFireContext(runId = 'run-1'): FireContext {
   return {
-    runId: 'run-1',
+    runId,
     firedAt: 1_700_000_000_100,
     signal: new AbortController().signal,
     onSessionBound: vi.fn(async () => undefined),
   };
 }
 
-function createRunnerHarness(session: Session, opts: { silenced: boolean }) {
+function createRunnerHarness(
+  session: Session,
+  opts: {
+    silenced: boolean;
+    abandoned?: boolean;
+    notifyImpl?: Notifier['notify'];
+  },
+) {
   const notifier: Notifier & { notify: ReturnType<typeof vi.fn> } = {
-    notify: vi.fn(async () => undefined),
+    notify: vi.fn(opts.notifyImpl ?? (async () => undefined)),
   };
   const logger: Logger = { warn: vi.fn(), info: vi.fn(), debug: vi.fn(), error: vi.fn() };
   const maker = {
@@ -139,8 +153,9 @@ function createRunnerHarness(session: Session, opts: { silenced: boolean }) {
     logger,
   });
   const isRunSilenced = vi.fn(() => opts.silenced);
-  runner.attachScheduler({ isRunSilenced } as unknown as Scheduler);
-  return { runner, notifier, isRunSilenced };
+  const isRunAbandoned = vi.fn(() => opts.abandoned === true);
+  runner.attachScheduler({ isRunSilenced, isRunAbandoned } as unknown as Scheduler);
+  return { runner, notifier, isRunSilenced, isRunAbandoned };
 }
 
 /** send 接受 + onAccepted 落库,emit done 后 fire 才会 resolve */
@@ -191,6 +206,153 @@ describe('MakerScheduleRunner silent-run notification skip', () => {
     expect(notifier.notify).toHaveBeenCalledTimes(1);
   });
 
+  it('scheduler turn 绑定 host-owned runId,收尾后清理', async () => {
+    const h = createSessionHarness(acceptingSend());
+    const { runner } = createRunnerHarness(h.session, { silenced: false });
+
+    await fireToCompletion(runner, h);
+
+    expect(h.session.setVendorOptions).toHaveBeenNthCalledWith(1, {
+      [SCHEDULER_RUN_ID_VENDOR_OPTION]: 'run-1',
+    });
+    expect(h.session.setVendorOptions).toHaveBeenLastCalledWith({
+      [SCHEDULER_RUN_ID_VENDOR_OPTION]: undefined,
+    });
+    expect(h.vendorOptions[SCHEDULER_RUN_ID_VENDOR_OPTION]).toBeUndefined();
+  });
+
+  it('context 写入失败时只回滚当前 owner generation', async () => {
+    const h = createSessionHarness(acceptingSend());
+    const setVendorOptions = h.session.setVendorOptions as ReturnType<typeof vi.fn>;
+    setVendorOptions.mockImplementation(async (patch: Record<string, unknown>) => {
+      Object.assign(h.vendorOptions, patch);
+      if (patch[SCHEDULER_RUN_ID_VENDOR_OPTION] === 'run-1') {
+        throw new Error('context write failed');
+      }
+    });
+    const { runner } = createRunnerHarness(h.session, { silenced: false });
+
+    await fireToCompletion(runner, h);
+
+    expect(setVendorOptions).toHaveBeenNthCalledWith(1, {
+      [SCHEDULER_RUN_ID_VENDOR_OPTION]: 'run-1',
+    });
+    expect(setVendorOptions).toHaveBeenNthCalledWith(2, {
+      [SCHEDULER_RUN_ID_VENDOR_OPTION]: undefined,
+    });
+    expect(h.vendorOptions[SCHEDULER_RUN_ID_VENDOR_OPTION]).toBeUndefined();
+  });
+
+  it('旧 fire 收尾不能清掉同一 session 上较新的 run context', async () => {
+    let resolveA!: () => void;
+    let resolveB!: () => void;
+    const notifyA = new Promise<void>((resolve) => {
+      resolveA = resolve;
+    });
+    const notifyB = new Promise<void>((resolve) => {
+      resolveB = resolve;
+    });
+    const h = createSessionHarness(acceptingSend());
+    const { runner, notifier } = createRunnerHarness(h.session, {
+      silenced: false,
+      notifyImpl: async (_schedule, run) => (run.id === 'run-a' ? notifyA : notifyB),
+    });
+
+    const fireA = runner.fire(
+      baseSchedule({ id: 'schedule-a' }),
+      createFireContext('run-a'),
+    );
+    await vi.waitFor(() => expect(mocks.createMessage).toHaveBeenCalledTimes(1));
+    h.emit({ type: 'done', data: {} });
+    await vi.waitFor(() =>
+      expect(notifier.notify).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ id: 'run-a' }),
+      ),
+    );
+
+    // A's turn is done, but its fire is still finalizing notification work.
+    // B is accepted on the same session before A's finally runs.
+    const fireB = runner.fire(
+      baseSchedule({ id: 'schedule-b' }),
+      createFireContext('run-b'),
+    );
+    await vi.waitFor(() => expect(mocks.createMessage).toHaveBeenCalledTimes(2));
+    h.emit({ type: 'done', data: {} });
+    await vi.waitFor(() =>
+      expect(notifier.notify).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ id: 'run-b' }),
+      ),
+    );
+    expect(h.vendorOptions[SCHEDULER_RUN_ID_VENDOR_OPTION]).toBe('run-b');
+
+    resolveA();
+    await fireA;
+    expect(h.vendorOptions[SCHEDULER_RUN_ID_VENDOR_OPTION]).toBe('run-b');
+
+    resolveB();
+    await fireB;
+    expect(h.vendorOptions[SCHEDULER_RUN_ID_VENDOR_OPTION]).toBeUndefined();
+  });
+
+  it('新 fire 的 context 写入仍在 await 时,旧 fire 收尾也不能清掉它', async () => {
+    let resolveNotifyA!: () => void;
+    let releaseBindB!: () => void;
+    const notifyA = new Promise<void>((resolve) => {
+      resolveNotifyA = resolve;
+    });
+    const bindB = new Promise<void>((resolve) => {
+      releaseBindB = resolve;
+    });
+    const h = createSessionHarness(acceptingSend());
+    const setVendorOptions = h.session.setVendorOptions as ReturnType<typeof vi.fn>;
+    setVendorOptions.mockImplementation(async (patch: Record<string, unknown>) => {
+      Object.assign(h.vendorOptions, patch);
+      if (patch[SCHEDULER_RUN_ID_VENDOR_OPTION] === 'run-b') await bindB;
+    });
+    const { runner, notifier } = createRunnerHarness(h.session, {
+      silenced: false,
+      notifyImpl: async (_schedule, run) => (run.id === 'run-a' ? notifyA : undefined),
+    });
+
+    const fireA = runner.fire(
+      baseSchedule({ id: 'schedule-a' }),
+      createFireContext('run-a'),
+    );
+    await vi.waitFor(() => expect(mocks.createMessage).toHaveBeenCalledTimes(1));
+    h.emit({ type: 'done', data: {} });
+    await vi.waitFor(() =>
+      expect(notifier.notify).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ id: 'run-a' }),
+      ),
+    );
+
+    const fireB = runner.fire(
+      baseSchedule({ id: 'schedule-b' }),
+      createFireContext('run-b'),
+    );
+    await vi.waitFor(() =>
+      expect(setVendorOptions).toHaveBeenCalledWith({
+        [SCHEDULER_RUN_ID_VENDOR_OPTION]: 'run-b',
+      }),
+    );
+
+    // B already mutated the shared option but its async bind has not settled.
+    // A's late finally must see B's owner generation and leave the value alone.
+    expect(h.vendorOptions[SCHEDULER_RUN_ID_VENDOR_OPTION]).toBe('run-b');
+    resolveNotifyA();
+    await fireA;
+    expect(h.vendorOptions[SCHEDULER_RUN_ID_VENDOR_OPTION]).toBe('run-b');
+
+    releaseBindB();
+    await vi.waitFor(() => expect(mocks.createMessage).toHaveBeenCalledTimes(2));
+    h.emit({ type: 'done', data: {} });
+    await fireB;
+    expect(h.vendorOptions[SCHEDULER_RUN_ID_VENDOR_OPTION]).toBeUndefined();
+  });
+
   it('silentWhenIdle=true → 发送隐藏主动上报协议,落库仍保留原始 prompt', async () => {
     const h = createSessionHarness(acceptingSend());
     const { runner } = createRunnerHarness(h.session, { silenced: false });
@@ -238,6 +400,120 @@ describe('MakerScheduleRunner silent-run notification skip', () => {
     const { runner, notifier } = createRunnerHarness(h.session, { silenced: true });
 
     await expect(runner.fire(baseSchedule(), createFireContext())).rejects.toThrow();
+
+    expect(notifier.notify).toHaveBeenCalledTimes(1);
+  });
+
+  it('已被卡死守卫强制收口的 run:success 迟到 settle 不重复通知', async () => {
+    // 引擎强制收口时已按任务配置投过失败通知。常见顺序是"引擎先投、runner 几分钟后才
+    // settle",runner 若照常走 finalizeRun,用户会为同一轮收到两条
+    // (review #944 第十四轮 P1)。
+    const h = createSessionHarness(acceptingSend());
+    const { runner, notifier, isRunAbandoned } = createRunnerHarness(h.session, {
+      silenced: false,
+      abandoned: true,
+    });
+
+    await fireToCompletion(runner, h);
+
+    expect(isRunAbandoned).toHaveBeenCalled();
+    expect(notifier.notify).not.toHaveBeenCalled();
+  });
+
+  it('已被卡死守卫强制收口的 run:失败路径也不重复通知', async () => {
+    const h = createSessionHarness(async (_message, opts) => {
+      await opts?.onAccepted?.();
+      throw new Error('send blew up');
+    });
+    const { runner, notifier } = createRunnerHarness(h.session, {
+      silenced: false,
+      abandoned: true,
+    });
+
+    await expect(runner.fire(baseSchedule(), createFireContext())).rejects.toThrow();
+
+    expect(notifier.notify).not.toHaveBeenCalled();
+  });
+
+  it('通知权在投递开始之前就已认领(不是投递完才认领)', async () => {
+    // abandoned 预检只在进入 notify 之前有效。notifier.notify 是 await,期间强制收口完全
+    // 可能把这一轮标成 abandoned,并因为 runnerNotifiedFailure 还是 false 而并发投出第二
+    // 条通知。认领必须早于投递,引擎的 needsForcedFailureNotification 才看得见
+    // (review #944 第十五轮 P1)。
+    const h = createSessionHarness(acceptingSend());
+    const { runner, notifier } = createRunnerHarness(h.session, { silenced: false });
+    const notified: string[] = [];
+    const ctx = createFireContext();
+    (ctx as { onRunnerNotified?: (k: string) => void }).onRunnerNotified = (k) => {
+      notified.push(k);
+    };
+    // 投递卡住:此刻若还没认领,就存在竞态窗口
+    let releaseNotify!: () => void;
+    notifier.notify.mockImplementationOnce(
+      () => new Promise<void>((resolve) => { releaseNotify = resolve; }),
+    );
+
+    const firePromise = runner.fire(baseSchedule(), ctx);
+    await vi.waitFor(() => expect(mocks.createMessage).toHaveBeenCalled());
+    h.emit({ type: 'done', data: {} });
+
+    // 投递仍挂着,但认领已经发生
+    await vi.waitFor(() => expect(notifier.notify).toHaveBeenCalled());
+    expect(notified).toEqual(['success']);
+
+    releaseNotify();
+    await firePromise;
+    expect(notified).toEqual(['success']);
+  });
+
+  it('守卫 abort 之后才拿到成功结果:压住这条自相矛盾的成功通知', async () => {
+    // 守卫 abort 已经发出、强制释放的宽限还没到点时,runner 可能恰好拿到成功结果。此刻
+    // abandoned 仍是 false,旧实现照常投一条"成功";紧接着引擎看到 stallAbortedAt,把这一轮
+    // 记成 failed 并补投一条"失败" —— 同一轮两条互相矛盾的通知(review #944 第十八轮 P1)。
+    const h = createSessionHarness(acceptingSend());
+    const { runner, notifier } = createRunnerHarness(h.session, { silenced: false });
+    const controller = new AbortController();
+    const ctx = createFireContext();
+    (ctx as { signal: AbortSignal }).signal = controller.signal;
+
+    const firePromise = runner.fire(baseSchedule(), ctx);
+    await vi.waitFor(() => expect(mocks.createMessage).toHaveBeenCalled());
+    controller.abort(); // 卡死守卫开火
+    h.emit({ type: 'done', data: {} }); // 但这一轮其实跑完了
+    await firePromise;
+
+    expect(notifier.notify).not.toHaveBeenCalled();
+  });
+
+  it('守卫 abort 之后拿到失败结果:失败通知照发(异常必须可见)', async () => {
+    // 压 success 不能顺手把失败也压掉。引擎那边有 needsForcedFailureNotification 兜着
+    // 去重(runner 认领过 'failure' 就不再补投),所以这条照发不会变成双份。
+    // 注:send 自己抛错时若 signal 已 abort,runner 更早就直接 rethrow、压根不到
+    // finalizeRun(第五轮已确立的语义,由引擎补发)。能带着 runError 走到 finalizeRun 的
+    // 是"turn 已受理、之后收到终态 error"这条路,所以这里这么构造。
+    const h = createSessionHarness(acceptingSend());
+    const { runner, notifier } = createRunnerHarness(h.session, { silenced: false });
+    const controller = new AbortController();
+    const ctx = createFireContext();
+    (ctx as { signal: AbortSignal }).signal = controller.signal;
+
+    const firePromise = runner.fire(baseSchedule(), ctx);
+    await vi.waitFor(() => expect(mocks.createMessage).toHaveBeenCalled());
+    controller.abort();
+    h.emit({ type: 'error', data: { message: 'upstream died', isTerminal: true } });
+    await expect(firePromise).rejects.toThrow();
+
+    expect(notifier.notify).toHaveBeenCalledTimes(1);
+  });
+
+  it('未被强制收口时通知照发(去重不能变成永久静默)', async () => {
+    const h = createSessionHarness(acceptingSend());
+    const { runner, notifier } = createRunnerHarness(h.session, {
+      silenced: false,
+      abandoned: false,
+    });
+
+    await fireToCompletion(runner, h);
 
     expect(notifier.notify).toHaveBeenCalledTimes(1);
   });

@@ -24,12 +24,12 @@ export function QuoteChip({
 
   const tooltip = (
     <span className="flex flex-col gap-1">
-      <span className="whitespace-pre-wrap text-[12px] leading-[1.5] [overflow-wrap:anywhere]">
+      <span className="whitespace-pre-wrap text-12 leading-[1.5] [overflow-wrap:anywhere]">
         “{quote.text}”
       </span>
       {sourceLabel ? (
         <span
-          className="inline-flex min-w-0 items-center gap-1 text-[11px]"
+          className="inline-flex min-w-0 items-center gap-1 text-11"
           style={{ color: 'var(--text-tertiary)' }}
         >
           <FileText className="h-3 w-3 shrink-0" aria-hidden />
@@ -47,6 +47,10 @@ export function QuoteChip({
       tooltipContentClassName="max-h-64 w-80 max-w-[70vw] overflow-y-auto whitespace-normal"
       ariaLabel={quote.text}
       selected={selected}
+      // 刻意的例外:chip 上是把换行折叠成单行的**摘要**,不是引用原文。让它进
+      // 剪贴板等于把压扁过的文本混进复制结果,原文本身就在被引用的那条消息里。
+      // 其余消息内 chip(文件名、会话、项目)展示的是完整实体名,默认可复制。
+      textSelectable={false}
     />
   );
 }

@@ -137,6 +137,106 @@ describe('send_to_session tool', () => {
     });
   });
 
+  it('create: 显式执行配置完整透传并回显 host 的实际解析结果', async () => {
+    const { registry, sendToSession } = setup({
+      result: {
+        ok: true,
+        targetSessionId: 'tgt-codex',
+        agentKind: 'codex',
+        wakeKind: 'created',
+        targetTitle: 'PR implementation',
+        targetLastUserSendAt: null,
+        model: 'gpt-5.6-sol',
+        effort: 'xhigh',
+        fastMode: false,
+        providerId: null,
+      },
+    });
+    const res = await registry.call('send_to_session', {
+      message: '实现 PR',
+      agent_kind: 'codex',
+      model: 'gpt-5.6-sol',
+      effort: 'xhigh',
+      fast: false,
+    });
+
+    expect(sendToSession).toHaveBeenCalledWith({
+      targetSessionId: undefined,
+      message: '实现 PR',
+      dispatcherSessionId: 'disp-1',
+      title: undefined,
+      useWorktree: undefined,
+      workingDir: undefined,
+      agentKind: 'codex',
+      model: 'gpt-5.6-sol',
+      effort: 'xhigh',
+      fast: false,
+    });
+    expect(parse(res)).toMatchObject({
+      ok: true,
+      agent_kind: 'codex',
+      model: 'gpt-5.6-sol',
+      effort: 'xhigh',
+      fast_mode: false,
+      provider_id: null,
+    });
+  });
+
+  it('create: Pi Agent 配置通过 schema 并完整透传', async () => {
+    const { registry, sendToSession } = setup();
+    const res = await registry.call('send_to_session', {
+      message: '交给 Pi 实现',
+      agent_kind: 'pi',
+      model: 'pi-model',
+      effort: 'max',
+      fast: true,
+    });
+
+    expect(res.isError).toBeUndefined();
+    expect(sendToSession).toHaveBeenCalledWith(expect.objectContaining({
+      agentKind: 'pi',
+      model: 'pi-model',
+      effort: 'max',
+      fast: true,
+    }));
+  });
+
+  it.each([
+    { agent_kind: 'not-an-agent' },
+    { effort: 'extreme' },
+  ])('非法执行配置 %# → INVALID_ARGS, host 不被调', async (invalid) => {
+    const { registry, sendToSession } = setup();
+    const res = await registry.call('send_to_session', { message: 'x', ...invalid });
+    expect(parse(res)).toMatchObject({ ok: false, errorCode: 'INVALID_ARGS' });
+    expect(sendToSession).not.toHaveBeenCalled();
+  });
+
+  it('jump: 执行配置字段继续透传给 host，由 host 忽略且不改目标 session', async () => {
+    const { registry, sendToSession } = setup({
+      result: {
+        ok: true,
+        targetSessionId: UUID,
+        agentKind: 'claude-code',
+        wakeKind: 'already-active',
+        targetTitle: 'Existing',
+        targetLastUserSendAt: null,
+      },
+    });
+    await registry.call('send_to_session', {
+      target_session_id: UUID,
+      message: '增量',
+      agent_kind: 'codex',
+      model: 'gpt-5.6-sol',
+      effort: 'xhigh',
+    });
+    expect(sendToSession).toHaveBeenCalledWith(expect.objectContaining({
+      targetSessionId: UUID,
+      agentKind: 'codex',
+      model: 'gpt-5.6-sol',
+      effort: 'xhigh',
+    }));
+  });
+
   it('host 返 WORKTREE_UNAVAILABLE → 错误码透传, isError=true', async () => {
     const { registry } = setup({
       result: {
@@ -211,5 +311,58 @@ describe('send_to_session tool', () => {
     const res = await registry.call('send_to_session', { message: 'x' });
     expect(res.isError).toBe(true);
     expect(parse(res)).toMatchObject({ ok: false, errorCode: 'HOST_NOT_READY' });
+  });
+});
+
+describe('send_to_session · working_dir (#811)', () => {
+  it('create + working_dir → host 收到 workingDir 覆盖', async () => {
+    const { registry, sendToSession } = setup();
+    const res = await registry.call('send_to_session', {
+      message: '请接手项目 B 的任务',
+      title: '项目 B · 任务交接',
+      working_dir: '/abs/path/project-b',
+    });
+    expect(sendToSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workingDir: '/abs/path/project-b',
+        targetSessionId: undefined,
+      }),
+    );
+    expect(parse(res)).toMatchObject({ ok: true, wake_kind: 'created' });
+  });
+
+  it('working_dir 与 use_worktree 可组合透传', async () => {
+    const { registry, sendToSession } = setup();
+    await registry.call('send_to_session', {
+      message: 'x',
+      working_dir: '/abs/path/project-b',
+      use_worktree: true,
+    });
+    expect(sendToSession).toHaveBeenCalledWith(
+      expect.objectContaining({ workingDir: '/abs/path/project-b', useWorktree: true }),
+    );
+  });
+
+  it('省略 working_dir → host 收到 undefined(继承 dispatcher 目录的既有行为不变)', async () => {
+    const { registry, sendToSession } = setup();
+    await registry.call('send_to_session', { message: 'x' });
+    expect(sendToSession).toHaveBeenCalledWith(
+      expect.objectContaining({ workingDir: undefined }),
+    );
+  });
+
+  it('host 返 INVALID_ARGS(路径校验失败)→ 错误码透传', async () => {
+    const { registry } = setup({
+      result: {
+        ok: false,
+        errorCode: 'INVALID_ARGS',
+        message: 'working_dir 不存在或不可访问:/nope',
+      },
+    });
+    const res = await registry.call('send_to_session', {
+      message: 'x',
+      working_dir: '/nope',
+    });
+    expect(parse(res)).toMatchObject({ ok: false, errorCode: 'INVALID_ARGS' });
   });
 });

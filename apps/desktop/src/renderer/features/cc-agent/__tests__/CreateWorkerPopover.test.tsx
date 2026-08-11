@@ -29,8 +29,14 @@ const mocks = vi.hoisted(() => ({
     }>,
   },
   capabilitiesByAgent: {
-    codex: null as { availableModels: Array<{ id: string }> } | null,
-    'claude-code': null as { availableModels: Array<{ id: string }> } | null,
+    codex: null as {
+      availableModels: Array<{ id: string }>;
+      supportsOrcaWorkerPermissionMode?: boolean;
+    } | null,
+    'claude-code': null as {
+      availableModels: Array<{ id: string }>;
+      supportsOrcaWorkerPermissionMode?: boolean;
+    } | null,
   },
   capabilitiesLoading: false,
   providersLoading: false,
@@ -42,6 +48,7 @@ const mocks = vi.hoisted(() => ({
     name: string;
     connected: boolean;
     agents: string[];
+    routing?: Record<string, { wireProtocol?: string }>;
     models: Record<
       string,
       Array<{
@@ -49,6 +56,9 @@ const mocks = vi.hoisted(() => ({
         supportsFastMode?: boolean;
         efforts?: string[];
         defaultEffort?: string | null;
+        mode?: string;
+        /** 停用轴(buildRegistry 烘焙的视图层标志;narrowProviderSource 消费)。 */
+        disabled?: boolean;
       }>
     >;
   }>,
@@ -69,6 +79,7 @@ const mocks = vi.hoisted(() => ({
     >;
   }>,
   sidebarWindow: false,
+  confirm: vi.fn(async () => true),
 }));
 
 function model(id: string, efforts = ['high'], defaultEffort = 'high') {
@@ -88,12 +99,21 @@ vi.mock('@/hooks/useAgentCapabilities', () => ({
 }));
 
 vi.mock('@/hooks/useProviders', () => ({
-  useProviders: () => ({ providers: mocks.localProviders, loading: mocks.providersLoading }),
+  useProviders: () => ({
+    providers: mocks.localProviders.map((provider) => ({
+      ...provider,
+      routing: provider.routing ?? Object.fromEntries(provider.agents.map((agent) => [agent, {}])),
+    })),
+    loading: mocks.providersLoading,
+  }),
 }));
 
 vi.mock('@/hooks/useDeviceProviders', () => ({
   useDeviceProviders: () => ({
-    providers: mocks.remoteProviders,
+    providers: mocks.remoteProviders.map((provider) => ({
+      ...provider,
+      routing: Object.fromEntries(provider.agents.map((agent) => [agent, {}])),
+    })),
     loading: mocks.providersLoading,
     error: null,
   }),
@@ -160,6 +180,32 @@ vi.mock('@/components/new-chat/ModelSelector', () => ({
   ),
 }));
 
+vi.mock('@/components/new-chat/PermissionSelector', () => ({
+  PermissionSelector: (props: {
+    permissionMode: 'auto' | 'bypassPermissions';
+    onPermissionModeChange: (mode: 'auto' | 'bypassPermissions') => void;
+    allowedModes?: string[];
+  }) => (
+    <button
+      type="button"
+      data-testid="permission-selector"
+      data-mode={props.permissionMode}
+      data-allowed={props.allowedModes?.join(',') ?? ''}
+      onClick={() =>
+        props.onPermissionModeChange(
+          props.permissionMode === 'auto' ? 'bypassPermissions' : 'auto',
+        )
+      }
+    >
+      {props.permissionMode}
+    </button>
+  ),
+}));
+
+vi.mock('@/components/ui/confirm-dialog-provider', () => ({
+  useConfirmDialog: () => ({ confirm: mocks.confirm }),
+}));
+
 vi.mock('@/state/modelVisibilityPrefs', () => ({
   isModelEnabled: (_agent: string, providerId: string, m: { id: string }) =>
     !mocks.hiddenModels.includes(`${providerId}:${m.id}`),
@@ -187,12 +233,147 @@ describe('CreateWorkerPopover', () => {
     mocks.remoteProviders = [];
     mocks.hiddenModels = [];
     mocks.sidebarWindow = false;
+    mocks.confirm.mockReset();
+    mocks.confirm.mockResolvedValue(true);
   });
 
   afterEach(() => {
     cleanup();
     window.localStorage.clear();
     resetProviderModelMemoryForTest();
+  });
+
+  it('centers the setup and keeps agent and model on one row without changing its size', () => {
+    render(<CreateWorkerPopover open onClose={vi.fn()} onCreate={vi.fn()} />);
+
+    const panel = screen.getByText('orca.createWorker.title').closest('.relative.z-10');
+    const overlay = panel?.parentElement;
+    expect(overlay?.className).toContain('items-center');
+    expect(overlay?.className).not.toContain('items-start');
+    expect(overlay?.className).not.toContain('pt-[10vh]');
+    expect(panel?.className).toContain('w-[500px]');
+    expect(panel?.className).toContain('p-6');
+
+    const agentSwitcher = screen.getByRole('tablist', {
+      name: 'orca.createWorker.agentLabel',
+    });
+    const pairedFields = agentSwitcher.closest('.grid');
+    expect(pairedFields?.className).toContain('grid-cols-[220px_minmax(0,1fr)]');
+    expect(pairedFields?.contains(screen.getByTestId('model-selector'))).toBe(true);
+
+    const permissionMode = screen.getByTestId('worker-permission-mode');
+    expect(permissionMode.textContent).toContain('orca.createWorker.permissionLabel');
+    expect(screen.getByTestId('permission-selector').getAttribute('data-allowed')).toBe(
+      'auto,bypassPermissions',
+    );
+
+    const initialTask = screen.getByPlaceholderText('orca.createWorker.initialTaskPlaceholder');
+    expect(initialTask.className).toContain('h-[96px]');
+  });
+
+  it('does not claim Auto-review for a device-link worker controlled by an older peer', () => {
+    render(<CreateWorkerPopover open deviceId="device-a" onClose={vi.fn()} onCreate={vi.fn()} />);
+
+    expect(screen.queryByTestId('worker-permission-mode')).toBeNull();
+    expect(
+      (screen.getByRole('button', { name: 'orca.createWorker.submit' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
+  });
+
+  it('defaults new Worker creation to Full access', async () => {
+    const onCreate = vi.fn();
+    render(
+      <CreateWorkerPopover
+        open
+        onClose={vi.fn()}
+        onCreate={onCreate}
+      />,
+    );
+
+    const selector = screen.getByTestId('permission-selector');
+    expect(selector.getAttribute('data-mode')).toBe('bypassPermissions');
+    expect(selector.getAttribute('data-allowed')).toBe('auto,bypassPermissions');
+
+    fireEvent.click(screen.getByRole('button', { name: 'orca.createWorker.submit' }));
+
+    await waitFor(() =>
+      expect(onCreate).toHaveBeenCalledWith(
+        expect.objectContaining({ workerPermissionMode: 'bypassPermissions' }),
+      ),
+    );
+    expect(JSON.parse(localStorage.getItem('workerCreationPrefs') ?? '{}')).toMatchObject({
+      workerPermissionMode: 'bypassPermissions',
+    });
+  });
+
+  it('keeps a manually saved Auto-review preference after the product default changes', async () => {
+    window.localStorage.setItem(
+      'workerCreationPrefs',
+      JSON.stringify({ workerPermissionMode: 'auto' }),
+    );
+    const onCreate = vi.fn();
+    render(<CreateWorkerPopover open onClose={vi.fn()} onCreate={onCreate} />);
+
+    const selector = screen.getByTestId('permission-selector');
+    await waitFor(() => expect(selector.getAttribute('data-mode')).toBe('auto'));
+    fireEvent.click(screen.getByRole('button', { name: 'orca.createWorker.submit' }));
+
+    await waitFor(() =>
+      expect(onCreate).toHaveBeenCalledWith(
+        expect.objectContaining({ workerPermissionMode: 'auto' }),
+      ),
+    );
+    expect(JSON.parse(localStorage.getItem('workerCreationPrefs') ?? '{}')).toMatchObject({
+      workerPermissionMode: 'auto',
+    });
+  });
+
+  it('blocks Worker creation when a device-link peer cannot honor permission selection', () => {
+    render(
+      <CreateWorkerPopover
+        open
+        deviceId="old-device"
+        requireWorkerPermissionModeSupport
+        onClose={vi.fn()}
+        onCreate={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByTestId('permission-selector')).toBeNull();
+    expect(screen.getByText('newChat.collaboration.unsupportedRemoteHint')).toBeTruthy();
+    expect(
+      (screen.getByRole('button', { name: 'orca.createWorker.submit' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+  });
+
+  it('keeps Auto-review when the Full access confirmation is cancelled', async () => {
+    mocks.confirm.mockResolvedValue(false);
+    window.localStorage.setItem(
+      'workerCreationPrefs',
+      JSON.stringify({ workerPermissionMode: 'auto' }),
+    );
+    const onCreate = vi.fn();
+    render(
+      <CreateWorkerPopover
+        open
+        onClose={vi.fn()}
+        onCreate={onCreate}
+      />,
+    );
+
+    const selector = screen.getByTestId('permission-selector');
+    fireEvent.click(selector);
+    await waitFor(() => expect(mocks.confirm).toHaveBeenCalledTimes(1));
+    expect(selector.getAttribute('data-mode')).toBe('auto');
+
+    fireEvent.click(screen.getByRole('button', { name: 'orca.createWorker.submit' }));
+    await waitFor(() =>
+      expect(onCreate).toHaveBeenCalledWith(
+        expect.objectContaining({ workerPermissionMode: 'auto' }),
+      ),
+    );
   });
 
   it('disables immediately and collapses repeated click events into one request', async () => {
@@ -494,6 +675,39 @@ describe('CreateWorkerPopover', () => {
     );
   });
 
+  it('clears a restored chat-bridged Codex provider for SSH worker creation', async () => {
+    window.localStorage.setItem(
+      'workerCreationPrefs',
+      JSON.stringify({
+        lastAgent: 'codex',
+        codex: { model: 'gpt-5.5', effort: 'high', fast: false, providerId: 'chat-bridge' },
+      }),
+    );
+    mocks.localProviders = [
+      {
+        id: 'chat-bridge',
+        name: 'Chat Bridge',
+        connected: true,
+        agents: ['codex'],
+        routing: { codex: { wireProtocol: 'openai-chat' } },
+        models: { codex: [{ id: 'gpt-5.5' }], 'claude-code': [] },
+      },
+    ];
+    mocks.modelsByAgent.codex = [model('gpt-5.5')];
+    mocks.capabilitiesByAgent.codex = { availableModels: [{ id: 'gpt-5.5' }] };
+    const onCreate = vi.fn();
+
+    render(<CreateWorkerPopover open sshRemote onClose={vi.fn()} onCreate={onCreate} />);
+    await waitFor(() =>
+      expect(screen.getByTestId('model-selector').dataset.currentProvider).toBe(''),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'orca.createWorker.submit' }));
+
+    await waitFor(() =>
+      expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ providerId: null })),
+    );
+  });
+
   it('restores remembered effort and Fast for the picked row when the panel omits them', async () => {
     // 真组件选行只回传 (providerId, modelId);目标模型 hover 配置过的 effort/Fast
     // 存在模型级全局预设里,选中后必须恢复,不能沿用上一个模型的值。
@@ -567,9 +781,42 @@ describe('CreateWorkerPopover', () => {
     );
   });
 
-  it('narrows a remembered provider whose model entry is hidden by visibility prefs', async () => {
-    // 同模型多来源:用户隐藏了记忆来源那份条目后,面板已不显示该行,
-    // 不能仍显式路由过去(codex review)。
+  it('narrows a remembered provider whose model entry is disabled', async () => {
+    // 停用轴才收窄显式来源:被停用的 (来源, 模型) 不能显式路由过去。
+    // (2026-07 启用/显示双轴拆分:disabled 是 buildRegistry 烘焙的视图层标志。)
+    window.localStorage.setItem(
+      'workerCreationPrefs',
+      JSON.stringify({
+        lastAgent: 'codex',
+        codex: { model: 'gpt-5.5', effort: 'high', fast: false, providerId: 'openai' },
+      }),
+    );
+    mocks.localProviders = [
+      {
+        id: 'openai',
+        name: 'OpenAI',
+        connected: true,
+        agents: ['codex'],
+        models: { codex: [{ id: 'gpt-5.5', disabled: true }], 'claude-code': [] },
+      },
+    ];
+    mocks.modelsByAgent.codex = [model('gpt-5.5')];
+    mocks.capabilitiesByAgent.codex = { availableModels: [{ id: 'gpt-5.5' }] };
+    const onCreate = vi.fn();
+
+    render(<CreateWorkerPopover open onClose={vi.fn()} onCreate={onCreate} />);
+    await waitFor(() =>
+      expect(screen.getByTestId('model-selector').dataset.currentProvider).toBe(''),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'orca.createWorker.submit' }));
+    await waitFor(() =>
+      expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ providerId: null })),
+    );
+  });
+
+  it('keeps a remembered provider whose model entry is merely hidden by visibility prefs', async () => {
+    // 「隐藏」只是陈列过滤,不再收窄显式来源:记忆来源被隐藏仍然合法可路由
+    // (2026-07 启用/显示双轴拆分,用户裁决「隐藏可点名、可兜底」)。
     window.localStorage.setItem(
       'workerCreationPrefs',
       JSON.stringify({
@@ -587,6 +834,40 @@ describe('CreateWorkerPopover', () => {
       },
     ];
     mocks.hiddenModels = ['openai:gpt-5.5'];
+    mocks.modelsByAgent.codex = [model('gpt-5.5')];
+    mocks.capabilitiesByAgent.codex = { availableModels: [{ id: 'gpt-5.5' }] };
+    const onCreate = vi.fn();
+
+    render(<CreateWorkerPopover open onClose={vi.fn()} onCreate={onCreate} />);
+    await waitFor(() =>
+      expect(screen.getByTestId('model-selector').dataset.currentProvider).toBe('openai'),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'orca.createWorker.submit' }));
+    await waitFor(() =>
+      expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ providerId: 'openai' })),
+    );
+  });
+
+  it('narrows a remembered provider whose model entry is non-chat (issue #882 第 3 点, 2026-07 review)', async () => {
+    // 记忆来源上这个 model id 的具体条目是非聊天(mode='image_generation')——
+    // providerOffersModel 只看 id 是否存在,不会挡住它;narrowProviderSource 必须
+    // 自己叠加 isChatEligible,否则会把这个来源提交给 main,请求发到 image 端点。
+    window.localStorage.setItem(
+      'workerCreationPrefs',
+      JSON.stringify({
+        lastAgent: 'codex',
+        codex: { model: 'gpt-5.5', effort: 'high', fast: false, providerId: 'openai' },
+      }),
+    );
+    mocks.localProviders = [
+      {
+        id: 'openai',
+        name: 'OpenAI',
+        connected: true,
+        agents: ['codex'],
+        models: { codex: [{ id: 'gpt-5.5', mode: 'image_generation' }], 'claude-code': [] },
+      },
+    ];
     mocks.modelsByAgent.codex = [model('gpt-5.5')];
     mocks.capabilitiesByAgent.codex = { availableModels: [{ id: 'gpt-5.5' }] };
     const onCreate = vi.fn();

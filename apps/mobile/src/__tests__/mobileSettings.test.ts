@@ -15,6 +15,15 @@ const readTextLf = (...args: Parameters<typeof readFileSync>): string =>
   String(readFileSync(...args)).replace(/\r\n/g, '\n');
 
 describe('mobile settings overview', () => {
+  it('renders language as one expandable picker instead of a fixed option list', () => {
+    const source = readTextLf(resolve(process.cwd(), 'app/settings.tsx'), 'utf8');
+
+    expect(source).toContain('testID="settings.language.picker"');
+    expect(source).toContain('<SheetModal');
+    expect(source).toContain('<MobileChoicePickerList');
+    expect(source).not.toContain('LanguageOptionRow');
+  });
+
   it('keeps the device-link hello name and settings device name on one source', () => {
     expect(buildMobileDeviceName({ constantsDeviceName: ' Carol iPhone ', platform: 'ios' })).toBe('Carol iPhone');
     expect(buildMobileDeviceName({ constantsDeviceName: '   ', platform: 'android' })).toBe('Cindy android');
@@ -201,17 +210,44 @@ describe('mobile settings overview', () => {
     expect(accountActionsIndex).toBeGreaterThan(filingNumberIndex);
   });
 
-  it('keeps one update action and shows both full-package and OTA versions', () => {
+  it('keeps one update action, scopes TestFlight checks to OTA, and shows both versions', () => {
     const source = readTextLf(resolve(process.cwd(), 'app/settings.tsx'), 'utf8');
 
     expect(source.match(/testID: 'settings\.checkUpdateButton'/g)).toHaveLength(1);
     expect(source).not.toContain('settings.checkBundleUpdateButton');
     expect(source).not.toContain('testID="settings.bundleUpdate"');
     expect(source).toContain('runManualUpdateCheck({');
-    expect(source).toContain('checkBundleUpdate: IS_OTA_SELFHOST ? checkBundleUpdate : undefined');
+    expect(source).toContain('isTestFlightBuild: IS_TESTFLIGHT_BUILD');
+    expect(source).toContain('const updateCheckEnabled = bundleCheckEnabled || updatesEnabled');
+    expect(source).toContain('checkBundleUpdate: bundleCheckEnabled ? checkBundleUpdate : undefined');
+    expect(source).toContain('const [updateOutcome, setUpdateOutcome] = useState<ManualUpdateCheckOutcome | null>(null);');
+    expect(source).toContain('manualUpdateCheckMessage(updateOutcome, {');
+    expect(source).toContain('setUpdateOutcome(outcome);');
+    expect(source).not.toContain('const [updateMessage, setUpdateMessage]');
+    expect(source).not.toContain('setUpdateMessage(');
+    expect(source).toContain("'settings.version.testFlightCheckAction'");
+    expect(source).toContain("'settings.version.testFlightCheckingAccessibility'");
+    expect(source).toContain("testID=\"settings.testFlightUpdateHint\"");
+    expect(source).toContain("{t('settings.version.testFlightUpdateManaged')}");
     expect(source).toContain("{t('settings.version.bundleVersion', { version: appVersion })}");
     expect(source).toContain(
       "testID=\"settings.otaVersion\">{t('settings.version.otaVersion', { version: otaVersion })}",
     );
+    expect(source).toContain(
+      "testID=\"settings.desktopVersion\">{t('settings.version.pairedDesktopVersion', { version: DESKTOP_PACKAGE_VERSION })}",
+    );
+    expect(source).not.toContain("'settings.version.desktopVersion'");
+    expect(i18n.t('settings.version.pairedDesktopVersion', { version: '0.1.18' }))
+      .toBe('配套桌面版本 0.1.18');
+  });
+
+  it('整包版本读原生真值 APP_BINARY_VERSION,不读会被 OTA 覆盖的 expoConfig.version', () => {
+    const source = readTextLf(resolve(process.cwd(), 'app/settings.tsx'), 'utf8');
+
+    // 整包版本必须取原生烧进的 CFBundleShortVersionString / versionName(APP_BINARY_VERSION),
+    // 热更后不漂移;绝不能读 Constants.expoConfig.version —— 它会被 OTA manifest 内嵌的
+    // expoClient.version(打热更时主仓 app.json 的旧值)覆盖,导致整包版本回退。
+    expect(source).toContain("const appVersion = APP_BINARY_VERSION || '0.0.0';");
+    expect(source).not.toContain("const appVersion = Constants.expoConfig?.version");
   });
 });

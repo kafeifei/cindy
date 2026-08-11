@@ -13,7 +13,7 @@
 import { BRAND_NAME } from '@cindy/maker-shared/branding';
 
 /**
- * XDMaker 的 skill 编写规范 —— 蒸馏产物必须符合本地加载器(Claude Code /
+ * Cindy 的 skill 编写规范 —— 蒸馏产物必须符合本地加载器(Claude Code /
  * Codex customization scanner)与 skill hub 校验(frontmatterValidation)的要求。
  * 常量单独导出供单测断言关键约束存在。
  */
@@ -47,6 +47,7 @@ Quality bar:
 /** locale → 自述语言的人类可读名(给模型的确定性指令,不靠它从请求里猜)。 */
 const REPLY_LANGUAGE_BY_LOCALE: Record<string, string> = {
   'zh-CN': 'Simplified Chinese (简体中文)',
+  'zh-TW': 'Traditional Chinese (繁體中文)',
   en: 'English',
   ja: 'Japanese (日本語)',
   ko: 'Korean (한국어)',

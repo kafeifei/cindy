@@ -1,11 +1,17 @@
 {
+  "stale": {
+    "since": "2026-08-10",
+    "reason": "支持语言全集接入后 spec.json / index.html / truth.json / interaction-gate.mjs 均已变更；本报告仍是 2026-07-26 的四语快照，inputHashes 与 coverage.cases 不含 zh-TW。",
+    "warning": "下面的 ok:true 只对本报告 inputHashes 所记的旧输入成立，不代表当前多语言工件已通过门 A-F。",
+    "howToClear": "在装有 qa-hifi-demo 工具链的环境跑 node <skill>/scripts/verify.mjs --demo docs/design-previews/login-deletion-bubble 并提交刷新后的 report.json；重跑会自然覆盖掉本字段。"
+  },
   "ok": true,
   "toolVersion": "qa-hifi-demo@2026-07-25-p0-hardening",
   "demo": "login-deletion-bubble",
   "inputHashes": {
-    "spec.json": "a0ed363979779db5bd3f7218cc621e29e0d6180593d58e944b5107ac2c42f605",
-    "truth.json": "9917347e3fc667dbfcbddffa88b92a12e7e4ff49aeb8b1194db115481a2f34b2",
-    "index.html": "0ff4634f68b9b324e61af7b6178059ce11f2704f6f2f9b66c2af42e58553fa9f",
+    "spec.json": "e4bb08a4d264f5d155af19db89b54eef88b0fc38b76fbbd48ef4358c048938b6",
+    "truth.json": "4aaa18733d8188dd8c697a12527f0fc79b6fb6d3f13a984594b1edbec4a1ed79",
+    "index.html": "1ed9c6b421746015832f31a6726b9997ecbb21bc8d863466742620ce5cf875be",
     "baselines": {
       "declared": [],
       "files": []
@@ -555,5 +561,5 @@
     "failures": [],
     "cases": []
   },
-  "generatedAt": "2026-07-25T21:46:24.551Z"
+  "generatedAt": "2026-07-26T05:42:34.025Z"
 }

@@ -23,7 +23,7 @@ import type {
   ModelAccessPromotionalGrantState,
   ModelAccessPromotionalGrantUsage,
 } from '../../shared/modelAccess.js';
-import { isAllowedBillingRedirectUrl } from './paymentRedirect.js';
+import { isAllowedBillingRedirectUrl, isAllowedStripeBillingPortalUrl } from './paymentRedirect.js';
 
 const MAX_ID_LENGTH = 128;
 const MAX_NAME_LENGTH = 128;
@@ -364,6 +364,13 @@ function projectPaymentAction(value: unknown): BillingPaymentAction | null {
   return null;
 }
 
+export function projectBillingPortalSession(value: unknown): { url: string } {
+  if (!isRecord(value)) invalidResponse();
+  const url = value.url;
+  if (!isAllowedStripeBillingPortalUrl(url)) invalidResponse();
+  return { url };
+}
+
 function projectPurchaseOption(
   value: unknown,
   productKind: BillingCatalogProduct['kind'],
@@ -396,6 +403,7 @@ function projectOffer(
 ): BillingCatalogOffer | null {
   if (!isRecord(value) || !Array.isArray(value.purchaseOptions)) return null;
   const offerCode = code(value.code);
+  const offerName = boundedString(value.name, 128) ?? undefined;
   const offerCurrency = currency(value.currency);
   const amount = nullable(value.amount, decimal);
   const minAmount = nullable(value.minAmount, decimal);
@@ -509,6 +517,7 @@ function projectOffer(
   }
   return {
     code: offerCode,
+    ...(offerName ? { name: offerName } : {}),
     ...availability,
     interval: isSubscription ? interval : null,
     currency: offerCurrency,

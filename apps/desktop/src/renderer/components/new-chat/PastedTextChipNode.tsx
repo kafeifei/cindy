@@ -99,6 +99,8 @@ function PastedTextChipNodeView({ node, selected }: NodeViewProps) {
         tooltipContentClassName="max-h-64 w-80 max-w-[70vw] overflow-y-auto whitespace-pre-wrap [overflow-wrap:anywhere]"
         ariaLabel={attrs.display}
         selected={selected}
+        // 同 MentionChipNode:composer 的原子节点不参与文字级 selection。
+        textSelectable={false}
         className="cursor-pointer"
       />
     </NodeViewWrapper>
@@ -142,7 +144,7 @@ export const PastedTextChipNode = Node.create<Record<string, never>, Record<stri
       class:
         'inline-flex min-w-0 max-w-[min(240px,55vw)] select-none items-center align-middle ' +
         'gap-1.5 rounded-full border border-[var(--border-default)] px-2 py-0.5 ' +
-        'bg-[var(--surface-chip)] text-[var(--text-primary)] text-[12px] font-normal leading-5',
+        'bg-[var(--surface-chip)] text-[var(--text-primary)] text-12 font-normal leading-5',
       style: 'color: var(--text-primary); user-select: none; -webkit-user-select: none; -webkit-user-drag: element;',
       draggable: 'true',
       contenteditable: 'false',

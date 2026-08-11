@@ -1,6 +1,6 @@
 import * as AlertDialog from '@radix-ui/react-alert-dialog';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
-import { Flame, Zap, Wrench, Swords, ChevronDown } from 'lucide-react';
+import { Flame, Zap, Wrench, Flower, ChevronDown } from 'lucide-react';
 import {
   useCallback,
   useEffect,
@@ -10,7 +10,12 @@ import {
 } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import type { ReleaseNoteItem, ReleaseNoteSection, ReleaseNotes } from '@/release-notes';
+import type {
+  ReleaseNoteItem,
+  ReleaseNoteSection,
+  ReleaseNoteTopic,
+  ReleaseNotes,
+} from '@/release-notes';
 import type { UpdateNoticeMode } from '@/hooks/useUpdateNotice';
 import { Spinner } from '@/components/ui/spinner';
 import { cn } from '@/lib/utils';
@@ -57,40 +62,8 @@ function formatDate(dateStr: string, locale: string): string {
   });
 }
 
-/** Split sections: left = New Features + other non-Bug-Fixes, right = Bug Fixes */
-function splitSections(sections: ReleaseNoteSection[]): {
-  leftSections: ReleaseNoteSection[];
-  rightSections: ReleaseNoteSection[];
-} {
-  const left: ReleaseNoteSection[] = [];
-  const right: ReleaseNoteSection[] = [];
-  for (const section of sections) {
-    if (section.title === 'Bug Fixes') {
-      right.push(section);
-    } else {
-      left.push(section);
-    }
-  }
-  return { leftSections: left, rightSections: right };
-}
-
-/**
- * Aggregate unique contributors across every currently-loaded version,
- * preserving first-appearance order. Used for the header hall-of-fame line.
- */
-function aggregateContributors(notes: ReleaseNotes[]): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const n of notes) {
-    for (const c of n.contributors) {
-      if (!seen.has(c)) {
-        seen.add(c);
-        out.push(c);
-      }
-    }
-  }
-  return out;
-}
+/** Shared content column: one reading measure for every block in the dialog. */
+const CONTENT_COLUMN = 'w-full max-w-[800px]';
 
 // ---------------------------------------------------------------------------
 // Sub-components
@@ -100,34 +73,33 @@ interface VersionBadgeProps {
   label: string;
   /** Renders a small chevron on the right and hover state — used by dropdown trigger. */
   clickable?: boolean;
+  /** Leading flame glyph. Off for the header's version-jump chip, which is a count, not a version. */
+  icon?: boolean;
 }
 
-function VersionBadge({ label, clickable = false }: VersionBadgeProps) {
+function VersionBadge({ label, clickable = false, icon = true }: VersionBadgeProps) {
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1.5 rounded-full px-3 py-1',
+        'inline-flex items-center gap-1.5 rounded-full px-3 py-1 whitespace-nowrap',
         'bg-[var(--chat-input-chip-bg)]',
-        'text-xs font-medium text-[var(--settings-section-desc)]',
+        // Chip text must use the chip's own semantic color. The previous
+        // `--settings-section-desc` resolves to a mid grey that lands at
+        // 2.33:1 against the chip background in dark mode (fails WCAG AA);
+        // `--chat-input-chip-text` is the sanctioned pairing (7.46:1 dark,
+        // 12:1 light).
+        'text-xs font-medium text-[var(--chat-input-chip-text)]',
         clickable && 'cursor-pointer hover:bg-[var(--cmd-palette-item-hover)] transition-colors',
       )}
     >
-      <Flame className="h-[13px] w-[13px]" />
+      {icon && <Flame className="h-[13px] w-[13px] shrink-0" />}
       {label}
-      {clickable && <ChevronDown className="h-[13px] w-[13px] opacity-70" />}
+      {clickable && <ChevronDown className="h-[13px] w-[13px] shrink-0 opacity-70" />}
     </span>
   );
 }
 
 const SECTION_ICONS = { zap: Zap, wrench: Wrench } as const;
-
-interface SectionColumnProps {
-  icon: keyof typeof SECTION_ICONS;
-  title: string;
-  sections: ReleaseNoteSection[];
-  /** When false, the column doesn't own its own scroll — the outer container scrolls instead. */
-  scroll?: boolean;
-}
 
 function groupItemsByAuthor(
   items: ReleaseNoteItem[],
@@ -144,22 +116,55 @@ function groupItemsByAuthor(
   return order.map((author) => ({ author, items: buckets.get(author)! }));
 }
 
-function SectionColumn({ icon, title, sections, scroll = true }: SectionColumnProps) {
-  const Icon = SECTION_ICONS[icon];
-  const allItems = sections.flatMap((s) => s.items);
-  const groups = groupItemsByAuthor(allItems);
+/**
+ * Legacy (author-grouped) body, rendered in the SAME single column as the v2
+ * topic layout. Previously this was a two-column split (features | fixes),
+ * which left half the dialog empty on bugfix-only releases and — more
+ * importantly — made scrolling through history alternate between two very
+ * different layouts, since only the newest release uses the topic format.
+ *
+ * Empty sections are dropped rather than rendered as a bare heading.
+ */
+function SectionList({ sections }: { sections: ReleaseNoteSection[] }) {
+  const { t } = useTranslation();
+  // Only the two canonical titles get translated. The legacy schema allows an
+  // arbitrary section title, and headings are now per-section rather than
+  // per-column, so mapping "anything that isn't Bug Fixes" to "New Features"
+  // would mislabel unknown sections and print the same heading twice when a
+  // payload carries several non-bugfix sections. Unknown titles pass through
+  // verbatim.
+  const labelFor = (title: string) => {
+    if (title === 'Bug Fixes') {
+      return { text: t('update.notice.bugFixes'), Icon: SECTION_ICONS.wrench };
+    }
+    if (title === 'New Features') {
+      return { text: t('update.notice.newFeatures'), Icon: SECTION_ICONS.zap };
+    }
+    return { text: title, Icon: SECTION_ICONS.zap };
+  };
+  const filled = sections.filter((s) => s.items.length > 0);
   return (
-    <div className={cn('flex flex-1 flex-col px-7', scroll && 'overflow-y-auto')}>
-      <div className="flex items-center gap-1.5 mb-3">
-        <Icon className="h-3.5 w-3.5 text-[var(--cmd-palette-item-meta)]" />
-        <span className="text-13 font-medium text-[var(--cmd-palette-item-meta)]">{title}</span>
-      </div>
-      <div className="flex flex-col gap-3.5">
-        {groups.map((group) => (
-          <AuthorGroup key={group.author} author={group.author} items={group.items} />
-        ))}
-      </div>
-    </div>
+    <>
+      {filled.map((section, i) => {
+        const { text, Icon } = labelFor(section.title);
+        const groups = groupItemsByAuthor(section.items);
+        return (
+          <div key={`${i}-${section.title}`} className={cn(CONTENT_COLUMN, 'pt-4 pb-1')}>
+            <div className="mb-2.5 flex items-center gap-1.5">
+              <Icon className="h-3.5 w-3.5 shrink-0 text-[var(--cmd-palette-item-meta)]" />
+              <span className="text-13 font-medium text-[var(--cmd-palette-item-meta)]">
+                {text}
+              </span>
+            </div>
+            <div className="flex flex-col gap-3.5">
+              {groups.map((group) => (
+                <AuthorGroup key={group.author} author={group.author} items={group.items} />
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </>
   );
 }
 
@@ -190,67 +195,120 @@ function AuthorGroup({ author, items }: { author: string; items: ReleaseNoteItem
   );
 }
 
-function ContributorsLine({ contributors }: { contributors: string[] }) {
+/**
+ * Per-version thanks line, closing out that version's block like film credits.
+ *
+ * It used to live in the dialog chrome, which meant the same list was rendered
+ * twice at once (chrome + the version block's own subheader) and, at ~30
+ * contributors, turned the top of the dialog into a two-line wall of names.
+ * Anchoring it to the end of the version it belongs to removes the duplication
+ * and makes the attribution unambiguous. Regular weight + secondary color keeps
+ * it a closing note rather than a heading.
+ */
+function ThanksLine({ contributors }: { contributors: string[] }) {
   const { t } = useTranslation();
   if (contributors.length === 0) return null;
   return (
     <div
       className={cn(
-        'flex items-center justify-center gap-1.5 px-6 pb-3',
-        'text-12 leading-none select-text',
+        CONTENT_COLUMN,
+        'mt-3 flex items-start gap-1.5 border-t border-[var(--cmd-palette-border)] pt-4',
+        'text-12 leading-[1.7] select-text',
       )}
     >
-      <span className="flex h-[12px] items-center">
-        <Swords
-          className="h-3.5 w-3.5 text-[var(--status-bar-accent)] -translate-y-[2px]"
-          strokeWidth={2.25}
-        />
+      <Flower
+        className="mt-[3px] h-3.5 w-3.5 shrink-0 text-[var(--status-bar-accent)]"
+        strokeWidth={2.25}
+      />
+      <span className="shrink-0 text-[var(--cmd-palette-item-meta)]">
+        {t('update.notice.thanksTo')}
       </span>
-      <span className="text-[var(--cmd-palette-item-meta)]">{t('update.notice.craftedBy')}</span>
-      <span className="font-semibold text-[var(--msg-assistant-text)]">
+      <span className="min-w-0 break-words text-[var(--cmd-palette-item-meta)]">
         {contributors.join(' · ')}
       </span>
     </div>
   );
 }
 
+// ---------------------------------------------------------------------------
+// Topic-format (v2) body: single centered column of theme blocks. Replaces
+// the two-column author-grouped layout for payloads that carry `topics` —
+// notably fixes the half-empty dialog on bugfix-only releases.
+// ---------------------------------------------------------------------------
+
+function TopicList({ intro, topics }: { intro?: string; topics: ReleaseNoteTopic[] }) {
+  return (
+    <>
+      {intro && (
+        <div
+          className={cn(
+            CONTENT_COLUMN,
+            'pt-3 pb-1 text-sm leading-[1.7] break-words text-[var(--cmd-palette-item-meta)]',
+          )}
+        >
+          {intro}
+        </div>
+      )}
+      {topics.map((topic, i) => (
+        <div key={`${i}-${topic.title}`} className={cn(CONTENT_COLUMN, 'py-3')}>
+          {/* flex-wrap + min-w-0: long titles shrink/wrap and an overlong
+              contributor list drops to its own right-aligned line instead of
+              overflowing the dialog at narrow widths. */}
+          <div className="mb-1.5 flex flex-wrap items-baseline gap-x-2 gap-y-1">
+            {topic.emoji && <span className="text-15 leading-none">{topic.emoji}</span>}
+            <span
+              className={cn(
+                'min-w-0 break-words text-15 font-medium leading-tight tracking-tight',
+                'text-[var(--msg-assistant-text)]',
+              )}
+            >
+              {topic.title}
+            </span>
+            {topic.contributors.length > 0 && (
+              <span className="ml-auto max-w-full break-words text-right text-12 text-[var(--cmd-palette-item-meta)]">
+                {topic.contributors.join(' · ')}
+              </span>
+            )}
+          </div>
+          <div className="text-sm leading-[1.7] break-words text-[var(--msg-assistant-text)]">
+            {topic.text}
+          </div>
+        </div>
+      ))}
+    </>
+  );
+}
+
 /**
- * A loaded version's block — subheader (version badge + date + contributors)
- * on top, two-column features/bugfixes below. Same layout auto and manual
- * modes share; the outer container owns scrolling in both cases.
+ * One version's block, single column throughout:
+ *
+ *   [v0.1.21]  2026年7月29日      <- subheader: version + date only
+ *   intro / topics (v2)  or  sections (legacy)
+ *   ─────────────────────────
+ *   🌸 感谢 A · B · C            <- closing thanks line
+ *
+ * The subheader deliberately no longer repeats the contributor list: it is the
+ * thanks line's job, once, at the end. The outer container owns scrolling.
  */
 function VersionBlock({ notes, locale }: { notes: ReleaseNotes; locale: string }) {
-  const { t } = useTranslation();
-  const { leftSections, rightSections } = splitSections(notes.sections);
+  const isTopicFormat = notes.topics.length > 0;
   const formattedDate = formatDate(notes.date, locale);
   return (
-    <div className="flex flex-col">
-      <div className="flex items-center justify-between px-7 pt-3 pb-2.5">
-        <div className="flex items-center gap-2">
-          <VersionBadge label={`v${notes.version}`} />
-          <span className="text-13 text-[var(--cmd-palette-item-meta)]">{formattedDate}</span>
-        </div>
-        {notes.contributors.length > 0 && (
-          <span className="text-12 text-[var(--cmd-palette-item-meta)]">
-            {notes.contributors.join(' · ')}
-          </span>
-        )}
+    <div className="flex flex-col items-center px-7 pb-2">
+      <div className={cn(CONTENT_COLUMN, 'flex items-center gap-2 pt-5')}>
+        <VersionBadge label={`v${notes.version}`} />
+        {/* nowrap: a long date must not be squeezed into three lines by
+            whatever sits next to it (the old subheader did exactly that). */}
+        <span className="whitespace-nowrap text-13 text-[var(--cmd-palette-item-meta)]">
+          {formattedDate}
+        </span>
       </div>
-      <div className="flex py-3">
-        <SectionColumn
-          icon="zap"
-          title={t('update.notice.newFeatures')}
-          sections={leftSections}
-          scroll={false}
-        />
-        <div className="w-px self-stretch bg-[var(--cmd-palette-border)]" />
-        <SectionColumn
-          icon="wrench"
-          title={t('update.notice.bugFixes')}
-          sections={rightSections}
-          scroll={false}
-        />
-      </div>
+      {isTopicFormat ? (
+        <TopicList intro={notes.intro} topics={notes.topics} />
+      ) : (
+        <SectionList sections={notes.sections} />
+      )}
+      <ThanksLine contributors={notes.contributors} />
     </div>
   );
 }
@@ -271,14 +329,20 @@ function PlaceholderBlock({
   onRetry,
 }: {
   version: string;
+  /**
+   * True only while a fetch is actually in flight. `idle` (queued but not yet
+   * observed) must NOT set this: every off-screen version used to render a
+   * spinner + "loading", so a user opening the history saw a dozen versions
+   * apparently stuck loading forever when in fact nothing had been requested.
+   */
   isLoading: boolean;
   isError: boolean;
   onRetry?: () => void;
 }) {
   const { t } = useTranslation();
   return (
-    <div className="flex flex-col min-h-[180px]">
-      <div className="flex items-center justify-between px-7 pt-3 pb-2.5">
+    <div className="flex min-h-[180px] flex-col items-center px-7">
+      <div className={cn(CONTENT_COLUMN, 'flex items-center gap-3 pt-5')}>
         <VersionBadge label={`v${version}`} />
         {isLoading && (
           <span className="inline-flex items-center gap-1.5 text-12 text-[var(--cmd-palette-item-meta)]">
@@ -306,13 +370,9 @@ function PlaceholderBlock({
           </span>
         )}
       </div>
-      <div className="flex flex-1 min-h-[120px] items-center justify-center px-7">
-        {!isLoading && !isError && (
-          <span className="text-12 text-[var(--cmd-palette-item-meta)] opacity-40">
-            &nbsp;
-          </span>
-        )}
-      </div>
+      {/* Idle (not yet scrolled near, nothing in flight) renders as reserved
+          blank space, not as a spinner — see PlaceholderBlock's isLoading doc. */}
+      <div className="flex min-h-[120px] flex-1 items-center justify-center" aria-hidden />
     </div>
   );
 }
@@ -327,6 +387,13 @@ interface VersionDropdownProps {
   onSelect: (version: string) => void;
   triggerLabel: string;
   /**
+   * Accessible name for the trigger. Must be given separately from
+   * `triggerLabel`: the visible chip only shows a version *count*, so reusing
+   * it as the accessible name would leave screen-reader users with no way to
+   * tell which version they are currently on without opening the menu.
+   */
+  triggerAriaLabel: string;
+  /**
    * Bubble open state up so the parent AlertDialog can guard its overlay
    * onClick — Radix outside-click closes the dropdown but the click continues
    * to propagate; without the guard it would land on `AlertDialog.Overlay`
@@ -340,6 +407,7 @@ function VersionDropdown({
   currentVersion,
   onSelect,
   triggerLabel,
+  triggerAriaLabel,
   onOpenChange,
 }: VersionDropdownProps) {
   return (
@@ -348,15 +416,17 @@ function VersionDropdown({
         <button
           type="button"
           className="inline-flex outline-none"
-          aria-label={triggerLabel}
+          aria-label={triggerAriaLabel}
         >
-          <VersionBadge label={triggerLabel} clickable />
+          {/* The trigger now reads "N versions", not a version number, so the
+              flame glyph would be misleading — hence icon={false}. */}
+          <VersionBadge label={triggerLabel} clickable icon={false} />
         </button>
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
         <DropdownMenu.Content
           side="bottom"
-          align="start"
+          align="end"
           sideOffset={6}
           // Stop clicks inside dropdown content from bubbling — belt-and-
           // suspenders on top of `modal` prop + parent dropdownOpenRef guard.
@@ -407,15 +477,93 @@ function VersionDropdown({
 function AutoBody({
   releaseNotes,
   locale,
+  onStickyChange,
 }: {
   releaseNotes: ReleaseNotes[];
   locale: string;
+  onStickyChange: (version: string) => void;
 }) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const blockRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+
+  // Sticky-header observer: track which version block is at the top of the
+  // scroll area so the header badge can follow. Only active for multi-version
+  // auto mode — single-version stays at its initial value.
+  useEffect(() => {
+    const root = scrollRef.current;
+    if (!root || releaseNotes.length <= 1) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        let best: { v: string; top: number } | null = null;
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          const v = (entry.target as HTMLElement).dataset.version;
+          if (!v) continue;
+          const top = entry.boundingClientRect.top;
+          // Pick the entry whose top is closest to the container top
+          // (largest top = nearest to 0, i.e. the version the user is reading).
+          if (best === null || top > best.top) best = { v, top };
+        }
+        if (best) onStickyChange(best.v);
+      },
+      { root, rootMargin: '0px 0px -99% 0px', threshold: 0 },
+    );
+    for (const el of blockRefs.current.values()) observer.observe(el);
+    return () => observer.disconnect();
+  }, [releaseNotes, onStickyChange]);
+
+  // Fallback: when scrolled to the bottom, pick the last version so the header
+  // badge updates even if the last version is too short to reach the observation
+  // zone at the top. When leaving the bottom, recompute the visible version so
+  // the badge doesn't stay stuck on the last version.
+  const lastVersion = releaseNotes[releaseNotes.length - 1]?.version;
+  const handleAutoScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el || !lastVersion) return;
+    // Guard: only apply the bottom override when the content is actually
+    // scrollable.  A +1 px threshold prevents sub-pixel rounding at
+    // non-integer zoom from making scrollHeight − clientHeight = 1 while
+    // the content is visually unscrollable; otherwise scrollTop is always
+    // 0 and the condition would trivially hold at the top, causing the
+    // header to show the last version.
+    if (
+      el.scrollHeight > el.clientHeight + 1 &&
+      el.scrollTop + el.clientHeight >= el.scrollHeight - 1
+    ) {
+      onStickyChange(lastVersion);
+      return;
+    }
+    // Leaving the bottom: find the version block currently closest to the
+    // container top. This mirrors the IntersectionObserver's sticky-header
+    // logic but runs on every scroll event when not at the very bottom,
+    // clearing the bottom override that the IO cannot undo on its own.
+    const containerTop = el.getBoundingClientRect().top;
+    let best: { v: string; top: number } | null = null;
+    for (const [version, blockEl] of blockRefs.current.entries()) {
+      const top = blockEl.getBoundingClientRect().top;
+      if (top > containerTop + 9) continue; // block far below container top (9px = py-2 padding + 1px tolerance)
+      if (best === null || top > best.top) best = { v: version, top };
+    }
+    if (best) onStickyChange(best.v);
+  }, [lastVersion, onStickyChange]);
+
   return (
-    <div className="flex flex-1 min-h-0 flex-col overflow-y-auto py-2 select-text">
+    <div
+      ref={scrollRef}
+      onScroll={handleAutoScroll}
+      className="flex flex-1 min-h-0 flex-col overflow-y-auto py-2 select-text"
+    >
       {releaseNotes.map((notes, i) => (
-        <div key={notes.version} className="flex flex-col">
-          {i > 0 && <div className="h-px mx-6 my-1 bg-[var(--cmd-palette-border)]" />}
+        <div
+          key={notes.version}
+          ref={(el) => {
+            if (el) blockRefs.current.set(notes.version, el);
+            else blockRefs.current.delete(notes.version);
+          }}
+          data-version={notes.version}
+          className="flex flex-col"
+        >
+          {i > 0 && <div className="mx-auto h-px w-full max-w-[800px] bg-[var(--cmd-palette-border)]" />}
           <VersionBlock notes={notes} locale={locale} />
         </div>
       ))}
@@ -439,8 +587,6 @@ interface ManualBodyProps {
   onStickyChange: (version: string) => void;
   /** Setter registered by parent so `jumpToVersion` can programmatically scroll. */
   registerJump: (fn: (v: string) => void) => void;
-  /** Called each time a version's notes finish loading, so parent can aggregate contributors. */
-  onNotesLoaded?: (notes: ReleaseNotes) => void;
 }
 
 function ManualBody({
@@ -450,7 +596,6 @@ function ManualBody({
   locale,
   onStickyChange,
   registerJump,
-  onNotesLoaded,
 }: ManualBodyProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const blockRefs = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -462,7 +607,10 @@ function ManualBody({
     }
     return m;
   });
-  const inFlightRef = useRef<Set<string>>(new Set());
+  const inFlightRef = useRef<Map<string, number>>(new Map());
+  const localeGenerationRef = useRef(0);
+  const previousLocaleRef = useRef(locale);
+  const notesMapRef = useRef(notesMap);
   // Ref mirror of stateMap so `startLoad` doesn't need it in useCallback deps.
   // Without this, every setStateMap → new startLoad identity → observer
   // useEffect re-runs → new observer immediately fires callbacks for still-
@@ -470,6 +618,64 @@ function ManualBody({
   // again → infinite loading↔failed flicker (the bug this refactor fixes).
   const stateMapRef = useRef(stateMap);
   useEffect(() => { stateMapRef.current = stateMap; }, [stateMap]);
+  useEffect(() => { notesMapRef.current = notesMap; }, [notesMap]);
+
+  // Parent-owned seed notes change when the app locale changes. Merge them
+  // into the manual body's local map instead of remounting the scroll area.
+  useEffect(() => {
+    if (initialLoaded.size === 0) return;
+    setNotesMap((prev) => {
+      const next = new Map(prev);
+      for (const [version, notes] of initialLoaded) next.set(version, notes);
+      notesMapRef.current = next;
+      return next;
+    });
+    setStateMap((prev) => {
+      const next = new Map(prev);
+      for (const version of initialLoaded.keys()) next.set(version, 'loaded');
+      stateMapRef.current = next;
+      return next;
+    });
+  }, [initialLoaded]);
+
+  // Refresh every already-loaded history block in place on locale changes.
+  // Blocks that have never loaded stay idle and will use the new locale later.
+  useEffect(() => {
+    if (previousLocaleRef.current === locale) return;
+    previousLocaleRef.current = locale;
+    const generation = localeGenerationRef.current + 1;
+    localeGenerationRef.current = generation;
+    inFlightRef.current.clear();
+    setStateMap((prev) => {
+      const next = new Map(prev);
+      for (const [version, state] of next) {
+        if (state === 'loading') next.set(version, 'idle');
+      }
+      stateMapRef.current = next;
+      return next;
+    });
+
+    const loadedVersions = [...notesMapRef.current.keys()];
+    if (loadedVersions.length === 0) return;
+    let cancelled = false;
+    void Promise.all(loadedVersions.map((version) => loadVersion(version)))
+      .then((results) => {
+        if (cancelled || localeGenerationRef.current !== generation) return;
+        setNotesMap((prev) => {
+          const next = new Map(prev);
+          results.forEach((notes, index) => {
+            if (notes) next.set(loadedVersions[index], notes);
+          });
+          notesMapRef.current = next;
+          return next;
+        });
+      })
+      .catch(() => {
+        // Keep the previous-language content visible; individual retry/loading
+        // behavior remains unchanged and the next locale change can retry.
+      });
+    return () => { cancelled = true; };
+  }, [locale, loadVersion]);
 
   const startLoad = useCallback(
     async (version: string) => {
@@ -479,24 +685,32 @@ function ManualBody({
       // loading is already in flight (also guarded by inFlightRef), error is
       // sticky until user hits the retry button (see `retryVersion`).
       if (current === 'loaded' || current === 'loading' || current === 'error') return;
-      inFlightRef.current.add(version);
+      const generation = localeGenerationRef.current;
+      inFlightRef.current.set(version, generation);
       setStateMap((prev) => new Map(prev).set(version, 'loading'));
       try {
         const notes = await loadVersion(version);
+        if (localeGenerationRef.current !== generation) return;
         if (notes) {
-          setNotesMap((prev) => new Map(prev).set(version, notes));
+          setNotesMap((prev) => {
+            const next = new Map(prev).set(version, notes);
+            notesMapRef.current = next;
+            return next;
+          });
           setStateMap((prev) => new Map(prev).set(version, 'loaded'));
-          onNotesLoaded?.(notes);
         } else {
           setStateMap((prev) => new Map(prev).set(version, 'error'));
         }
       } catch {
+        if (localeGenerationRef.current !== generation) return;
         setStateMap((prev) => new Map(prev).set(version, 'error'));
       } finally {
-        inFlightRef.current.delete(version);
+        if (inFlightRef.current.get(version) === generation) {
+          inFlightRef.current.delete(version);
+        }
       }
     },
-    [loadVersion, onNotesLoaded],
+    [loadVersion],
   );
 
   // Manual retry from the error placeholder's button. Only meaningful for
@@ -547,16 +761,15 @@ function ManualBody({
     // that band is by definition the topmost currently-scrolled-to element.
     const observer = new IntersectionObserver(
       (entries) => {
-        // Pick the most-recently-crossed intersecting entry. Multiple can
-        // report in a single callback during fast scrolls; take the one with
-        // the smallest positive `top` for stability.
+        // Pick the entry whose top is closest to the container top
+        // (largest top = nearest to 0, i.e. the version the user is reading).
         let best: { v: string; top: number } | null = null;
         for (const entry of entries) {
           if (!entry.isIntersecting) continue;
           const v = (entry.target as HTMLElement).dataset.version;
           if (!v) continue;
           const top = entry.boundingClientRect.top;
-          if (best === null || top < best.top) best = { v, top };
+          if (best === null || top > best.top) best = { v, top };
         }
         if (best) onStickyChange(best.v);
       },
@@ -565,6 +778,41 @@ function ManualBody({
     for (const el of blockRefs.current.values()) observer.observe(el);
     return () => observer.disconnect();
   }, [allVersions, onStickyChange]);
+
+  // Fallback: when scrolled to the bottom, pick the last version so the header
+  // badge updates even if the last version is too short to reach the top
+  // observation zone. When leaving the bottom, recompute the visible version so
+  // the badge doesn't stay stuck on the last version.
+  const lastVersion = allVersions[allVersions.length - 1];
+  const handleManualScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el || !lastVersion) return;
+    // Guard: only apply the bottom override when the content is actually
+    // scrollable.  A +1 px threshold prevents sub-pixel rounding at
+    // non-integer zoom from making scrollHeight − clientHeight = 1 while
+    // the content is visually unscrollable; otherwise scrollTop is always
+    // 0 and the condition would trivially hold at the top, causing the
+    // header to show the last version.
+    if (
+      el.scrollHeight > el.clientHeight + 1 &&
+      el.scrollTop + el.clientHeight >= el.scrollHeight - 1
+    ) {
+      onStickyChange(lastVersion);
+      return;
+    }
+    // Leaving the bottom: find the version block currently closest to the
+    // container top. This mirrors the IntersectionObserver's sticky-header
+    // logic but runs on every scroll event when not at the very bottom,
+    // clearing the bottom override that the IO cannot undo on its own.
+    const containerTop = el.getBoundingClientRect().top;
+    let best: { v: string; top: number } | null = null;
+    for (const [version, blockEl] of blockRefs.current.entries()) {
+      const top = blockEl.getBoundingClientRect().top;
+      if (top > containerTop + 9) continue; // block far below container top (9px = py-2 padding + 1px tolerance)
+      if (best === null || top > best.top) best = { v: version, top };
+    }
+    if (best) onStickyChange(best.v);
+  }, [lastVersion, onStickyChange]);
 
   // Programmatic jump handler exposed to parent (header dropdown).
   useEffect(() => {
@@ -579,7 +827,11 @@ function ManualBody({
   }, [registerJump, startLoad]);
 
   return (
-    <div ref={scrollRef} className="flex flex-1 min-h-0 flex-col overflow-y-auto py-2 select-text">
+    <div
+      ref={scrollRef}
+      onScroll={handleManualScroll}
+      className="flex flex-1 min-h-0 flex-col overflow-y-auto py-2 select-text"
+    >
       {allVersions.map((v, i) => {
         const notes = notesMap.get(v);
         const state = stateMap.get(v) ?? 'idle';
@@ -593,13 +845,13 @@ function ManualBody({
             data-version={v}
             className="flex flex-col"
           >
-            {i > 0 && <div className="h-px mx-6 my-1 bg-[var(--cmd-palette-border)]" />}
+            {i > 0 && <div className="mx-auto h-px w-full max-w-[800px] bg-[var(--cmd-palette-border)]" />}
             {notes ? (
               <VersionBlock notes={notes} locale={locale} />
             ) : (
               <PlaceholderBlock
                 version={v}
-                isLoading={state === 'loading' || state === 'idle'}
+                isLoading={state === 'loading'}
                 isError={state === 'error'}
                 onRetry={() => retryVersion(v)}
               />
@@ -639,18 +891,6 @@ export function UpdateNoticeDialog({
   const initialSticky = releaseNotes?.[0]?.version ?? '';
   const [stickyVersion, setStickyVersion] = useState<string>(initialSticky);
 
-  // Manual mode: accumulate notes as they lazy-load so contributors line
-  // reflects all visible history, not just the initial seed.
-  const [manualLoadedNotes, setManualLoadedNotes] = useState<ReleaseNotes[]>(
-    releaseNotes ?? [],
-  );
-  const handleNotesLoaded = useCallback((notes: ReleaseNotes) => {
-    setManualLoadedNotes((prev) => {
-      if (prev.some((n) => n.version === notes.version)) return prev;
-      return [...prev, notes];
-    });
-  }, []);
-
   const jumpRef = useRef<((v: string) => void) | null>(null);
   const registerJump = useCallback((fn: (v: string) => void) => {
     jumpRef.current = fn;
@@ -684,8 +924,18 @@ export function UpdateNoticeDialog({
   }, [onDismiss]);
 
   // Reset sticky when dialog re-opens (avoids showing last-session's badge).
+  // Preserve the current sticky version across locale refreshes — when the
+  // dialog is already open and releaseNotes changes only because of a locale
+  // switch, the scroll position in ManualBody remains in place so the badge
+  // should not jump back to the newest version.
+  const wasOpenRef = useRef(false);
   useEffect(() => {
-    if (open) setStickyVersion(releaseNotes?.[0]?.version ?? '');
+    if (open) {
+      if (!wasOpenRef.current) {
+        setStickyVersion(releaseNotes?.[0]?.version ?? '');
+      }
+    }
+    wasOpenRef.current = open;
   }, [open, releaseNotes]);
 
   if (!releaseNotes || !mode || releaseNotes.length === 0) {
@@ -714,36 +964,10 @@ export function UpdateNoticeDialog({
         })
       : t('update.notice.ariaDescription', { version: newest.version });
 
-  // Header badge label:
-  //   - Auto multi:  v<oldest> → v<newest>  (static)
-  //   - Auto single: v<newest>              (static)
-  //   - Manual:      v<sticky>              (dynamic, click-to-open-dropdown)
-  const badgeLabel = isManual
-    ? `v${stickyVersion || newest.version}`
-    : isAutoMulti
-      ? `v${oldestLoaded.version} → v${newest.version}`
-      : `v${newest.version}`;
-
-  // Header right column:
-  //   - Manual: total version count "N 个版本"
-  //   - Auto multi: same
-  //   - Auto single: newest's date
-  const headerRight = isManual
-    ? t('update.notice.versionsSpan', { count: allVersions?.length ?? 1 })
-    : isAutoMulti
-      ? t('update.notice.versionsSpan', { count: releaseNotes.length })
-      : formatDate(newest.date, i18n.language);
-
-  // Contributors line:
-  //   - Manual: scoped to the currently visible (sticky) version only to avoid
-  //     the header overflowing as dozens of names accumulate across loaded history.
-  //   - Auto multi: aggregated from all pre-loaded diff range versions.
-  //   - Auto single: just the newest version's contributors.
-  const contributors = isManual
-    ? (manualLoadedNotes.find((n) => n.version === stickyVersion)?.contributors ?? [])
-    : isAutoMulti
-      ? aggregateContributors(releaseNotes)
-      : newest.contributors;
+  // Header's right cell: version badge that follows scroll.
+  //   - Manual multi:   v<version> badge + dropdown for history navigation.
+  //   - Auto multi:     v<version> badge, updates as user scrolls.
+  //   - Auto / manual single: static v<version> badge.
 
   return (
     <AlertDialog.Root
@@ -783,7 +1007,10 @@ export function UpdateNoticeDialog({
         <AlertDialog.Content
           className={cn(
             'fixed left-1/2 top-1/2 z-[10000] -translate-x-1/2 -translate-y-1/2',
-            'w-[1240px] h-[838px] max-w-[95vw] max-h-[90vh] rounded-xl flex flex-col',
+            // 920px, not the previous 1240px: the body is a single ~800px
+            // reading column now, so the extra width only produced dead margins
+            // and made the full-width chrome visibly mismatch the narrow body.
+            'w-[920px] h-[838px] max-w-[95vw] max-h-[90vh] rounded-xl flex flex-col',
             'bg-[var(--cmd-palette-bg)]',
             'border border-[var(--cmd-palette-border)]',
             'data-[state=open]:animate-confirm-content-in',
@@ -796,21 +1023,27 @@ export function UpdateNoticeDialog({
           </AlertDialog.Description>
 
           {/* ---- Header ----
-              3-column grid instead of flex-justify-between so badge width
-              changes (sticky version tracker updates as user scrolls in
-              manual mode) don't shift the centered title. Each 1fr cell is
-              exactly a third of the header width; the title always sits at
-              the horizontal midpoint of its own cell, i.e. the true middle
-              of the dialog. `min-w-0` on cells is required so long badges
-              (e.g. "v0.0.140 → v0.0.144" in auto multi mode) don't blow
-              out the grid track. */}
-          <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 px-6 pt-4 pb-2.5">
-            <div className="min-w-0 justify-self-start">
+              3-column grid instead of flex-justify-between so the right cell's
+              width changes never shift the centered title: each 1fr cell is
+              exactly a third of the header width, so the title always sits at
+              the true horizontal middle. The left cell is intentionally empty —
+              it exists to balance the grid. `min-w-0` keeps a long right label
+              from blowing out its track. */}
+          <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 px-6 pt-4 pb-3.5">
+            <span aria-hidden />
+            <AlertDialog.Title className="text-20 leading-[1.4] font-medium text-[var(--msg-assistant-text)] justify-self-center whitespace-nowrap">
+              {t('update.notice.title')}
+            </AlertDialog.Title>
+            <div className="min-w-0 justify-self-end">
               {isManual && allVersions && allVersions.length > 1 ? (
                 <VersionDropdown
                   versions={allVersions}
                   currentVersion={stickyVersion || newest.version}
-                  triggerLabel={badgeLabel}
+                  triggerLabel={`v${stickyVersion || newest.version}`}
+                  triggerAriaLabel={t('update.notice.versionJumpAria', {
+                    count: allVersions.length,
+                    version: stickyVersion || newest.version,
+                  })}
                   onSelect={(v) => jumpRef.current?.(v)}
                   onOpenChange={(dropOpen) => {
                     dropdownOpenRef.current = dropOpen;
@@ -826,22 +1059,17 @@ export function UpdateNoticeDialog({
                   }}
                 />
               ) : (
-                <VersionBadge label={badgeLabel} />
+                <VersionBadge label={`v${stickyVersion || newest.version}`} />
               )}
             </div>
-            <AlertDialog.Title className="text-20 leading-[1.4] font-medium text-[var(--msg-assistant-text)] justify-self-center whitespace-nowrap">
-              {t('update.notice.title')}
-            </AlertDialog.Title>
-            <span className="text-13 text-[var(--cmd-palette-item-meta)] min-w-0 justify-self-end whitespace-nowrap">
-              {headerRight}
-            </span>
           </div>
-
-          <ContributorsLine contributors={contributors} />
 
           <div className="h-px bg-[var(--cmd-palette-border)]" />
 
           {/* ---- Content ---- */}
+          {/* Auto single-version no longer needs its own branch: VersionBlock
+              carries the version, date and thanks itself, so one block and N
+              blocks render through the same path. */}
           {isManual && allVersions ? (
             <ManualBody
               allVersions={allVersions}
@@ -850,29 +1078,13 @@ export function UpdateNoticeDialog({
               locale={i18n.language}
               onStickyChange={setStickyVersion}
               registerJump={registerJump}
-              onNotesLoaded={handleNotesLoaded}
             />
-          ) : mode === 'auto' && releaseNotes.length === 1 ? (
-            (() => {
-              const { leftSections, rightSections } = splitSections(newest.sections);
-              return (
-                <div className="flex flex-1 min-h-0 py-4 select-text">
-                  <SectionColumn
-                    icon="zap"
-                    title={t('update.notice.newFeatures')}
-                    sections={leftSections}
-                  />
-                  <div className="w-px self-stretch bg-[var(--cmd-palette-border)]" />
-                  <SectionColumn
-                    icon="wrench"
-                    title={t('update.notice.bugFixes')}
-                    sections={rightSections}
-                  />
-                </div>
-              );
-            })()
           ) : (
-            <AutoBody releaseNotes={releaseNotes} locale={i18n.language} />
+            <AutoBody
+              releaseNotes={releaseNotes}
+              locale={i18n.language}
+              onStickyChange={setStickyVersion}
+            />
           )}
 
           <div className="h-px bg-[var(--cmd-palette-border)]" />

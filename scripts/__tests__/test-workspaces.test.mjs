@@ -5,30 +5,53 @@ import path from "node:path";
 import { EventEmitter } from "node:events";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import manifest from "../test-workspaces.config.mjs";
+import manifest, {
+	desktopUnitWorkerCount,
+	unitTestShardArgs,
+} from "../test-workspaces.config.mjs";
+import { nodeWebstorageEnabled } from "../shared/node-webstorage.mjs";
+import {
+	acquireTestGateLock,
+	classifyTestGateLockProbeError,
+	decideTestGateLock,
+	resolveTestGateCommonDir,
+	shouldUseTestGateLock,
+	TEST_GATE_LOCK_TIMEOUT_EXIT_CODE,
+	testGateLockIdentity,
+} from "../test-gate-lock.mjs";
 import {
 	buildPnpmArgs,
 	checkIncludeCoverage,
 	checkTestFiles,
 	classifyFailure,
+	createBoundedOutputBuffer,
 	createOutputForwarder,
+	createWorkspaceRunReporter,
+	defaultWorkspaceConcurrency,
 	discoverTestFiles,
 	expandWorkspacePatterns,
 	filterRunsByWorkspace,
+	mapWithConcurrency,
 	normalizeRelPath,
 	parseWorkspacePatterns,
 	parseCliOptions,
+	parseWorkspaceConcurrency,
 	parseWorkspaceSelectorValue,
 	planRuns,
 	printSummary,
-	resolvePnpmInvocation,
+	readAllFiles,
 	resolveOutputStream,
 	runCommand,
 	runPlannedTests,
+	runWithExclusiveBarriers,
 	selectFilesForTier,
 	validateManifest,
 	validateManifestCoverage,
 } from "../test-workspaces.mjs";
+import {
+	resolvePnpmInvocation,
+	usablePnpmExecPath,
+} from "../shared/pnpm-invocation.mjs";
 
 const ROOT = path.resolve(fileURLToPath(new URL("../..", import.meta.url)));
 
@@ -39,6 +62,14 @@ function readRootScripts() {
 
 function readWorkspacePackageJson(cwd) {
 	return JSON.parse(fs.readFileSync(path.join(ROOT, cwd, "package.json"), "utf8"));
+}
+
+async function waitFor(predicate, message = "condition was not reached") {
+	for (let attempt = 0; attempt < 100; attempt += 1) {
+		if (predicate()) return;
+		await new Promise((resolve) => setImmediate(resolve));
+	}
+	throw new Error(message);
 }
 
 test("parseWorkspacePatterns reads pnpm-workspace.yaml package globs", () => {
@@ -63,10 +94,81 @@ test("root unit and all scripts run runner self-tests before workspace sweep", (
 test("root db and guard delegate to the workspace runner", () => {
 	const scripts = readRootScripts();
 	assert.equal(
+		scripts["test:git-integration"],
+		"pnpm test:runner && node scripts/test-workspaces.mjs --tier git-integration",
+	);
+	assert.equal(
 		scripts["test:db"],
 		"pnpm test:runner && node scripts/test-workspaces.mjs --tier db",
 	);
 	assert.equal(scripts["test:guard"], "node scripts/test-workspaces.mjs --tier guard");
+});
+
+test("client CI owns the complete Desktop Git integration tier", () => {
+	const workflow = fs.readFileSync(
+		path.join(ROOT, ".github", "workflows", "ci.yml"),
+		"utf8",
+	).replace(/\r\n/g, "\n");
+	const job = workflow.match(/\n  git-integration:\n([\s\S]*)$/);
+	assert.ok(job, "client CI must define an independent git-integration job");
+	assert.match(
+		job[1],
+		/^\s{6}- name: Run Desktop Git integration tests\n\s{8}run: pnpm test:git-integration$/m,
+	);
+});
+
+test("client CI builds model-access protocol before consumer checks", () => {
+	const workflow = fs.readFileSync(
+		path.join(ROOT, ".github", "workflows", "ci.yml"),
+		"utf8",
+	).replace(/\r\n/g, "\n");
+	const jobs = [
+		{
+			name: "verify-checks",
+			body: workflow.match(/\n  verify-checks:\n([\s\S]*?)\n  linux-unit-shards:/)?.[1],
+			consumerCommand: "run: pnpm --filter desktop typecheck",
+		},
+		{
+			name: "linux-unit-shards",
+			body: workflow.match(/\n  linux-unit-shards:\n([\s\S]*?)\n  verify:/)?.[1],
+			consumerCommand: "run: pnpm exec node scripts/test-workspaces.mjs --tier unit",
+		},
+		{
+			name: "windows-unit-shards",
+			body: workflow.match(/\n  windows-unit-shards:\n([\s\S]*?)\n  windows-unit:/)?.[1],
+			consumerCommand: "run: pnpm test:unit",
+		},
+	];
+
+	for (const { name, body, consumerCommand } of jobs) {
+		assert.ok(body, `client CI must define the ${name} job`);
+		const installIndex = body.indexOf("run: pnpm install --frozen-lockfile");
+		const buildIndex = body.indexOf(
+			"run: pnpm --filter @cindy/model-access-protocol build",
+		);
+		const consumerIndex = body.indexOf(consumerCommand);
+		assert.ok(installIndex >= 0, `${name} must install dependencies`);
+		assert.ok(buildIndex > installIndex, `${name} must build protocol after install`);
+		assert.ok(
+			consumerIndex > buildIndex,
+			`${name} must build protocol before consumer checks`,
+		);
+	}
+});
+
+test("Linux unit shards reject unsafe protocol gitlinks before installing dependencies", () => {
+	const workflow = fs.readFileSync(
+		path.join(ROOT, ".github", "workflows", "ci.yml"),
+		"utf8",
+	).replace(/\r\n/g, "\n");
+	const body = workflow.match(/\n  linux-unit-shards:\n([\s\S]*?)\n  verify:/)?.[1];
+	assert.ok(body, "client CI must define Linux unit shards");
+	const fetchIndex = body.indexOf("git submodule update --init --force --recursive -- cindy-protocol");
+	const guardIndex = body.indexOf("run: node scripts/check-submodule-forward.mjs");
+	const installIndex = body.indexOf("run: pnpm install --frozen-lockfile");
+	assert.ok(fetchIndex >= 0, "Linux unit shards must fetch cindy-protocol");
+	assert.ok(guardIndex > fetchIndex, "Linux unit shards must validate the fetched protocol gitlink");
+	assert.ok(installIndex > guardIndex, "Linux unit shards must reject unsafe gitlinks before install");
 });
 
 test("help groups copyable desktop, binary, and Mobile workflows", async () => {
@@ -77,7 +179,7 @@ test("help groups copyable desktop, binary, and Mobile workflows", async () => {
 	const rootScripts = Object.keys(readRootScripts());
 	const documentedWorkflowScripts = rootScripts.filter((name) =>
 		/^(mobile:xcode|mobile:sim:|mobile:build:(ios|android))/.test(name) ||
-		/^(install:(agent-binaries|claude|codex|ripgrep)|update:(vendors|claude|codex|ripgrep))$/.test(name) ||
+		/^(install:(agent-binaries|claude|codex|ripgrep|pi)|update:(vendors|claude|codex|ripgrep|pi))$/.test(name) ||
 		/^release:(claude-code|codex|ripgrep)(:arm64|:x64|:win)?$/.test(name),
 	);
 	assert.deepEqual(
@@ -106,9 +208,94 @@ test("orca workflow unit tier uses its own declared test runner", () => {
 	assert.equal(orcaPackage.scripts.test, "vitest run");
 	assert.equal(orcaPackage.devDependencies.vitest, "^3.2.4");
 	assert.deepEqual(orcaWorkspace.tiers.unit.command, {
-		type: "packageScript",
-		script: "test",
+		type: "packageBin",
+		bin: "vitest",
+		args: ["run", "--pool=threads", "--maxWorkers=1", ...unitTestShardArgs()],
 	});
+});
+
+test("unit workspace concurrency reserves the full worker budget for heavy workspaces", () => {
+	const desktop = manifest.workspaces.find(
+		(workspace) => workspace.cwd === "apps/desktop",
+	);
+	const mobile = manifest.workspaces.find(
+		(workspace) => workspace.cwd === "apps/mobile",
+	);
+	const makerCore = manifest.workspaces.find(
+		(workspace) => workspace.cwd === "packages/maker-core",
+	);
+	assert.equal(desktop.tiers.unit.execution, "exclusive");
+	assert.deepEqual(desktop.tiers.unit.command.args, [
+		"run",
+		// win32 pins forks: threads segfaults the desktop suite there, and the
+		// LaunchServices churn that threads exists to avoid is macOS-only.
+		`--pool=${nodeWebstorageEnabled() || process.platform === "win32" ? "forks" : "threads"}`,
+		`--maxWorkers=${desktopUnitWorkerCount()}`,
+		...unitTestShardArgs(),
+	]);
+	assert.equal(desktopUnitWorkerCount(1), 1);
+	assert.equal(desktopUnitWorkerCount(4), 4);
+	assert.equal(desktopUnitWorkerCount(32), 8);
+	assert.equal(desktopUnitWorkerCount(Number.NaN), 1);
+	assert.equal(mobile.tiers.unit.execution, "exclusive");
+	assert.deepEqual(mobile.tiers.unit.command.args, [
+		"run",
+		"--pool=threads",
+		"--maxWorkers=4",
+		...unitTestShardArgs(),
+	]);
+	assert.equal(makerCore.tiers.unit.execution, undefined);
+	assert.deepEqual(makerCore.tiers.unit.command, {
+		type: "packageBin",
+		bin: "vitest",
+		args: ["run", "--pool=forks", "--maxWorkers=1", ...unitTestShardArgs()],
+	});
+});
+
+test("unit tier pins an explicit vitest pool, forks only by documented exception", () => {
+	// The default forks pool recycles one child process per test file, which on
+	// 2026-07-30 sustained ~21 LaunchServices check-ins/second and took down
+	// macOS 27.0 beta's launchservicesd mid-gate (empty running-application
+	// registry -> no frontmost app -> dead keyboard, no menu bar, vanishing Dock
+	// tiles). A workspace added later must not silently inherit that churn, and
+	// opting back into forks must be a deliberate edit to this list.
+	// Desktop's entry is conditional: it stays on forks on a Node whose
+	// webstorage globals force the execArgv that worker threads cannot take,
+	// and on win32, where threads segfaults the suite outright (native addon
+	// finalizers crashing in isolate teardown) and no launchservicesd exists
+	// for the churn to hurt.
+	const forksByException = [
+		...(nodeWebstorageEnabled() || process.platform === "win32"
+			? ["apps/desktop"]
+			: []),
+		"packages/maker-core",
+	];
+	const unpinned = [];
+	const onForks = [];
+	for (const workspace of manifest.workspaces) {
+		const tier = workspace.tiers?.unit;
+		if (!tier || (tier.status !== "required" && tier.status !== "manual"))
+			continue;
+		if (tier.command?.type !== "packageBin" || tier.command.bin !== "vitest")
+			continue;
+		const args = tier.command.args ?? [];
+		if (args.includes("--pool=forks")) onForks.push(workspace.cwd);
+		else if (!args.includes("--pool=threads")) unpinned.push(workspace.cwd);
+	}
+	assert.deepEqual(unpinned, []);
+	assert.deepEqual(onForks.sort(), [...forksByException].sort());
+});
+
+test("nodeWebstorageEnabled detects the globals that force the webstorage flag", () => {
+	assert.equal(nodeWebstorageEnabled({}), false);
+	assert.equal(nodeWebstorageEnabled({ localStorage: undefined }), false);
+	assert.equal(nodeWebstorageEnabled({ localStorage: {} }), true);
+	// Node 25's stub is an object whose methods are all missing; presence is what
+	// matters here, because that alone displaces jsdom's implementation.
+	assert.equal(
+		nodeWebstorageEnabled({ localStorage: Object.create(null) }),
+		true,
+	);
 });
 
 test("normalizeRelPath makes path matching independent of host path separators", () => {
@@ -243,6 +430,7 @@ test("desktop unit excludes migration, direct db-tier, and source-contract guard
 	const tier = {
 		status: "required",
 		exclude: [
+			"**/*.git-integration.test.ts",
 			"src/main/localDb/**",
 			"src/main/__tests__/*Migration.test.ts",
 			"src/main/__tests__/schemaDriftRepair.test.ts",
@@ -258,6 +446,7 @@ test("desktop unit excludes migration, direct db-tier, and source-contract guard
 	};
 	assert.deepEqual(
 		selectFilesForTier(workspace, tier, [
+			"apps/desktop/src/main/git-review/__tests__/stageOps.git-integration.test.ts",
 			"apps/desktop/src/main/localDb/ipc/messages.test.ts",
 			"apps/desktop/src/main/__tests__/sessionWorkspaceKindMigration.test.ts",
 			"apps/desktop/src/main/__tests__/codexProjectlessMigration.test.ts",
@@ -278,6 +467,74 @@ test("desktop unit excludes migration, direct db-tier, and source-contract guard
 			"apps/desktop/src/main/__tests__/lifecycle.test.ts",
 		],
 	);
+});
+
+test("desktop real-Git coverage is an explicit coordinated tier outside default unit", () => {
+	const desktopPackage = readWorkspacePackageJson("apps/desktop");
+	const desktop = manifest.workspaces.find(
+		(workspace) => workspace.cwd === "apps/desktop",
+	);
+	const tier = desktop.tiers["git-integration"];
+
+	assert.equal(tier.status, "manual");
+	assert.equal(tier.execution, "exclusive");
+	assert.equal(tier.coverage, "allowlist");
+	assert.deepEqual(tier.include, ["src/main/**/*.git-integration.test.ts"]);
+	assert.deepEqual(tier.command, {
+		type: "packageBin",
+		bin: "vitest",
+		args: ["run", `--maxWorkers=${desktopUnitWorkerCount()}`],
+	});
+	assert.match(
+		desktopPackage.scripts["test:git-integration"],
+		/test-workspaces\.mjs --tier git-integration/,
+	);
+
+	const files = [
+		"apps/desktop/src/main/git-review/__tests__/stageOps.git-integration.test.ts",
+		"apps/desktop/src/main/__tests__/gitSnapshotService.git-integration.test.ts",
+		"apps/desktop/src/main/git-review/__tests__/gitReviewSmoke.test.ts",
+	];
+	assert.deepEqual(selectFilesForTier(desktop, desktop.tiers.unit, files), [
+		"apps/desktop/src/main/git-review/__tests__/gitReviewSmoke.test.ts",
+	]);
+	assert.deepEqual(selectFilesForTier(desktop, tier, files), files.slice(0, 2));
+});
+
+test("default desktop unit keeps real Git subprocess coverage to one smoke", () => {
+	const files = discoverTestFiles(readAllFiles(ROOT))
+		.filter((file) =>
+			file.startsWith("apps/desktop/src/main/") &&
+			file.endsWith(".test.ts") &&
+			!file.endsWith(".git-integration.test.ts"),
+		)
+		.filter((file) => /\b(?:runGit|gitExec)\(/.test(
+			fs.readFileSync(path.join(ROOT, file), "utf8"),
+		));
+
+	assert.deepEqual(files, [
+		"apps/desktop/src/main/git-review/__tests__/gitReviewSmoke.test.ts",
+		// This file mocks child_process.spawn and tests the adapter itself.
+		"apps/desktop/src/main/git-review/__tests__/gitRunner.test.ts",
+		// This file mocks child_process.execFile and tests gitExec's timeout
+		// process-tree termination itself; no real Git subprocess is spawned.
+		"apps/desktop/src/main/worktree/__tests__/gitExec.test.ts",
+	]);
+});
+
+test("tests never bind a fixed numeric port", () => {
+	const violations = [];
+	for (const file of discoverTestFiles(readAllFiles(ROOT))) {
+		const source = fs.readFileSync(path.join(ROOT, file), "utf8");
+		const directPort = /\.listen\s*\(\s*(\d+)/g;
+		const objectPort = /\.listen\s*\(\s*\{[\s\S]{0,300}?\bport\s*:\s*(\d+)/g;
+		for (const pattern of [directPort, objectPort]) {
+			for (const match of source.matchAll(pattern)) {
+				if (Number(match[1]) !== 0) violations.push(`${file}:${match[1]}`);
+			}
+		}
+	}
+	assert.deepEqual(violations, []);
 });
 
 test("desktop guard selects source-contract tests only", () => {
@@ -374,6 +631,23 @@ test("validateManifest rejects invalid status and missing reason", () => {
 				},
 			]),
 		/requires command/,
+	);
+	assert.throws(
+		() =>
+			validateManifest([
+				{
+					cwd: "x",
+					status: "required",
+					tiers: {
+						unit: {
+							status: "required",
+							command: { type: "packageScript", script: "test" },
+							execution: "parallel-ish",
+						},
+					},
+				},
+			]),
+		/invalid execution mode/,
 	);
 	assert.throws(
 		() =>
@@ -555,6 +829,8 @@ test("parseCliOptions rejects --tier without a value", () => {
 		tier: "unit",
 		workspaces: [],
 		excludeWorkspaces: [],
+		workspaceConcurrency: undefined,
+		noLock: false,
 	});
 });
 
@@ -575,6 +851,8 @@ test("parseCliOptions supports workspace include and exclude selectors", () => {
 			tier: "unit",
 			workspaces: ["desktop", "apps/server", "@cindy/maker-core"],
 			excludeWorkspaces: ["packages/orca-workflow"],
+			workspaceConcurrency: undefined,
+			noLock: false,
 		},
 	);
 	assert.deepEqual(parseWorkspaceSelectorValue(" desktop, apps/server "), [
@@ -587,7 +865,348 @@ test("parseCliOptions supports workspace include and exclude selectors", () => {
 	);
 });
 
-test("resolvePnpmInvocation uses current pnpm through node when npm_execpath is present on any platform", () => {
+test("workspace concurrency defaults to a bounded CPU count and accepts both CLI forms", () => {
+	assert.equal(defaultWorkspaceConcurrency(1), 1);
+	assert.equal(defaultWorkspaceConcurrency(2), 2);
+	assert.equal(defaultWorkspaceConcurrency(32), 4);
+	assert.equal(defaultWorkspaceConcurrency(Number.NaN), 1);
+	assert.equal(parseWorkspaceConcurrency("8"), 8);
+	assert.equal(
+		parseCliOptions(["--workspace-concurrency", "3"]).workspaceConcurrency,
+		3,
+	);
+	assert.equal(
+		parseCliOptions(["--", "--workspace-concurrency=2"]).workspaceConcurrency,
+		2,
+	);
+	for (const value of ["0", "-1", "1.5", "nope", "999999999999999999999"]) {
+		assert.throws(
+			() => parseWorkspaceConcurrency(value),
+			/requires a positive integer/,
+		);
+	}
+	assert.throws(
+		() => parseCliOptions(["--workspace-concurrency"]),
+		/requires a positive integer/,
+	);
+	assert.equal(parseCliOptions(["--no-lock"]).noLock, true);
+});
+
+test("unit CI shard arguments cover valid halves and reject malformed input", () => {
+	assert.deepEqual(unitTestShardArgs(""), []);
+	assert.deepEqual(unitTestShardArgs(" 1/2 "), ["--shard=1/2"]);
+	assert.deepEqual(unitTestShardArgs("2/2"), ["--shard=2/2"]);
+	for (const value of ["1", "0/2", "3/2", "1/0", "a/b"]) {
+		assert.throws(() => unitTestShardArgs(value), /XDT_UNIT_TEST_SHARD/);
+	}
+});
+
+test("test gate lock covers heavy local tiers but skips guard, CI, and explicit bypass", () => {
+	for (const tier of ["unit", "db", "git-integration"]) {
+		assert.equal(shouldUseTestGateLock({ tier, env: {} }), true);
+	}
+	assert.equal(shouldUseTestGateLock({ all: true, env: {} }), true);
+	assert.equal(shouldUseTestGateLock({ tier: "guard", env: {} }), false);
+	assert.equal(
+		shouldUseTestGateLock({ tier: "unit", noLock: true, env: {} }),
+		false,
+	);
+	for (const env of [{ CI: "1" }, { CI: "true" }, { GITHUB_ACTIONS: "true" }]) {
+		assert.equal(shouldUseTestGateLock({ tier: "unit", env }), false);
+	}
+	assert.equal(
+		shouldUseTestGateLock({ tier: "unit", env: { CI: "false" } }),
+		true,
+	);
+});
+
+test("test gate lock identity is stable per clone and normalizes Windows case", () => {
+	assert.equal(
+		testGateLockIdentity("C:\\Repo\\.git", "win32"),
+		testGateLockIdentity("c:\\repo\\.git", "win32"),
+	);
+	assert.notEqual(
+		testGateLockIdentity("/repo-a/.git", "linux"),
+		testGateLockIdentity("/repo-b/.git", "linux"),
+	);
+});
+
+test("test gate common-dir resolver joins worktrees from one clone without joining separate roots", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "test-gate-common-dir-"));
+	try {
+		const commonDir = path.join(root, "common.git");
+		const firstGitDir = path.join(commonDir, "worktrees", "first");
+		const secondGitDir = path.join(commonDir, "worktrees", "second");
+		const firstWorktree = path.join(root, "first");
+		const secondWorktree = path.join(root, "second");
+		const separateRoot = path.join(root, "separate");
+		for (const directory of [
+			firstGitDir,
+			secondGitDir,
+			firstWorktree,
+			secondWorktree,
+			separateRoot,
+		]) {
+			fs.mkdirSync(directory, { recursive: true });
+		}
+		fs.writeFileSync(path.join(firstWorktree, ".git"), `gitdir: ${firstGitDir}\n`);
+		fs.writeFileSync(
+			path.join(secondWorktree, ".git"),
+			`gitdir: ${secondGitDir}\n`,
+		);
+		for (const gitDir of [firstGitDir, secondGitDir]) {
+			fs.writeFileSync(path.join(gitDir, "commondir"), "../..\n");
+		}
+
+		const firstResolved = await resolveTestGateCommonDir(firstWorktree);
+		const secondResolved = await resolveTestGateCommonDir(secondWorktree);
+		const separateResolved = await resolveTestGateCommonDir(separateRoot);
+		assert.equal(firstResolved, secondResolved);
+		assert.notEqual(firstResolved, separateResolved);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("test gate lock decision prefers an existing owner over an earlier free port", () => {
+	const owner = { pid: 42, tier: "unit", cwd: "/repo/worktree-a" };
+	assert.deepEqual(
+		decideTestGateLock([
+			{ port: 50_000, result: "available" },
+			{ port: 50_001, result: "owner", owner },
+		]),
+		{ type: "wait", owner },
+	);
+	assert.deepEqual(
+		decideTestGateLock([
+			{ port: 50_000, result: "collision" },
+			{ port: 50_001, result: "available" },
+		]),
+		{ type: "acquire", port: 50_001 },
+	);
+	assert.deepEqual(
+		decideTestGateLock([{ port: 50_000, result: "collision" }]),
+		{ type: "unavailable" },
+	);
+	assert.equal(classifyTestGateLockProbeError("ECONNREFUSED"), "available");
+	assert.equal(classifyTestGateLockProbeError("ETIMEDOUT"), "collision");
+});
+
+test("test gate lock rejects invalid port counts before deriving candidates", async () => {
+	for (const lockPortCount of [0, -1, 1.5, Number.NaN]) {
+		await assert.rejects(
+			() =>
+				acquireTestGateLock({
+					repoRoot: "unused",
+					owner: { pid: 99, tier: "unit", cwd: "unused" },
+					lockPortCount,
+				}),
+			/lockPortCount must be a positive integer/,
+		);
+	}
+});
+
+test("test gate lock reports the holder, waits, and acquires after release", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "test-gate-lock-"));
+	let probeRound = 0;
+	let now = 0;
+	let listenedPort;
+	const output = [];
+	try {
+		const lock = await acquireTestGateLock({
+			repoRoot: root,
+			owner: { pid: 99, tier: "db", cwd: root },
+			timeoutMs: 1_000,
+			retryDelayMs: 100,
+			now: () => now,
+			sleep: async (durationMs) => {
+				now += durationMs;
+			},
+			probeCandidatesImpl: async (ports) => {
+				probeRound += 1;
+				if (probeRound === 1) {
+					return [
+						{ port: ports[0], result: "available" },
+						{
+							port: ports[1],
+							result: "owner",
+							owner: {
+								pid: 42,
+								tier: "unit",
+								cwd: "/repo/worktree-a",
+							},
+						},
+					];
+				}
+				return [{ port: ports[0], result: "available" }];
+			},
+			listenImpl: async (port) => {
+				listenedPort = port;
+				return { port, release: async () => {} };
+			},
+			output: (message) => output.push(message),
+		});
+		assert.equal(probeRound, 2);
+		assert.equal(lock.port, listenedPort);
+		assert.match(output.join("\n"), /pid 42, tier unit, cwd \/repo\/worktree-a/);
+		await lock.release();
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+// A real probe round connects to every candidate port, and a port that accepts
+// the connection without answering only resolves once the probe socket times
+// out. So the window that waits for the WAIT report has to be far wider than a
+// single probe round, otherwise a slow round loses the race and the assertion
+// fails for reasons unrelated to the lock protocol.
+const REAL_LOCK_WAIT_WINDOW_MS = 30_000;
+const REAL_LOCK_ACQUIRE_TIMEOUT_MS = 60_000;
+// Windows assigns 49152+ as its default dynamic client-port range. Keep this
+// real socket test outside that range so unrelated CI network traffic cannot
+// occupy all deterministic candidates while preserving the production range.
+const REAL_LOCK_TEST_PORT_START = 10_000;
+const REAL_LOCK_TEST_PORT_COUNT = 30_000;
+const REAL_LOCK_TEST_PORT_STRIDE = 997;
+
+function raceWithDeadline(candidates, deadlineMs, deadlineValue) {
+	let timer;
+	const deadline = new Promise((resolve) => {
+		timer = setTimeout(() => resolve(deadlineValue), deadlineMs);
+	});
+	return Promise.race([...candidates, deadline]).finally(() => {
+		clearTimeout(timer);
+	});
+}
+
+test("two real test gate lock holders serialize on the same identity", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "test-gate-real-lock-"));
+	let firstLock;
+	let secondLockPromise;
+	let reportWaiting;
+	const waiting = new Promise((resolve) => {
+		reportWaiting = resolve;
+	});
+	try {
+		firstLock = await acquireTestGateLock({
+			repoRoot: root,
+			owner: { pid: 41, tier: "unit", cwd: path.join(root, "first") },
+			lockPortStart: REAL_LOCK_TEST_PORT_START,
+			lockPortCount: REAL_LOCK_TEST_PORT_COUNT,
+			lockPortStride: REAL_LOCK_TEST_PORT_STRIDE,
+			output: () => {},
+		});
+		secondLockPromise = acquireTestGateLock({
+			repoRoot: root,
+			owner: { pid: 42, tier: "db", cwd: path.join(root, "second") },
+			lockPortStart: REAL_LOCK_TEST_PORT_START,
+			lockPortCount: REAL_LOCK_TEST_PORT_COUNT,
+			lockPortStride: REAL_LOCK_TEST_PORT_STRIDE,
+			timeoutMs: REAL_LOCK_ACQUIRE_TIMEOUT_MS,
+			retryDelayMs: 10,
+			output: reportWaiting,
+		});
+		// A failing assertion below jumps straight to `finally` while this
+		// acquisition is still running. Attach a no-op handler so an eventual
+		// rejection is never unhandled; the real await and release happen in
+		// `finally`, otherwise a lock bound after the failure keeps its listener
+		// open and `node --test` never exits.
+		secondLockPromise.catch(() => {});
+
+		const outcome = await raceWithDeadline(
+			[waiting.then(() => "waiting"), secondLockPromise.then(() => "acquired")],
+			REAL_LOCK_WAIT_WINDOW_MS,
+			"timed-out",
+		);
+		assert.equal(outcome, "waiting");
+
+		await firstLock.release();
+		firstLock = undefined;
+		const secondLock = await secondLockPromise;
+		assert.ok(secondLock.port >= REAL_LOCK_TEST_PORT_START);
+		assert.ok(
+			secondLock.port < REAL_LOCK_TEST_PORT_START + REAL_LOCK_TEST_PORT_COUNT,
+		);
+	} finally {
+		// Order matters: releasing the first lock lets the second acquisition
+		// settle immediately instead of waiting out its own timeout.
+		await firstLock?.release();
+		await secondLockPromise?.then(
+			(lock) => lock.release(),
+			() => {},
+		);
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("test gate lock skips ports denied at bind time", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "test-gate-bind-denied-"));
+	const attemptedPorts = [];
+	try {
+		const lock = await acquireTestGateLock({
+			repoRoot: root,
+			owner: { pid: 99, tier: "unit", cwd: root },
+			probeCandidatesImpl: async (ports) =>
+				ports.map((port) => ({ port, result: "available" })),
+			listenImpl: async (port) => {
+				attemptedPorts.push(port);
+				if (attemptedPorts.length === 1) {
+					throw Object.assign(new Error("bind denied"), { code: "EACCES" });
+				}
+				return { port, release: async () => {} };
+			},
+			output: () => {},
+		});
+
+		assert.equal(attemptedPorts.length, 2);
+		assert.notEqual(attemptedPorts[0], attemptedPorts[1]);
+		assert.equal(lock.port, attemptedPorts[1]);
+		await lock.release();
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("test gate lock timeout uses a distinct temporary-failure exit code", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "test-gate-timeout-"));
+	let now = 0;
+	try {
+		await assert.rejects(
+			() =>
+				acquireTestGateLock({
+					repoRoot: root,
+					owner: { pid: 99, tier: "unit", cwd: root },
+					timeoutMs: 100,
+					retryDelayMs: 100,
+					now: () => now,
+					sleep: async (durationMs) => {
+						now += durationMs;
+					},
+					probeCandidatesImpl: async (ports) => [
+						{
+							port: ports[0],
+							result: "owner",
+							owner: {
+								pid: 42,
+								tier: "unit",
+								cwd: "/repo/worktree-a",
+							},
+						},
+					],
+					output: () => {},
+				}),
+			(error) => {
+				assert.equal(error.exitCode, TEST_GATE_LOCK_TIMEOUT_EXIT_CODE);
+				assert.match(error.message, /tests did not run/);
+				return true;
+			},
+		);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("resolvePnpmInvocation uses current pnpm through node when npm_execpath points at a JS entry on any platform", () => {
 	assert.deepEqual(
 		resolvePnpmInvocation(["--dir", "apps/server", "run", "test"], {
 			execPath: "C:/node/node.exe",
@@ -620,17 +1239,162 @@ test("resolvePnpmInvocation uses current pnpm through node when npm_execpath is 
 	);
 });
 
+test("resolvePnpmInvocation runs a native pnpm binary directly instead of feeding it to node", () => {
+	// pnpm 的原生二进制发行版（standalone 安装）把 npm_execpath 指向可执行文件本身；
+	// 交给 node 会抛 SyntaxError: Invalid or unexpected token，把整轮测试变成假失败。
+	assert.deepEqual(
+		resolvePnpmInvocation(["--dir", "/repo/apps/server", "run", "test"], {
+			execPath: "/usr/local/bin/node",
+			npmExecPath:
+				"/Users/dev/Library/pnpm/.tools/@pnpm+macos-arm64/10.33.2/node_modules/@pnpm/macos-arm64/pnpm",
+			platform: "darwin",
+		}),
+		{
+			command:
+				"/Users/dev/Library/pnpm/.tools/@pnpm+macos-arm64/10.33.2/node_modules/@pnpm/macos-arm64/pnpm",
+			args: ["--dir", "/repo/apps/server", "run", "test"],
+			shell: false,
+		},
+	);
+	assert.deepEqual(
+		resolvePnpmInvocation(["--version"], {
+			execPath: "/usr/bin/node",
+			npmExecPath: "/home/dev/.local/share/pnpm/pnpm",
+			platform: "linux",
+		}),
+		{
+			command: "/home/dev/.local/share/pnpm/pnpm",
+			args: ["--version"],
+			shell: false,
+		},
+	);
+	assert.deepEqual(
+		resolvePnpmInvocation(["--version"], {
+			execPath: "C:/node/node.exe",
+			npmExecPath: "C:/Users/dev/AppData/Local/pnpm/pnpm.exe",
+			platform: "win32",
+		}),
+		{
+			command: "C:/Users/dev/AppData/Local/pnpm/pnpm.exe",
+			args: ["--version"],
+			shell: false,
+		},
+	);
+});
+
+test("resolvePnpmInvocation invokes Windows command wrappers through cmd.exe", () => {
+	// .cmd／.bat 通过 cmd.exe 执行，同时逐字传递 /c 命令串。
+	for (const npmExecPath of [
+		"C:/Program Files/nodejs/pnpm.cmd",
+		"C:/Program Files/nodejs/pnpm.bat",
+	]) {
+		assert.deepEqual(
+			resolvePnpmInvocation(["--version"], {
+				execPath: "C:/node/node.exe",
+				npmExecPath,
+				platform: "win32",
+				comSpec: "C:/Windows/System32/cmd.exe",
+			}),
+			{
+				command: "C:/Windows/System32/cmd.exe",
+				args: [
+					"/d",
+					"/s",
+					"/v:off",
+					"/c",
+					'""%CINDY_PNPM_CMD_ARG_0%" "%CINDY_PNPM_CMD_ARG_1%""',
+				],
+				env: {
+					CINDY_PNPM_CMD_ARG_0: npmExecPath,
+					CINDY_PNPM_CMD_ARG_1: "--version",
+				},
+				shell: false,
+				windowsVerbatimArguments: true,
+			},
+		);
+	}
+});
+
+test("resolvePnpmInvocation quotes Windows command wrapper arguments", () => {
+	assert.deepEqual(
+		resolvePnpmInvocation(
+			[
+				"--dir",
+				'C:/Users/First Last/repo & "tools"!/%literal%/apps/server',
+				"run",
+				"test",
+			],
+			{
+				npmExecPath: "C:/Program Files/nodejs/pnpm.cmd",
+				platform: "win32",
+				comSpec: "C:/Windows/System32/cmd.exe",
+			},
+		),
+		{
+			command: "C:/Windows/System32/cmd.exe",
+			args: [
+				"/d",
+				"/s",
+				"/v:off",
+				"/c",
+				'""%CINDY_PNPM_CMD_ARG_0%" "%CINDY_PNPM_CMD_ARG_1%" "%CINDY_PNPM_CMD_ARG_2%" "%CINDY_PNPM_CMD_ARG_3%" "%CINDY_PNPM_CMD_ARG_4%""',
+			],
+			env: {
+				CINDY_PNPM_CMD_ARG_0: "C:/Program Files/nodejs/pnpm.cmd",
+				CINDY_PNPM_CMD_ARG_1: "--dir",
+				CINDY_PNPM_CMD_ARG_2: 'C:/Users/First Last/repo & ""tools""!/%literal%/apps/server',
+				CINDY_PNPM_CMD_ARG_3: "run",
+				CINDY_PNPM_CMD_ARG_4: "test",
+			},
+			shell: false,
+			windowsVerbatimArguments: true,
+		},
+	);
+});
+
+test("usablePnpmExecPath rejects paths that are not a present pnpm entry", () => {
+	const present = () => true;
+	assert.equal(usablePnpmExecPath(undefined, present), undefined);
+	assert.equal(usablePnpmExecPath("", present), undefined);
+	// 名字不是 pnpm：npm_execpath 可能残留自 npm／yarn 的生命周期脚本。
+	assert.equal(usablePnpmExecPath("/usr/local/bin/npm-cli.js", present), undefined);
+	// 路径不存在：Windows 的 restart 管线新开 cmd.exe 时见过残留的旧路径。
+	assert.equal(usablePnpmExecPath("/gone/pnpm.cjs", () => false), undefined);
+	assert.equal(
+		usablePnpmExecPath("/home/dev/.local/share/pnpm/pnpm", present),
+		"/home/dev/.local/share/pnpm/pnpm",
+	);
+});
+
 test("resolvePnpmInvocation fallback shell behavior is explicit per platform", () => {
 	assert.deepEqual(
 		resolvePnpmInvocation(["--version"], {
 			execPath: "node",
+			npmExecPath: undefined,
 			platform: "win32",
+			comSpec: "C:/Windows/System32/cmd.exe",
 		}),
-		{ command: "pnpm", args: ["--version"], shell: true },
+		{
+			command: "C:/Windows/System32/cmd.exe",
+			args: [
+				"/d",
+				"/s",
+				"/v:off",
+				"/c",
+				'""%CINDY_PNPM_CMD_ARG_0%" "%CINDY_PNPM_CMD_ARG_1%""',
+			],
+			env: {
+				CINDY_PNPM_CMD_ARG_0: "pnpm",
+				CINDY_PNPM_CMD_ARG_1: "--version",
+			},
+			shell: false,
+			windowsVerbatimArguments: true,
+		},
 	);
 	assert.deepEqual(
 		resolvePnpmInvocation(["--version"], {
 			execPath: "node",
+			npmExecPath: undefined,
 			platform: "darwin",
 		}),
 		{ command: "pnpm", args: ["--version"], shell: false },
@@ -638,6 +1402,7 @@ test("resolvePnpmInvocation fallback shell behavior is explicit per platform", (
 	assert.deepEqual(
 		resolvePnpmInvocation(["--version"], {
 			execPath: "node",
+			npmExecPath: undefined,
 			platform: "linux",
 		}),
 		{ command: "pnpm", args: ["--version"], shell: false },
@@ -701,6 +1466,35 @@ test("resolveOutputStream preserves explicit null while defaulting undefined", (
 	assert.equal(resolveOutputStream(null, fallback), null);
 });
 
+test("createBoundedOutputBuffer keeps bounded head and tail diagnostics", () => {
+	const output = createBoundedOutputBuffer(20);
+	output.append("0123456789");
+	output.append("abcdefghij");
+	output.append("KLMNOPQRST");
+	assert.equal(
+		output.toString(),
+		"01234\n... 10 output characters omitted ...\nfghijKLMNOPQRST",
+	);
+});
+
+test("runCommand bounds captured output while retaining head and tail", async () => {
+	const result = await runCommand(
+		process.execPath,
+		["-e", "process.stdout.write(`HEAD${'x'.repeat(100)}TAIL`)"],
+		{
+			shell: false,
+			stdout: null,
+			stderr: null,
+			maxOutputChars: 20,
+		},
+	);
+	assert.equal(result.exitCode, 0);
+	assert.match(result.output, /^HEAD/);
+	assert.match(result.output, /output characters omitted/);
+	assert.match(result.output, /TAIL$/);
+	assert.ok(result.output.length < 100);
+});
+
 test("runCommand completes successfully when its output consumer closes with EPIPE", async () => {
 	class ClosedStream extends EventEmitter {
 		write() {}
@@ -715,6 +1509,102 @@ test("runCommand completes successfully when its output consumer closes with EPI
 	const result = await pending;
 	assert.equal(result.exitCode, 0);
 	assert.match(result.output, /child-finished/);
+});
+
+test("mapWithConcurrency stays within the bound, remains work-conserving, and preserves result order", async () => {
+	const releases = [];
+	const started = [];
+	let active = 0;
+	let maxActive = 0;
+	const pending = mapWithConcurrency(["a", "b", "c"], 2, async (item) => {
+		started.push(item);
+		active += 1;
+		maxActive = Math.max(maxActive, active);
+		await new Promise((resolve) => releases.push(resolve));
+		active -= 1;
+		return item.toUpperCase();
+	});
+
+	await waitFor(() => started.length === 2);
+	assert.deepEqual(started, ["a", "b"]);
+	assert.equal(active, 2);
+	releases.shift()();
+	await waitFor(() => started.length === 3);
+	assert.deepEqual(started, ["a", "b", "c"]);
+	assert.equal(active, 2, "the freed slot should be reused immediately");
+	for (const release of releases.splice(0)) release();
+
+	assert.deepEqual(await pending, ["A", "B", "C"]);
+	assert.equal(maxActive, 2);
+});
+
+test("runWithExclusiveBarriers never overlaps exclusive and normal work", async () => {
+	const runs = [
+		{ id: "a", tierConfig: {} },
+		{ id: "b", tierConfig: {} },
+		{ id: "desktop", tierConfig: { execution: "exclusive" } },
+		{ id: "c", tierConfig: {} },
+	];
+	let normalActive = 0;
+	let exclusiveActive = false;
+	let maxNormalActive = 0;
+	const started = [];
+	const results = await runWithExclusiveBarriers(runs, 2, async (run) => {
+		started.push(run.id);
+		if (run.tierConfig.execution === "exclusive") {
+			assert.equal(normalActive, 0);
+			assert.equal(exclusiveActive, false);
+			exclusiveActive = true;
+		} else {
+			assert.equal(exclusiveActive, false);
+			normalActive += 1;
+			maxNormalActive = Math.max(maxNormalActive, normalActive);
+		}
+		await new Promise((resolve) => setImmediate(resolve));
+		if (run.tierConfig.execution === "exclusive") exclusiveActive = false;
+		else normalActive -= 1;
+		return run.id;
+	});
+
+	assert.deepEqual(started, ["a", "b", "desktop", "c"]);
+	assert.deepEqual(results, ["a", "b", "desktop", "c"]);
+	assert.equal(maxNormalActive, 2);
+});
+
+test("createWorkspaceRunReporter keeps passing output concise and flushes failed output as one block", () => {
+	let timestamp = 1_000;
+	const writes = [];
+	const reporter = createWorkspaceRunReporter({
+		stdout: { write: (chunk) => writes.push(String(chunk)) },
+		now: () => timestamp,
+	});
+	const run = {
+		workspace: { cwd: "packages/a" },
+		tier: "unit",
+	};
+	reporter.onRunStart(run);
+	reporter.onCommandComplete({
+		run,
+		stage: "test",
+		commandResult: { output: "passing output", exitCode: 0 },
+	});
+	reporter.onCommandComplete({
+		run,
+		stage: "test",
+		commandResult: { output: "failed output", exitCode: 1 },
+	});
+	timestamp = 2_250;
+	reporter.onRunComplete(run, {
+		exitCode: 1,
+		failure: "COMMAND_FAILED",
+		durationMs: 1_500,
+	});
+	assert.equal(
+		writes.join(""),
+		"START packages/a unit\n" +
+			"\n[packages/a unit test]\nfailed output\n" +
+			"FAIL COMMAND_FAILED packages/a unit (1.5s)\n",
+	);
 });
 
 test("runPlannedTests skips test command when preflight fails", async () => {
@@ -875,6 +1765,96 @@ test("runPlannedTests continues after one workspace test fails", async () => {
 	assert.equal(result[1].exitCode, 0);
 });
 
+test("runPlannedTests applies bounded concurrency while keeping results in manifest order", async () => {
+	const workspaces = ["a", "b", "c"].map((name) => ({
+		name,
+		cwd: `packages/${name}`,
+		status: "required",
+		tiers: {
+			unit: {
+				status: "required",
+				command: { type: "packageBin", bin: "vitest", args: ["run"] },
+			},
+		},
+	}));
+	const delays = new Map([
+		["packages/a", 20],
+		["packages/b", 1],
+		["packages/c", 5],
+	]);
+	let active = 0;
+	let maxActive = 0;
+	const result = await runPlannedTests({
+		root: "F:/repo",
+		workspaceCwds: workspaces.map((workspace) => workspace.cwd),
+		allFiles: workspaces.map(
+			(workspace) => `${workspace.cwd}/src/example.test.ts`,
+		),
+		manifest: { workspaces },
+		tier: "unit",
+		workspaceConcurrency: 2,
+		runCommandImpl: async (_command, _args, options) => {
+			active += 1;
+			maxActive = Math.max(maxActive, active);
+			const workspace = normalizeRelPath(options.cwd).replace("F:/repo/", "");
+			await new Promise((resolve) => setTimeout(resolve, delays.get(workspace)));
+			active -= 1;
+			return { exitCode: 0, output: workspace };
+		},
+	});
+
+	assert.equal(maxActive, 2);
+	assert.deepEqual(
+		result.map((entry) => entry.workspace),
+		["packages/a", "packages/b", "packages/c"],
+	);
+});
+
+test("runPlannedTests treats an exclusive workspace as a concurrency barrier", async () => {
+	const workspaces = [
+		{ name: "a", cwd: "packages/a", execution: undefined },
+		{ name: "desktop", cwd: "apps/desktop", execution: "exclusive" },
+		{ name: "b", cwd: "packages/b", execution: undefined },
+	].map(({ name, cwd, execution }) => ({
+		name,
+		cwd,
+		status: "required",
+		tiers: {
+			unit: {
+				status: "required",
+				command: { type: "packageBin", bin: "vitest", args: ["run"] },
+				...(execution ? { execution } : {}),
+			},
+		},
+	}));
+	let normalActive = 0;
+	let desktopActive = false;
+	await runPlannedTests({
+		root: "F:/repo",
+		workspaceCwds: workspaces.map((workspace) => workspace.cwd),
+		allFiles: workspaces.map(
+			(workspace) => `${workspace.cwd}/src/example.test.ts`,
+		),
+		manifest: { workspaces },
+		tier: "unit",
+		workspaceConcurrency: 2,
+		runCommandImpl: async (_command, _args, options) => {
+			const workspace = normalizeRelPath(options.cwd).replace("F:/repo/", "");
+			if (workspace === "apps/desktop") {
+				assert.equal(normalActive, 0);
+				desktopActive = true;
+			} else {
+				assert.equal(desktopActive, false);
+				normalActive += 1;
+			}
+			await new Promise((resolve) => setImmediate(resolve));
+			if (workspace === "apps/desktop") desktopActive = false;
+			else normalActive -= 1;
+			return { exitCode: 0, output: workspace };
+		},
+	});
+});
+
 test("runPlannedTests passes selected include files to packageBin commands", async () => {
 	const calls = [];
 	const manifest = {
@@ -899,15 +1879,24 @@ test("runPlannedTests passes selected include files to packageBin commands", asy
 		allFiles: ["packages/orca-workflow/src/__tests__/orca-bridge-mcp.test.ts"],
 		manifest,
 		tier: "unit",
-		runCommandImpl: async (command, args) => {
-			calls.push({ command, args });
+		runCommandImpl: async (command, args, options) => {
+			calls.push({ command, args, options });
 			return { exitCode: 0, output: "PASS" };
 		},
 	});
-	assert.deepEqual(calls[0].args.slice(-1), [
+	// Windows 上 resolvePnpmInvocation 会通过 cmd.exe 包装，实际 pnpm 参数
+	// 放在 env 的 CINDY_PNPM_CMD_ARG_N 里。其他平台参数直接在 args 里。
+	const call = calls[0];
+	const pnpmArgs = call.options?.env
+		? Object.keys(call.options.env)
+				.filter((k) => k.startsWith("CINDY_PNPM_CMD_ARG_"))
+				.sort()
+				.map((k) => call.options.env[k])
+		: call.args;
+	assert.deepEqual(pnpmArgs.slice(-1), [
 		"src/__tests__/orca-bridge-mcp.test.ts",
 	]);
-	assert.equal(calls[0].args.includes("src/__tests__/**/*.test.ts"), false);
+	assert.equal(pnpmArgs.includes("src/__tests__/**/*.test.ts"), false);
 });
 
 test("buildPnpmArgs rejects selected files outside the workspace", () => {
@@ -921,6 +1910,30 @@ test("buildPnpmArgs rejects selected files outside the workspace", () => {
 				["packages/other/src/foo.test.ts"],
 			),
 		/Selected test file is outside workspace packages\/orca-workflow: packages\/other\/src\/foo\.test\.ts/,
+	);
+});
+
+test("buildPnpmArgs only loosens Vitest sharding for undersized workspaces", () => {
+	const root = "F:/repo";
+	const workspace = { cwd: "packages/example" };
+	const oneSelectedFile = ["packages/example/src/only.test.ts"];
+	const buildShard = (shard, selectedFiles = oneSelectedFile) =>
+		buildPnpmArgs(
+			root,
+			workspace,
+			{ type: "packageBin", bin: "vitest", args: ["run", `--shard=${shard}`] },
+			{},
+			selectedFiles,
+		);
+
+	assert.equal(buildShard("1/2").includes("--passWithNoTests"), true);
+	assert.equal(buildShard("2/2").includes("--passWithNoTests"), true);
+	assert.equal(
+		buildShard("2/2", [
+			"packages/example/src/first.test.ts",
+			"packages/example/src/second.test.ts",
+		]).includes("--passWithNoTests"),
+		false,
 	);
 });
 

@@ -33,7 +33,7 @@ export interface ReviewScope {
   headOid: string | null;
   isDetached: boolean;
   isUnborn: boolean;
-  source: 'telemetry' | 'worktree' | 'workingDir' | null;
+  source: 'telemetry' | 'worktree' | 'workingDir' | 'remote' | null;
   aheadBehind: AheadBehind;
   disabledReason: ReviewDisableReason | null;
   disabledMessage: string | null;
@@ -141,7 +141,7 @@ export interface Hunk {
 
 export interface FileDiff {
   id: string;
-  source: 'staged' | 'unstaged' | 'commit' | 'branch';
+  source: 'staged' | 'unstaged' | 'commit' | 'branch' | 'turn';
   path: string;
   oldPath: string | null;
   status: DiffChangeKind;

@@ -10,10 +10,18 @@
  * 模块保持 electron-free,全部依赖注入(规则 14),单测直接调 submitGithubIssueWithConfirm。
  */
 
+import type { CindyRegion } from '@cindy/maker-shared/brand-identity';
+
+import { CINDY_REGION_CODE } from '../../shared/regionCode.js';
+import { normalizeIssuePublicName } from '../../shared/issuePublicName.js';
+import type { SubmittedIssueRecord } from '../../shared/myIssues.js';
+import { myIssueUrl } from '../../shared/myIssues.js';
+import { redactSensitive } from '../learn-host/redaction';
 import type {
   IssueConfirmDecision,
   IssueDraft,
   IssueEnvInfo,
+  IssueSubmissionChoices,
   IssueSubmissionIdentity,
 } from './issueConfirmBridge';
 
@@ -25,6 +33,8 @@ export type GithubIssueSubmitResult =
       issueUrl: string;
       finalTitle: string;
       editedByUser: boolean;
+      /** agent 初稿进入确认卡前是否命中过常见敏感信息并被自动替换。 */
+      privacyRedacted: boolean;
     }
   | {
       ok: false;
@@ -64,10 +74,11 @@ export interface GithubIssueSubmitServiceDeps {
     sessionId: string,
     draft: IssueDraft,
     env: IssueEnvInfo,
-    submissionIdentity: IssueSubmissionIdentity,
+    submissionChoices: IssueSubmissionChoices,
+    suggestedPublicName?: string,
   ) => Promise<IssueConfirmDecision>;
-  /** 每次发起确认前现查；已绑定但凭证失效时应抛 AUTH_NOT_READY，不能冒充未绑定。 */
-  resolveSubmissionIdentity: (workingDir: string) => Promise<IssueSubmissionIdentity>;
+  /** 平台身份必有；仅当实时验证到可用账号时附加 GitHub 用户身份。 */
+  resolveSubmissionChoices: (workingDir: string) => Promise<IssueSubmissionChoices>;
   /** body factory must be evaluated for each network attempt after auth refresh. */
   postIssue: (
     submissionIdentity: IssueSubmissionIdentity,
@@ -75,10 +86,18 @@ export interface GithubIssueSubmitServiceDeps {
   ) => Promise<GithubIssuePostResponse>;
   getAppVersion: () => string;
   getOsInfo: () => { platform: string; arch: string; osVersion: string };
+  /** 本构建的区域身份(构建期烘焙);同版本号的 cn / global 是两个不同的包。 */
+  getRegion: () => CindyRegion;
   /** main 侧 OS locale,仅当 renderer 未回传 uiLanguage 时兜底。 */
   getFallbackLocale: () => string;
   /** 当前 Cindy membership 的展示名,仅用于 issue 正文标记提交人。 */
   getSubmitterName: () => string | undefined;
+  /**
+   * 提交成功后记账(「我的 Issue」列表靠它认出平台代发的那一半)。
+   * 只在 postIssue 真正成功后调用一次,抛错由本模块吞掉 —— 记账失败绝不能把一次
+   * 已经成功的提交翻成失败,那会诱导用户重复提交。
+   */
+  onSubmitted?: (record: SubmittedIssueRecord) => void;
 }
 
 // server 侧 github.ts 的上限(TITLE_MAX=200 / DESC_MAX=5000),超限会被 400,这里主动 clamp。
@@ -92,20 +111,24 @@ export async function submitGithubIssueWithConfirm(
   const env: IssueEnvInfo = {
     appVersion: deps.getAppVersion(),
     ...deps.getOsInfo(),
+    region: deps.getRegion(),
   };
 
-  let submissionIdentity: IssueSubmissionIdentity;
+  let submissionChoices: IssueSubmissionChoices;
   try {
-    submissionIdentity = await deps.resolveSubmissionIdentity(req.workingDir);
+    submissionChoices = await deps.resolveSubmissionChoices(req.workingDir);
   } catch (err) {
     return mapSubmitError(err);
   }
 
+  const suggestedPublicName = normalizeIssuePublicName(deps.getSubmitterName()) ?? undefined;
+  const preparedDraft = redactIssueDraft(req);
   const decision = await deps.confirm(
     req.sessionId,
-    { title: req.title, body: req.body, type: req.type },
+    preparedDraft.draft,
     env,
-    submissionIdentity,
+    submissionChoices,
+    suggestedPublicName,
   );
 
   if (!decision.confirmed) {
@@ -123,17 +146,31 @@ export async function submitGithubIssueWithConfirm(
     };
   }
 
+  const submissionIdentity = decision.submissionIdentity ?? submissionChoices.platform;
+  const confirmedPublicName =
+    submissionIdentity.kind === 'platform' ? normalizeIssuePublicName(decision.publicName) : null;
+  if (submissionIdentity.kind === 'platform' && !confirmedPublicName) {
+    return {
+      ok: false,
+      errorCode: 'USER_CANCELLED',
+      message: '公开署名未确认，本次 issue 未提交。请重新发起并确认署名。',
+    };
+  }
+
   // 用户确认版优先 —— agent 传入值在这里被丢弃,代码层保证。
   const finalTitle = decision.title.slice(0, SERVER_TITLE_MAX);
   const editedByUser =
-    decision.title !== req.title ||
-    decision.body !== req.body ||
-    decision.type !== req.type;
+    decision.title !== preparedDraft.draft.title ||
+    decision.body !== preparedDraft.draft.body ||
+    decision.type !== preparedDraft.draft.type;
 
   const uiLanguage = decision.uiLanguage ?? deps.getFallbackLocale();
+  const regionCode = CINDY_REGION_CODE[env.region];
   const envBlock = [
     '',
     '---',
+    // global 不写这一行 —— 缺失即默认区域,理由见 CINDY_REGION_CODE(与确认卡片同源)。
+    ...(regionCode ? [`**版本区域**: ${regionCode}`] : []),
     `**OS**: ${env.platform} ${env.arch} (${env.osVersion})`,
     `**界面语言**: ${uiLanguage}`,
   ].join('\n');
@@ -142,15 +179,18 @@ export async function submitGithubIssueWithConfirm(
   const description = decision.body.slice(0, Math.max(0, bodyBudget)) + envBlock;
 
   try {
-    const result = await deps.postIssue(submissionIdentity, () => {
-      const submitterName = deps.getSubmitterName()?.trim();
-      return {
-        title: finalTitle,
-        description,
-        type: decision.type,
-        appVersion: env.appVersion,
-        ...(submitterName ? { userName: submitterName } : {}),
-      };
+    const result = await deps.postIssue(submissionIdentity, () => ({
+      title: finalTitle,
+      description,
+      type: decision.type,
+      appVersion: env.appVersion,
+      ...(confirmedPublicName ? { userName: confirmedPublicName } : {}),
+    }));
+    recordSubmission(deps, submissionIdentity, {
+      number: result.githubIssue.number,
+      title: finalTitle,
+      type: decision.type,
+      publicName: confirmedPublicName,
     });
     return {
       ok: true,
@@ -158,9 +198,64 @@ export async function submitGithubIssueWithConfirm(
       issueUrl: result.githubIssue.url,
       finalTitle,
       editedByUser,
+      privacyRedacted: preparedDraft.privacyRedacted,
     };
   } catch (err) {
     return mapSubmitError(err);
+  }
+}
+
+/**
+ * Agent 可能把用户粘贴的日志、错误和路径直接带进初稿。先过高置信度脱敏，再交给
+ * 用户确认；用户在确认卡里主动编辑的内容视为明确确认，不在这里静默改写。
+ */
+function redactIssueDraft(req: SubmitIssueRequest): {
+  draft: Pick<SubmitIssueRequest, 'title' | 'body' | 'type'>;
+  privacyRedacted: boolean;
+} {
+  const title = redactSensitive(req.title);
+  const body = redactSensitive(req.body);
+  return {
+    draft: {
+      title: title.text.trim(),
+      body: body.text.trim(),
+      type: req.type,
+    },
+    privacyRedacted: title.hitCount > 0 || body.hitCount > 0,
+  };
+}
+
+/** 记账是 best-effort:任何异常只吞掉,不影响已经成功的提交结果。 */
+function recordSubmission(
+  deps: GithubIssueSubmitServiceDeps,
+  submissionIdentity: IssueSubmissionIdentity,
+  submitted: {
+    number: number;
+    title: string;
+    type: 'bug' | 'feature';
+    publicName: string | null;
+  },
+): void {
+  if (!deps.onSubmitted) return;
+  try {
+    deps.onSubmitted({
+      number: submitted.number,
+      // 派生而不是存 postIssue 返回的原值:账本**读取**侧用 isMyIssueUrl 强校验
+      // (必须指向本仓这一号 issue)。写入侧存原值就会两侧口径不一 —— 返回的是 API
+      // 链接或别的 host 时,这条记录写得进去、读出来却被当坏数据过滤掉,平台读接口
+      // 未就绪 / 离线时用户看不到自己刚提交的那条。url 在系统里只有这一个产出方式。
+      url: myIssueUrl(submitted.number),
+      title: submitted.title,
+      type: submitted.type,
+      submittedAt: new Date().toISOString(),
+      identity: submissionIdentity.kind === 'github-user' ? 'github-user' : 'platform',
+      ...(submissionIdentity.kind === 'github-user'
+        ? { githubLogin: submissionIdentity.login }
+        : {}),
+      ...(submitted.publicName ? { publicName: submitted.publicName } : {}),
+    });
+  } catch {
+    // 交给注入方记日志;这里连 rethrow 都不做。
   }
 }
 

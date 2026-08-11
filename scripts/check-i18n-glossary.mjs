@@ -11,9 +11,9 @@
  * 三类规则:
  *  1. forbidden —— 术语在某语言下的禁用译法(如 Agent 在 zh-CN 禁「代理」)。
  *  2. case-form —— 保留英文的术语必须统一大小写形态(如 Worker 不写 worker)。
- *  3. punctuation —— 两条规则适用范围不同:半角标点(汉字后禁 , : ; ! ?)只对 zh-CN
- *     生效——日文 UI 惯例本就用半角冒号,实测 ja 半角 124:78 才是主流;省略号(… 而非
- *     三个半角点)覆盖 zh-CN / ja / ko 三语,三者现状都以 … 为主流。
+ *  3. punctuation —— 两条规则适用范围不同:半角标点(汉字后禁 , : ; ! ?)对 zh-CN /
+ *     zh-TW 生效——日文 UI 惯例本就用半角冒号,实测 ja 半角 124:78 才是主流;省略号
+ *     (… 而非三个半角点)覆盖 en / zh-CN / zh-TW / ja / ko。
  *
  * 分级:
  *  - status=decided 的术语违规 → **阻断**(exit 1)。
@@ -40,7 +40,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { renderGlossaryDoc } from './shared/glossary-doc.mjs';
+import { normalizeDocEol, renderGlossaryDoc } from './shared/glossary-doc.mjs';
 import { validateAgainstSchema } from './shared/json-schema-lite.mjs';
 import {
   ELLIPSIS_LOCALES,
@@ -504,7 +504,7 @@ if (stale.length > 0) {
 // GLOSSARY.md 是给人和 AI 查阅的入口,过期比不存在更糟——大家会照着过期的表写文案。
 // 用与生成器完全相同的渲染函数比对,不做「差不多就行」的模糊校验。
 const docStale = fs.existsSync(DOC_PATH)
-  ? fs.readFileSync(DOC_PATH, 'utf8') !== renderGlossaryDoc(glossary)
+  ? normalizeDocEol(fs.readFileSync(DOC_PATH, 'utf8')) !== normalizeDocEol(renderGlossaryDoc(glossary))
   : true;
 if (docStale) {
   console.error(

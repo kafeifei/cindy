@@ -5,8 +5,13 @@ import { describe, expect, it, vi } from 'vitest';
 import { createOrcaMcpServer } from '../orca/server.js';
 import { createLiziMcpProviders } from '../providers.js';
 import { createXdtHelperMcpServer } from '../lizi_xdtHelperMcpServer.js';
-import { runWithLiziMcpSessionContext } from '../session-context.js';
+import {
+  getLiziMcpSessionContext,
+  resolveLiziMcpSessionContext,
+  runWithLiziMcpSessionContext,
+} from '../session-context.js';
 import type { OrcaMcpDeps } from '../orca/server.js';
+import type { LiziMcpSessionContext } from '../types.js';
 import type { RenameSessionsDeps } from '../xdt-helper/rename_sessions.js';
 import type { SetCurrentSessionTitleDeps } from '../xdt-helper/set_current_session_title.js';
 
@@ -28,7 +33,11 @@ function tools(server: unknown) {
 
 function createOrcaDeps(overrides: Partial<OrcaMcpDeps> = {}): OrcaMcpDeps {
   return {
-    startTeam: vi.fn(async () => ({ ok: true as const, teamId: 'team-1' })),
+    startTeam: vi.fn(async () => ({
+      ok: true as const,
+      teamId: 'team-1',
+      workerPermissionMode: 'auto' as const,
+    })),
     createWorker: vi.fn(async () => ({
       ok: true as const,
       workerId: 'worker-1',
@@ -224,6 +233,55 @@ describe('dynamic lizi MCP session context', () => {
     expect(getStore).toHaveBeenLastCalledWith('/repo');
   });
 
+  it('scopes cindy_memory stores by remoteHostId for SSH remote session contexts', async () => {
+    // SSH remote ctx 带 remoteHostId:workingDir 是远端机器上的路径, 直接当
+    // store key 会与本地同名路径互串 — withStore 必须经 buildMemoryScopeKey
+    // 定位到 ssh:<hostId>:<path> 的独立 store。
+    const getStore = vi.fn(async (_workdir: string) => ({
+      list: vi.fn(async () => []),
+    }));
+    const getManager = () => ({
+      isEnabled: () => true,
+      getStore,
+    }) as never;
+    const provider = createLiziMcpProviders({ memory: { getManager } })
+      .find((p) => p.name === 'cindy_memory');
+    if (!provider) throw new Error('cindy_memory provider missing');
+
+    const cfg = provider.toClaudeSdkConfig({
+      agentKind: 'codex',
+      workingDir: '',
+      vendorOptions: {},
+    }) as { type: 'sdk'; instance: unknown };
+    const server = cfg.instance;
+
+    const remote = await runWithLiziMcpSessionContext(
+      {
+        agentKind: 'claude-code',
+        workingDir: '/home/me/proj',
+        remoteHostId: 'my-ssh-host',
+        sessionId: 'remote-session',
+        vendorOptions: {},
+      },
+      () => tools(server).call_tool.handler({ name: 'memory_list', args: {} }),
+    );
+    expect(parse(remote as never)).toMatchObject({ ok: true, data: [] });
+    expect(getStore).toHaveBeenLastCalledWith('ssh:my-ssh-host:/home/me/proj');
+
+    // 本地 ctx (无 remoteHostId) 保持原样键 — 既有存储目录不迁移。
+    const local = await runWithLiziMcpSessionContext(
+      {
+        agentKind: 'claude-code',
+        workingDir: '/home/me/proj',
+        sessionId: 'local-session',
+        vendorOptions: {},
+      },
+      () => tools(server).call_tool.handler({ name: 'memory_list', args: {} }),
+    );
+    expect(parse(local as never)).toMatchObject({ ok: true, data: [] });
+    expect(getStore).toHaveBeenLastCalledWith('/home/me/proj');
+  });
+
   it('advertises Cindy as the helper self-inspection category', async () => {
     const server = createXdtHelperMcpServer(
       {},
@@ -275,6 +333,154 @@ describe('dynamic lizi MCP session context', () => {
       agent_kind: 'codex',
       working_dir: '/repo',
     });
+  });
+
+  it('fails closed when the authoritative accessor cannot resolve a session', async () => {
+    const provider = createLiziMcpProviders({ xdtHelper: {} }).find(
+      (candidate) => candidate.name === 'cindy_helper',
+    );
+    if (!provider) throw new Error('cindy_helper provider missing');
+
+    const cfg = provider.toClaudeSdkConfig({
+      agentKind: 'codex',
+      workingDir: '/captured-other-workdir',
+      sessionId: 'captured-other-session',
+      vendorOptions: { source: 'captured-other-source' },
+      getSessionContext: () => undefined,
+    }) as { type: 'sdk'; instance: unknown };
+
+    const result = await tools(cfg.instance).call_tool.handler({
+      name: 'get_current_session_id',
+      args: {},
+    });
+
+    expect(parse(result as never)).toMatchObject({
+      ok: false,
+      errorCode: 'NO_SESSION_CONTEXT',
+    });
+  });
+
+  it('keeps a sessionInstanceId-only captured context isolated from ambient ALS', () => {
+    const capturedContext: LiziMcpSessionContext = {
+      agentKind: 'claude-code',
+      workingDir: '',
+      sessionInstanceId: 'cc-instance',
+    };
+
+    const resolved = runWithLiziMcpSessionContext(
+      {
+        agentKind: 'codex',
+        workingDir: '/codex-repo',
+        sessionId: 'codex-session',
+        sessionInstanceId: 'codex-instance',
+      },
+      () => resolveLiziMcpSessionContext(capturedContext),
+    );
+
+    expect(resolved).toBe(capturedContext);
+    expect(resolved).toMatchObject({
+      agentKind: 'claude-code',
+      sessionInstanceId: 'cc-instance',
+    });
+    expect(resolved.sessionId).toBeUndefined();
+  });
+
+  it('keeps concurrent Claude Code and Codex helper calls on their own session ids', async () => {
+    const provider = createLiziMcpProviders({ xdtHelper: {} }).find(
+      (candidate) => candidate.name === 'cindy_helper',
+    );
+    if (!provider) throw new Error('cindy_helper provider missing');
+
+    const claudeContext: LiziMcpSessionContext = {
+      agentKind: 'claude-code' as const,
+      workingDir: '/cc-repo',
+      sessionId: 'cc-session',
+      vendorOptions: {},
+      getSessionContext: () => claudeContext,
+    };
+    const codexFactoryContext = {
+      agentKind: 'codex' as const,
+      workingDir: '',
+      vendorOptions: {},
+      getSessionContext: getLiziMcpSessionContext,
+    };
+    const claudeServer = (
+      provider.toClaudeSdkConfig(claudeContext) as {
+        type: 'sdk';
+        instance: unknown;
+      }
+    ).instance;
+    const codexServer = (
+      provider.toClaudeSdkConfig(codexFactoryContext) as {
+        type: 'sdk';
+        instance: unknown;
+      }
+    ).instance;
+
+    const codexRequestContext = {
+      agentKind: 'codex' as const,
+      workingDir: '/codex-repo',
+      sessionId: 'codex-session',
+      vendorOptions: {},
+    };
+    const [claudeResult, codexResult] = await runWithLiziMcpSessionContext(
+      codexRequestContext,
+      async () =>
+        Promise.all([
+          tools(claudeServer).call_tool.handler({
+            name: 'get_current_session_id',
+            args: {},
+          }),
+          tools(codexServer).call_tool.handler({
+            name: 'get_current_session_id',
+            args: {},
+          }),
+        ]),
+    );
+
+    expect(parse(claudeResult as never)).toMatchObject({
+      ok: true,
+      session_id: 'cc-session',
+      agent_kind: 'claude-code',
+      working_dir: '/cc-repo',
+    });
+    expect(parse(codexResult as never)).toMatchObject({
+      ok: true,
+      session_id: 'codex-session',
+      agent_kind: 'codex',
+      working_dir: '/codex-repo',
+    });
+  });
+
+  it('keeps scheduler caller ownership fail-closed when dynamic context is absent', async () => {
+    const resolveInflightRunForSession = vi.fn(() => 'wrong-run');
+    const silenceRun = vi.fn(() => true);
+    const provider = createLiziMcpProviders({
+      scheduler: {
+        getScheduler: () =>
+          ({ resolveInflightRunForSession, silenceRun }) as never,
+      },
+    }).find((candidate) => candidate.name === 'cindy_scheduler');
+    if (!provider) throw new Error('cindy_scheduler provider missing');
+
+    const cfg = provider.toClaudeSdkConfig({
+      agentKind: 'codex',
+      workingDir: '/captured-other-workdir',
+      sessionId: 'captured-other-session',
+      vendorOptions: {},
+      getSessionContext: () => undefined,
+    }) as { type: 'sdk'; instance: unknown };
+    const result = await tools(cfg.instance).call_tool.handler({
+      name: 'schedule_silence_current_run',
+      args: { runId: 'explicit-run' },
+    });
+
+    expect(parse(result as never)).toMatchObject({
+      ok: true,
+      data: { silenced: true, runId: 'explicit-run' },
+    });
+    expect(resolveInflightRunForSession).not.toHaveBeenCalled();
+    expect(silenceRun).toHaveBeenCalledWith('explicit-run');
   });
 
   it('lets cindy_helper update the current session title dynamically', async () => {
@@ -723,6 +929,7 @@ describe('dynamic lizi MCP session context', () => {
     const startTeam = vi.fn(async () => ({
       ok: true as const,
       teamId: 'team-1',
+      workerPermissionMode: 'auto' as const,
     }));
     const deps: OrcaMcpDeps = createOrcaDeps({
       startTeam,

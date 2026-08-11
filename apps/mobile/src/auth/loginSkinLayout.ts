@@ -48,30 +48,69 @@ export const LOGIN_STAGE_MIN_DESIGN_HEIGHT = 600;
 export const LOGIN_STAGE_MAX_DESIGN_HEIGHT = 1800;
 
 /**
- * 短屏档(designHeight=1334;inner 几何 347:2884 实测,wave3.5 旧表)。
- * 2026-07-24 用户拍板:协议行距屏幕底过近,视觉+功能区整体上移 40 设计px(hero 不动)——
- * slogan.y 480.33→440.33、word.y 594.48→554.48、loginY 734→694。
+ * 短屏档(designHeight=1334)。
+ *
+ * 品牌簇(cindy 立绘 / slogan / 字标)换**登录改版新稿 figma 705:915
+ * 「Log in_iPhone_750x1334」逐字段实测值**(2026-07-28 视觉改版):
+ *  - cindy(立绘)599×720 @(75,60);
+ *  - slogan 取容器内 Vector 可见图形框:容器 @(385,387) + vector(77.55,21.37)
+ *    → (462.55, 408.37);尺寸 254.01×72.8 稿内未变;
+ *  - word 取字标图像框:主容器 @(35,422) + WORD_MARK 容器内字标 @(173,65)
+ *    → (208,487),335×115(旧 352.93×120.54)。
+ *
+ * ⚠ 立绘 y 60 是「避脸方案 B」(2026-07-27 用户审 demo 拍板):本档 slogan 没有下移
+ * 余量(底 481.17 距字标顶 487 仅 5.83 设计px,再移即压字标),故改为把立绘整体上移。
+ * 像素级实测(hero 资产脸部 skin 连通域 x402..552 / y315..475,slogan 资产 ink 5244px,
+ * 双方按各自 contain 折算到 stage 后求交):改前 dh=1334 slogan ink ∩ 脸 = 91px
+ * (= 用户看到的压脸),改后 dh ≤1450 全段 = 0;顶部不裁切(可见发顶
+ * = 60 + 86×0.79823 = 128.6,仍在 Status Bar 下沿 115.67 之下 12.9 设计px)。
+ *
+ * **loginY = 622,取新稿标注的功能区落位**(figma 705:915 Log_in 组 @(35,622);
+ * 2026-07-29 审图拍板「方案 B」)。为什么不是 main 的 694:品牌簇已整档换新稿基准
+ * (字标底 = 487+115 = 602),而 694 是配旧品牌簇(字标底 675.02)算出来的底部锚定值,
+ * 两者拼在一起会让字标↔面板之间空出 92 设计px —— 那个数在任何一份稿里都不存在
+ * (2026-07-29 review 实证)。取稿值 622 后间距回到稿内的 20。
+ *
+ * ⚠ 已知偏离:本档内容底 = 622 + 622(组 560 + 协议行溢出 62) = 1244,底部留白 90,
+ * 比稿内的 30 多 60。原因是新稿手机帧的面板是 500 高(含「跳过登录」栏),而手机端
+ * 已按产品决定剥离该入口、面板回 440,少掉的 60 全部落到底部留白。备选是让品牌簇
+ * 整体下移 60(底距也回稿值 30),2026-07-29 审图后拍板不采纳——保持品牌簇的稿内
+ * 顶部构图优先。
  */
 export const LOGIN_STAGE_SHORT = {
   designHeight: 1334,
-  cindy: { x: 75, y: 107, w: 599, h: 720 },
-  slogan: { x: 462.55, y: 440.33, w: 254.01, h: 72.8 },
-  word: { x: 199, y: 554.48, w: 352.93, h: 120.54 },
-  loginY: 694,
+  cindy: { x: 75, y: 60, w: 599, h: 720 },
+  slogan: { x: 462.55, y: 408.37, w: 254.01, h: 72.8 },
+  word: { x: 208, y: 487, w: 335, h: 115 },
+  loginY: 622,
 } as const;
 
 /**
- * 长屏档(designHeight=1624;358:434 实测)。立绘 y=116 双区统一
- * (〔已拍板 2026-07-19〕国区 116 vs 国际区旧帧 96 为设计稿内部不一致,取最新批次帧)。
- * 2026-07-24 用户拍板:协议行距屏幕底过近,视觉+功能区整体上移 40 设计px(hero 不动)——
- * slogan.y 686→646、word.y 814→774、loginY 973→933。
+ * 长屏档(designHeight=1624)。
+ *
+ * 品牌簇换**新稿 figma 705:799「Log in_iPhone_750x1624」逐字段实测值**(2026-07-28):
+ *  - cindy 750×902 @(0,106)(立绘 y 双区统一口径沿用〔已拍板 2026-07-19〕取最新批次帧);
+ *  - slogan 可见图形框 = 容器 @(362.57,545.32) + vector(82.33,22.68) → (444.9,568),
+ *    269.66×77.29(= 旧 321×92 的 0.84x,与新稿 slogan 容器同比例);
+ *  - word 字标图像框 = 主容器 @(35,627) + 字标 @(147,42.17) → (182,669.17),387×132.18。
+ *
+ * ⚠ slogan 下移避脸(2026-07-27 用户审 demo 拍板,距字标 24px):新稿实测 slogan inner
+ * y=536.68 时顶边落在立绘下巴线(390×844 帧下巴 ≈ stage y 540.7),文字压脸;故 inner y
+ * 536.68 → 568(下移 31.32,容器同量平移),slogan 底 645.29 距字标框顶 669.17 留 23.88。
+ *
+ * **loginY = 827,取新稿标注的功能区落位**(figma 705:799 Log_in 组 @(35,827);
+ * 理由同 LOGIN_STAGE_SHORT——旧值 933 配旧品牌簇,与新字标底 801.35 拼接会空出
+ * 131.65 设计px)。取稿值后间距回到稿内的 25.65。
+ *
+ * ⚠ 已知偏离:内容底 = 827 + 622 = 1449,底部留白 175,比稿内 115 多 60(同 SHORT:
+ * 面板 500→440 少掉的「跳过登录」栏高全部落到底部留白;2026-07-29 审图拍板接受)。
  */
 export const LOGIN_STAGE_LONG = {
   designHeight: 1624,
-  cindy: { x: 0, y: 116, w: 750, h: 902 },
-  slogan: { x: 387, y: 646, w: 321, h: 92 },
-  word: { x: 175, y: 774, w: 401, h: 137 },
-  loginY: 933,
+  cindy: { x: 0, y: 106, w: 750, h: 902 },
+  slogan: { x: 444.9, y: 568, w: 269.66, h: 77.29 },
+  word: { x: 182, y: 669.17, w: 387, h: 132.18 },
+  loginY: 827,
 } as const;
 
 function lerp(a: number, b: number, t: number): number {
@@ -85,9 +124,20 @@ function lerpBox(a: LoginStageBox, b: LoginStageBox, t: number): LoginStageBox {
  * 纯函数:物理 viewport → 750 stage 布局(U-8a「照 demo」逐式落码)。
  * - scale = viewportWidth / 750;designHeight = viewportHeight / scale,clamp [600,1800];
  * - dh < 1334:功能区优先——视觉区按 v=max(0.25,(dh-600)/734) 以 (375,0) 为锚连续压缩,
- *   loginY = max(0, dh-640)(功能区 680×560 + 底距不缩放、锚定底部;
- *   2026-07-24 拍板整体上移 40 设计px 后由 dh-600 改 dh-640,与 SHORT.loginY=694
- *   在 dh=1334 处保持连续:1334-640=694);
+ *   loginY = min(SHORT.loginY, max(0, dh-640)):面板按**紧凑底距 18** 锚定底部,
+ *   但**不高于**短屏档落位 622。为什么是钳制而不是把锚常量改成 dh-712:短屏档那 90
+ *   的底距是「面板 500→440 少掉 60 落到底部」的产物(见 LOGIN_STAGE_SHORT),只属于
+ *   dh≥1334;窄屏空间本就不足,若在那里也保留 60 额外底距,面板会上移压住被 v 压缩后的
+ *   字标(2026-07-29 review 实算:dh-712 会让 dh∈[712,1222) 全段字标被不透明面板盖住,
+ *   dh=1000 时压 40 设计px)。钳制式在 dh→1334⁻ 处自然收敛到 622(min 取到左项),
+ *   边界连续、且窄屏行为与 main 逐值一致;
+ *   ⚠ dh<822 时空间已不够,字标与面板仍会轻微交叠(dh=800 压 4、dh=700 压 90.5)——
+ *   那是 main 既有行为(同一公式同一取值,dh<1262 时 min 取右项、钳制不生效),本轮未
+ *   引入也未恶化,属「功能区优先」的既定代价(Split View 320pt 窄窗等极端形态);
+ *   ⚠ 钳制在 dh=1262 处让 loginY 的斜率由 1 变 0(值连续、斜率不连续):dh∈[1262,1334)
+ *   面板定在 622 不再随屏高上移,底部留白由 18 涨到 90。该窗口很窄(≈37 物理px @scale
+ *   0.52),离散的旋转/分屏切换基本撞不到;只有连续拖拽调窗(Android 分屏拖拽)才可能
+ *   感知到「面板定住」,属钳制的已知代价;
  * - 1334 ≤ dh ≤ 1624:t=(dh-1334)/290 全字段线性插值(含 loginY);
  * - dh > 1624:t clamp 1(长屏几何原样)。
  */
@@ -115,8 +165,8 @@ export function resolveLoginStage(
       cindy: cs(LOGIN_STAGE_SHORT.cindy),
       slogan: cs(LOGIN_STAGE_SHORT.slogan),
       word: cs(LOGIN_STAGE_SHORT.word),
-      // 2026-07-24 拍板:整体上移 40 设计px(dh-600 → dh-640),dh=1334 边界与 SHORT.loginY=694 连续
-      loginY: Math.max(0, designHeight - 640),
+      // 紧凑底距 18 锚定底部,再钳到短屏档落位 622(dh→1334⁻ 自然收敛,见函数注释)
+      loginY: Math.min(LOGIN_STAGE_SHORT.loginY, Math.max(0, designHeight - 640)),
     };
   }
   const t = Math.max(
@@ -439,31 +489,37 @@ export const LOGIN_CONSENT_DIALOG = {
   button: { y: 260, width: 260, height: 80, radius: 40, font: 24, disagreeX: 70, agreeX: 350 },
 } as const;
 
-/* ── 账号注销提示气泡(figma 678:1075,2026-07-26 用户拍板;**浮层,物理 pt/dp,
-      不走 750 stage 设计 px 缩放**——气泡渲染在 stage 之外的 viewport 坐标浮层,
-      盖过立绘/字标/面板/社交行,不参与滚动与布局流) ── */
+/* ── 账号注销提示气泡(figma 678:1075) ──
+      浮层:渲染在登录组之外的 viewport 坐标层,盖过立绘/字标/面板/社交行,
+      不参与布局流与滚动。
+      ⚠ 几何**全部是各构图 stage 的设计单位**,不是物理 pt/dp——与登录组同乘
+      surface.scale 后才是屏幕值(2026-07-26 修正:初版把设计单位当物理 pt 用,
+      宽度写死 335、内部几何未折算,气泡与面板比例失真)。 */
 
-/** 注销气泡定位输出(物理 pt/dp,viewport 坐标)。 */
+/** 注销气泡落位与折算结果(除 scale 外均为物理 pt/dp,viewport 坐标)。 */
 export interface LoginDeletionBubbleFrame {
   top: number;
   left: number;
   width: number;
+  /** 设计单位 → 物理 pt 的缩放系数(= surface.scale;内部几何消费端按此折算) */
+  scale: number;
 }
 
 /**
- * 注销提示气泡布局常量(figma 678:1075;单位物理 pt/dp):
- * 圆角 22、四边 padding 20、1px 描边、不透明底;标题/正文 20/23 Regular 居中,
- * 标题↔正文 5、正文↔「我知道了」22、「我知道了」↔气泡底 20(= padding,
- * 文案再长底距不变);高度内容撑开,禁止固定高;无图标/阴影/动画。
- * - phone:top = safe-area 顶(insets.top,间距 0),宽 min(335, 屏宽−2×20),水平居中;
- * - pad:top = 72 固定(已含状态栏之下安全余量),宽 556(与 CINDY 字标同宽);
- *   pad-landscape 中轴 = 登录 stage 右半屏中心(左立绘右表单双栏,字标在右栏
- *   正中——stage 1180 系字标/登录组中心均 ≈885=0.75×1180;用 stage 坐标换算,
- *   窄边受限居中的 viewport(iPad mini 横屏等)下仍与字标同轴);
- *   pad-portrait 中轴 = 屏幕中心(竖排构图,字标/表单均居中,右半屏中心会把
- *   气泡推出屏幕右缘);left 仅 clamp 到屏内(margin ≥ 0)——基准画布右缘余量
- *   17 是「556 宽 + 右半屏中轴」的结果而非独立参数,不额外设最小边距;
- *   退化窄横屏(stage 自身 scale 触底,如 1000×690)气泡贴右缘也不出屏。
+ * 注销提示气泡设计常量(figma 678:1075「注销状态」组件集;**stage 设计单位**)。
+ *
+ * 内部几何由组件子元素坐标反算自洽:标题 text @(20,20) h=23、正文 text @(20,48) h=23
+ * → padding 20、标题↔正文 5、行高 23、底距 20;无钮变体总高 91 = 20+23+5+23+20。
+ * 高度由内容撑开,禁止固定高;无图标/阴影/动画。
+ *
+ * 各端落位(设计单位,乘 surface.scale 得屏幕值):
+ * - phone(stage 750):宽 670 @x=40(750−670−40=40 → 等价水平居中);
+ *   top 取 safe-area 顶(设计 y=116 即 Status Bar 高 115.67 的下沿,间距 0);
+ * - pad-landscape(stage 1180×820):宽 556 = WORD_MARK 框宽(figma 679:1201 x=607 w=556,
+ *   用户 2026-07-26 拍板「与字标同宽」),x=607 → 中心 885 与登录组中心 884.8 同轴;
+ *   top 72(底边 72+91=163,距字标框顶 177 留 14,与设计标注位置吻合);
+ * - pad-portrait(stage 744×1133):字标框宽按可见图形等比反算
+ *   269.51 ×(556/297.32)≈ 504,水平居中于字标轴(≈ stage 中心 372);top 同 72。
  */
 export const LOGIN_DELETION_BUBBLE = {
   radius: 22,
@@ -473,38 +529,75 @@ export const LOGIN_DELETION_BUBBLE = {
   lineHeight: LOGIN_COPY_LINE_HEIGHT,
   titleBodyGap: 5,
   bodyLinkGap: 22,
-  /** 「我知道了」热区扩张(视觉不变):23 行高 + 上下 12 → 47 ≥ 44;左右 20 余量 */
-  linkHitSlop: { top: 12, bottom: 12, left: 20, right: 20 },
-  /** 屏幕两侧最小边距(phone 宽 = min(maxWidth, 屏宽−2×sideMargin)) */
-  sideMargin: 20,
-  phone: { maxWidth: 335 },
-  pad: { width: 556, top: 72, landscapeCenterRatio: 0.75 },
+  phone: { width: 670, x: 40, stageWidth: LOGIN_STAGE_WIDTH },
+  padLandscape: { width: 556, x: 607, top: 72 },
+  padPortrait: { width: 504, top: 72 },
 } as const;
 
 /**
- * 纯函数:surface 构图 + safe-area 顶 → 气泡 viewport 落位(figma 678:1075;
- * 断点三分支与 resolveLoginSurfaceMode 同语义,消费端直接传 useLoginSurface() 输出)。
+ * 纯函数:surface 构图 + safe-area 顶 → 气泡 viewport 落位(figma 678:1075)。
+ * 设计单位经 surface.scale 折算为物理 pt;left 钳制在屏内(不出屏、不贴负边)。
+ * 断点三分支与 resolveLoginSurfaceMode 同语义,消费端直接传 useLoginSurface() 输出。
  */
+/**
+ * 「我知道了」热区(物理 pt):RN 的 hitSlop **不会越过父 View 边界**(双端一致),
+ * 上/下扩张只能取「气泡内可用空间」——上限 = 正文↔链接间距、下限 = 气泡下 padding
+ * (均为设计单位 × scale),写大了是虚标(Codex 审查 PR #494 指出:320pt 窗口下
+ * 名义 45.8pt 实际被裁到 ≈30pt)。不追未缩放的 44pt 绝对下限:整个登录系统按 stage
+ * 缩放(320pt 窗口下登录主按钮本身仅 ≈34pt 高),孤立保 44 需打破「正文↔链接 22 /
+ * 底距 20 恒定」的拍板视觉;热区随系统同步缩放、边界内取最大。左右两侧文本外富余
+ * 充足,固定 20。
+ */
+export function resolveDeletionBubbleLinkHitSlop(scale: number): {
+  top: number;
+  bottom: number;
+  left: number;
+  right: number;
+} {
+  const { bodyLinkGap, padding } = LOGIN_DELETION_BUBBLE;
+  return {
+    top: Math.min(18, bodyLinkGap * scale),
+    bottom: Math.min(18, padding * scale),
+    left: 20,
+    right: 20,
+  };
+}
+
 export function resolveDeletionBubbleFrame(
   surface: LoginSurfaceLayout,
   safeTop: number,
 ): LoginDeletionBubbleFrame {
-  const { sideMargin, phone, pad } = LOGIN_DELETION_BUBBLE;
+  const { phone, padLandscape, padPortrait } = LOGIN_DELETION_BUBBLE;
+  const { scale } = surface;
+  const clampLeft = (left: number, width: number) =>
+    Math.max(0, Math.min(left, surface.viewportWidth - width));
+
   if (surface.mode === 'phone') {
-    const width = Math.min(phone.maxWidth, surface.viewportWidth - sideMargin * 2);
-    return { left: (surface.viewportWidth - width) / 2, top: safeTop, width };
+    const width = phone.width * scale;
+    return {
+      left: clampLeft((surface.viewportWidth - width) / 2, width),
+      top: safeTop,
+      width,
+      scale,
+    };
   }
-  const width = pad.width;
-  const center =
-    surface.mode === 'pad-landscape'
-      ? surface.offsetX +
-        surface.stageWidth * pad.landscapeCenterRatio * surface.scale
-      : surface.viewportWidth / 2;
-  const left = Math.max(
-    0,
-    Math.min(center - width / 2, surface.viewportWidth - width),
-  );
-  return { left, top: pad.top, width };
+  if (surface.mode === 'pad-landscape') {
+    const width = padLandscape.width * scale;
+    const left = surface.offsetX + padLandscape.x * scale;
+    return {
+      left: clampLeft(left, width),
+      top: surface.offsetY + padLandscape.top * scale,
+      width,
+      scale,
+    };
+  }
+  const width = padPortrait.width * scale;
+  return {
+    left: clampLeft((surface.viewportWidth - width) / 2, width),
+    top: surface.offsetY + padPortrait.top * scale,
+    width,
+    scale,
+  };
 }
 
 // 态叠层 / 浅底钮白描边 / loading 环底圈色:原 LOGIN_PRESSED_OVERLAY /

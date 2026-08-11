@@ -139,6 +139,18 @@ export interface CodexModelListParams {
   includeHidden?: boolean | null;
 }
 
+/** Minimal subset of `mcpServerStatus/list` used for post-start capability gates. */
+export interface CodexMcpServerStatus {
+  name: string;
+  tools: Record<string, unknown>;
+  [k: string]: unknown;
+}
+
+export interface CodexMcpServerStatusListResponse {
+  data: CodexMcpServerStatus[];
+  nextCursor: string | null;
+}
+
 export interface CodexModelListResponse {
   data: CodexModelListItem[];
   nextCursor: string | null;
@@ -395,6 +407,11 @@ export interface ThreadResumeParams {
    * 用于重启后恢复 host 产品级 prompt。
    */
   developerInstructions?: string;
+  /**
+   * 只恢复 thread 元数据与 live state，不把完整历史塞进单条 NDJSON response。
+   * 历史展示由 Cindy 自己的会话数据负责。
+   */
+  excludeTurns?: boolean;
   [k: string]: unknown;
 }
 
@@ -451,6 +468,12 @@ export interface ThreadForkParams {
   sandbox?: SandboxMode;
   /** Per-request config overrides, including named permission profile definitions. */
   config?: Record<string, unknown>;
+  /**
+   * 只返回 thread 元数据与 live fork state,不把完整历史塞进单条 NDJSON response。
+   * 与 thread/resume.excludeTurns 同族;超长历史 thread 的 fork 响应体与历史成
+   * 正比、无上界,曾实测单行 31MiB 超过 client maxLineBytes(16MiB)熔断整条连接。
+   */
+  excludeTurns?: boolean;
   [k: string]: unknown;
 }
 
@@ -733,7 +756,8 @@ export interface ServerRequestResolvedNotification {
 }
 
 export interface DynamicToolSpec {
-  namespace?: string;
+  /** Current canonical app-server format for top-level dynamic tools. */
+  type: 'function';
   name: string;
   description: string;
   inputSchema: unknown;
@@ -770,12 +794,24 @@ export interface DynamicToolCallResponse {
  */
 export interface ThreadStartedNotification {
   method: 'thread/started';
-  params: { thread: { id: string; [k: string]: unknown }; [k: string]: unknown };
+  params: {
+    thread: {
+      id: string;
+      parentThreadId?: string | null;
+      [k: string]: unknown;
+    };
+    [k: string]: unknown;
+  };
 }
 
 export interface TurnStartedNotification {
   method: 'turn/started';
   params: { threadId: string; turn: { id: string; [k: string]: unknown }; [k: string]: unknown };
+}
+
+export interface TurnDiffUpdatedNotification {
+  method: 'turn/diff/updated';
+  params: { threadId: string; turnId: string; diff: string; [k: string]: unknown };
 }
 
 /**
@@ -786,9 +822,61 @@ export interface TurnStartedNotification {
  */
 export type TurnStatus = 'completed' | 'interrupted' | 'failed' | 'inProgress';
 
+/**
+ * v2.rs CodexErrorInfo — codex 把内部 `CodexErr` 变体翻成 camelCase 暴露出来的
+ * **结构化** 错误标识。schema 正本:
+ * `codex-rs/app-server-protocol/schema/json/v2/ErrorNotification.json`。
+ *
+ * 为什么要用它: 同一个语义错误的 `message` 是 codex 侧硬编码的**用户可见文案**
+ * (`CodexErr::ServerOverloaded` 的文案是 "Selected model is at capacity. Please
+ * try a different model.", 见 codex-rs/protocol/src/error.rs 那个变体上的
+ * `#[error(...)]`)。那是给人看的提示语、不是 API 契约, codex 改一次措辞、所有
+ * 靠文案匹配的判定就一起静默失效。本字段是 schema 承诺的稳定契约。
+ *
+ * 形态有两种: 纯枚举变体在 wire 上就是**字符串**; 只有携带 `httpStatusCode` /
+ * `turnKind` 的那几个是单键对象。取 tag 统一走 `codexErrorInfoTag()`。
+ */
+export type CodexErrorInfo =
+  | 'contextWindowExceeded'
+  | 'sessionBudgetExceeded'
+  | 'usageLimitExceeded'
+  /** 上游临时过载: HTTP 503 + `server_is_overloaded` / `slow_down`。 */
+  | 'serverOverloaded'
+  | 'cyberPolicy'
+  | 'internalServerError'
+  | 'unauthorized'
+  | 'badRequest'
+  | 'threadRollbackFailed'
+  | 'sandboxError'
+  | 'other'
+  | { httpConnectionFailed: { httpStatusCode?: number | null } }
+  | { responseStreamConnectionFailed: { httpStatusCode?: number | null } }
+  | { responseStreamDisconnected: { httpStatusCode?: number | null } }
+  | { responseTooManyFailedAttempts: { httpStatusCode?: number | null } }
+  | { activeTurnNotSteerable: { turnKind?: unknown } };
+
+/**
+ * `CodexErrorInfo` 的判别 tag。字符串变体原样返回; 单键对象取那个唯一的键。
+ *
+ * 形状不认识时返回 `undefined` 而**不是**猜一个: 上游新增变体、或某天把单键对象
+ * 改成多键结构时, 宁可退回文案兜底, 也不要把它误判成某个已知 tag 去驱动重试。
+ */
+export function codexErrorInfoTag(info: CodexErrorInfo | null | undefined): string | undefined {
+  if (typeof info === 'string') return info;
+  if (info && typeof info === 'object' && !Array.isArray(info)) {
+    const keys = Object.keys(info);
+    return keys.length === 1 ? keys[0] : undefined;
+  }
+  return undefined;
+}
+
 export interface TurnError {
   message: string;
-  codexErrorInfo?: { [k: string]: unknown } | null;
+  /**
+   * 原类型写的 `{ [k: string]: unknown } | null` 接不住实际值 —— 纯枚举变体在
+   * wire 上是字符串。这个字段此前没被任何判定消费, 所以类型不准一直没暴露。
+   */
+  codexErrorInfo?: CodexErrorInfo | null;
   additionalDetails?: string | null;
 }
 
@@ -852,6 +940,18 @@ export interface ItemUpdatedNotification {
 export interface ItemCompletedNotification {
   method: 'item/completed';
   params: { threadId: string; turnId: string; item: ItemEnvelope; completedAtMs?: number };
+}
+
+/**
+ * v2 AgentMessageDeltaNotification:
+ *   { thread_id, turn_id, item_id, delta }
+ *
+ * 正文的专用增量流。item/updated 仍作为旧版 / 异常上游的全文快照兜底，
+ * item/completed 负责最终全文校准。
+ */
+export interface AgentMessageDeltaNotification {
+  method: 'item/agentMessage/delta';
+  params: { threadId: string; turnId: string; itemId: string; delta: string };
 }
 
 export type PlanEntryStatus = 'pending' | 'in_progress' | 'completed';
@@ -976,7 +1076,11 @@ export interface ErrorNotification {
     willRetry: boolean;
     /** Host-synthesized transport failures are session lifecycle errors, not turn-scoped SDK errors. */
     scope?: 'turn' | 'transport';
-    error: { message?: string; [k: string]: unknown };
+    /**
+     * 形状同 `TurnError`, 但 `message` 保持 optional —— host 合成的 transport 失败
+     * 走同一个 shape 且不保证带文案, 收紧成 required 会破坏那些构造点。
+     */
+    error: { message?: string; codexErrorInfo?: CodexErrorInfo | null; [k: string]: unknown };
     [k: string]: unknown;
   };
 }
@@ -1074,11 +1178,13 @@ export interface ItemEnvelope {
 export type ServerNotification =
   | ThreadStartedNotification
   | TurnStartedNotification
+  | TurnDiffUpdatedNotification
   | TurnCompletedNotification
   | ThreadTokenUsageUpdatedNotification
   | ItemStartedNotification
   | ItemUpdatedNotification
   | ItemCompletedNotification
+  | AgentMessageDeltaNotification
   | ReasoningSummaryTextDeltaNotification
   | ReasoningSummaryPartAddedNotification
   | ReasoningTextDeltaNotification
@@ -1096,6 +1202,7 @@ export type ServerNotification =
 export const Method = {
   Initialize: 'initialize',
   ModelList: 'model/list',
+  McpServerStatusList: 'mcpServerStatus/list',
   SkillsList: 'skills/list',
   ThreadStart: 'thread/start',
   ThreadResume: 'thread/resume',

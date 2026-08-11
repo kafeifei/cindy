@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import * as AlertDialog from '@radix-ui/react-alert-dialog';
 import { useTranslation } from 'react-i18next';
 
+import { flashScrollbar } from '@/lib/scrollbarAutoHide';
 import { cn } from '@/lib/utils';
 import { Spinner } from '@/components/ui/spinner';
 
@@ -15,6 +16,10 @@ export interface ConfirmDialogProps {
   /**
    * 富内容区(如装意识的逐项权限清单):渲染在 description 之后、复选框之前。
    * 与 description 独立 —— Radix Description 是 <p>,块级列表不能塞进去。
+   *
+   * 高度与滚动由本组件统一持有(max-h-[85vh] + 内部滚动区),caller 不必也不该
+   * 再给 content 套一层自己的限高滚动容器 —— 两层限高会让"到底了没有"取决于
+   * 内外层谁先触底,行为不好解释,滚动条提示也会落在错误的那一层。
    */
   content?: ReactNode;
   /**
@@ -44,8 +49,23 @@ export interface ConfirmDialogProps {
   autoFocusConfirm?: boolean;
   /** Disable the primary action until caller-owned validation has passed. */
   confirmDisabled?: boolean;
+  /** 嵌套在其它 Dialog 内时提升层级；普通确认继续使用默认层级。 */
+  zIndex?: number;
   /** Destructive actions use the semantic destructive theme tokens. */
   confirmVariant?: 'default' | 'destructive';
+  /**
+   * 主按钮文字前的小图标(如 Full access 确认的警示三角)。跟随按钮文字颜色,
+   * 不引入新的语义色;loading 时与文字一起被 spinner 顶掉。
+   */
+  confirmIcon?: ReactNode;
+  /**
+   * 把 aria-describedby 指向「description + 富内容」整个滚动区,让屏幕阅读器在
+   * 弹窗打开时把 content 里的清单一并朗读出来。授权类确认(如 Full access 的
+   * 权限清单)应开启 —— 否则开场朗读止于 description,SR 用户在没听到实际权限
+   * 的情况下就能确认。缺省关闭:长清单弹窗(如装意识的逐项权限)开场全文朗读
+   * 反而淹没用户,是否开启由调用方按内容长度决定。
+   */
+  describeContent?: boolean;
   /**
    * 进入"操作进行中"态:主按钮内容换成 spinner、所有按钮禁用,
    * 同时 ESC 和点击外部都不再关弹框。典型场景:用户点了确认后触发的
@@ -76,12 +96,17 @@ export function ConfirmDialog({
   autoFocusConfirm,
   confirmDisabled = false,
   confirmVariant = 'default',
+  confirmIcon,
+  describeContent = false,
   loading = false,
   onConfirm,
   onCancel,
   onTertiary,
+  zIndex = 10000,
 }: ConfirmDialogProps) {
   const { t } = useTranslation();
+  // describeContent 用:让 aria-describedby 覆盖整个「description + content」滚动区。
+  const bodyId = useId();
   const resolvedConfirmText = confirmText ?? t('commonUi.confirmDialog.confirm');
   const resolvedCancelText = cancelText ?? t('commonUi.confirmDialog.cancel');
   // 每次打开复位到初始勾选态,避免上一轮的勾选残留到下一次弹窗。
@@ -90,6 +115,24 @@ export function ConfirmDialog({
     if (open) setDontShowAgain(checkboxDefaultChecked);
   }, [open, checkboxDefaultChecked]);
   const confirmBtnRef = useRef<HTMLButtonElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  // 滚动条 thumb 默认透明(globals.css),不滚不 hover 就看不见"下面还有内容"。
+  // 授权确认场景里这不是观感问题:权限清单被折在视口下面而用户不知道,等于
+  // 在信息不全的情况下点了同意。所以弹窗一出现就主动闪一下滚动条(不可滚则
+  // no-op),内容变高(展开简介/工具组)后再闪一次。
+  const revealScrollbar = () => {
+    requestAnimationFrame(() => {
+      if (scrollRef.current) flashScrollbar(scrollRef.current);
+    });
+  };
+  useEffect(() => {
+    if (!open) return;
+    // Radix 开场动画期间 layout 还在变,下一帧再量 scrollHeight 才准。
+    const raf = requestAnimationFrame(() => {
+      if (scrollRef.current) flashScrollbar(scrollRef.current);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [open]);
   return (
     <AlertDialog.Root open={open} onOpenChange={onOpenChange}>
       <AlertDialog.Portal>
@@ -100,18 +143,24 @@ export function ConfirmDialog({
             'data-[state=open]:animate-confirm-overlay-in',
             'data-[state=closed]:animate-confirm-overlay-out',
           )}
-          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+          style={{ WebkitAppRegion: 'no-drag', zIndex } as React.CSSProperties}
         />
         <AlertDialog.Content
           className={cn(
             'fixed left-1/2 top-1/2 z-[10000] -translate-x-1/2 -translate-y-1/2',
+            'flex max-h-[85vh] flex-col',
             'w-full select-none rounded-xl p-4',
             'bg-[var(--confirm-bg)] shadow-[var(--confirm-shadow)]',
             'data-[state=open]:animate-confirm-content-in',
             'data-[state=closed]:animate-confirm-content-out',
           )}
-          style={{ WebkitAppRegion: 'no-drag', maxWidth: maxWidth ?? 400 } as React.CSSProperties}
-          {...(!description ? { 'aria-describedby': undefined } : {})}
+          style={{ WebkitAppRegion: 'no-drag', maxWidth: maxWidth ?? 400, zIndex } as React.CSSProperties}
+          {...(describeContent && content
+            ? // 指向滚动区(含 description 与 content):开场朗读覆盖清单全文。
+              { 'aria-describedby': bodyId }
+            : !description
+              ? { 'aria-describedby': undefined }
+              : {})}
           onEscapeKeyDown={(e) => {
             if (loading) e.preventDefault();
           }}
@@ -127,22 +176,41 @@ export function ConfirmDialog({
           }
         >
           <AlertDialog.Title
-            className={cn('text-lg font-medium text-[var(--confirm-title)]', textClassName)}
+            className={cn('shrink-0 text-lg font-medium text-[var(--confirm-title)]', textClassName)}
           >
             {title}
           </AlertDialog.Title>
-          {description && (
-            <AlertDialog.Description
-              className={cn('mt-2 text-base text-[var(--confirm-desc)]', textClassName)}
+          {(description || content) && (
+            // 富内容 / 长正文可能超过视口高度:包一层限高滚动区,让标题与底部按钮
+            // 固定、中间内容纵向滚动,避免整个弹窗被撑出屏幕后无法滚动到被裁掉的内容
+            // (典型:插件更新确认框的权限变更清单)。
+            <div
+              ref={scrollRef}
+              id={describeContent && content ? bodyId : undefined}
+              // 内容里的折叠区(如权限清单的工具组)展开后高度会变,capture 阶段
+              // 收一次点击、下一帧重新判定是否可滚,让滚动条跟着新高度再闪一下。
+              onClickCapture={revealScrollbar}
+              className={cn(
+                'min-h-0 flex-1 overflow-y-auto overscroll-contain',
+                // 保持旧间距:有 description 时紧跟标题 mt-2;仅富内容(无正文)
+                // 时沿用原 content 的 mt-3,避免 content-only 弹窗间距变化。
+                description ? 'mt-2' : 'mt-3',
+              )}
             >
-              {description}
-            </AlertDialog.Description>
+              {description && (
+                <AlertDialog.Description
+                  className={cn('text-base text-[var(--confirm-desc)]', textClassName)}
+                >
+                  {description}
+                </AlertDialog.Description>
+              )}
+              {content && <div className={cn(description && 'mt-3')}>{content}</div>}
+            </div>
           )}
-          {content && <div className="mt-3">{content}</div>}
           {dontShowAgainLabel && (
             <label
               className={cn(
-                'mt-4 flex cursor-pointer select-none items-center gap-2 text-13',
+                'mt-4 flex shrink-0 cursor-pointer select-none items-center gap-2 text-13',
                 'text-[var(--confirm-desc)]',
               )}
             >
@@ -155,7 +223,7 @@ export function ConfirmDialog({
               {dontShowAgainLabel}
             </label>
           )}
-          <div className="mt-6 flex justify-end gap-2.5">
+          <div className="mt-6 flex shrink-0 justify-end gap-2.5">
             <AlertDialog.Action asChild>
               <button
                 ref={confirmBtnRef}
@@ -180,7 +248,14 @@ export function ConfirmDialog({
                 {loading ? (
                   <Spinner size={14} />
                 ) : (
-                  resolvedConfirmText
+                  <>
+                    {confirmIcon && (
+                      <span className="mr-1.5 inline-flex shrink-0" aria-hidden="true">
+                        {confirmIcon}
+                      </span>
+                    )}
+                    {resolvedConfirmText}
+                  </>
                 )}
               </button>
             </AlertDialog.Action>

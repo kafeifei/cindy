@@ -6,7 +6,39 @@ import { messages, sessions } from '../../schema';
 
 const h = vi.hoisted(() => ({
   db: null as ReturnType<typeof drizzle> | null,
+  sqlite: null as Database.Database | null,
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
+  query: vi.fn(
+    async (query: string, params: unknown[] = []): Promise<Array<Record<string, unknown>>> => {
+      if (!h.sqlite) throw new Error('test sqlite not initialized');
+      return h.sqlite.prepare(query).all(...params) as Array<Record<string, unknown>>;
+    },
+  ),
+  tx: vi.fn(
+    async (
+      _name: string,
+      input: { sessionId: string; clientIds: string[] },
+    ): Promise<{ messages: Array<{ messageId: string; clientId: string }> }> => {
+      if (!h.sqlite) throw new Error('test sqlite not initialized');
+      const placeholders = input.clientIds.map(() => '?').join(', ');
+      const rows = h.sqlite
+        .prepare(
+          `SELECT id, client_id FROM messages WHERE session_id = ? AND client_id IN (${placeholders})`,
+        )
+        .all(input.sessionId, ...input.clientIds) as Array<{
+        id: string;
+        client_id: string;
+      }>;
+      h.sqlite
+        .prepare(
+          `DELETE FROM messages WHERE session_id = ? AND client_id IN (${placeholders})`,
+        )
+        .run(input.sessionId, ...input.clientIds);
+      return {
+        messages: rows.map((row) => ({ messageId: row.id, clientId: row.client_id })),
+      };
+    },
+  ),
 }));
 
 vi.mock('electron', () => ({
@@ -36,14 +68,24 @@ vi.mock('../../../git-context/prRefsStore', () => ({
   recomputePrRefsForSession: vi.fn(async () => undefined),
   recordPrRefsForMessage: vi.fn(async () => undefined),
 }));
+vi.mock('../../../cindy-media/ledger', () => ({
+  removeRefs: vi.fn(async () => undefined),
+}));
+vi.mock('../../../cindy-media/chatAttachments', () => ({
+  commitMessageMediaRefs: vi.fn(async () => undefined),
+}));
 vi.mock('../../client/current', () => ({
-  getDbClient: () => ({ drizzle: h.db }),
+  getDbClient: () => ({ drizzle: h.db, query: h.query, tx: h.tx }),
 }));
 
 import {
   findParkedEngineSession,
   findPendingAgentHandoff,
+  findForkParentSessionId,
+  findPendingForkOrigin,
   getMessageDeletionTarget,
+  commitMessageDeletion,
+  listPersistedChatAttachmentPaths,
   markLatestAgentHandoffConsumed,
   readPriorUserRoundCost,
   registerMessageIpc,
@@ -54,7 +96,11 @@ function createDb(): Database.Database {
   sqlite.exec(`
     CREATE TABLE sessions (
       id TEXT PRIMARY KEY,
-      cleared_at INTEGER
+      cleared_at INTEGER,
+      parent_session_id TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at INTEGER NOT NULL DEFAULT 0,
+      total_token_usage INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE messages (
       id TEXT PRIMARY KEY,
@@ -70,6 +116,7 @@ function createDb(): Database.Database {
     );
   `);
   h.db = drizzle(sqlite, { schema: { messages, sessions } });
+  h.sqlite = sqlite;
   return sqlite;
 }
 
@@ -122,6 +169,106 @@ function insertCostMessage(
     });
 }
 
+describe('staged chat attachment retention', () => {
+  it('extracts distinct protected paths in SQLite without returning message bodies', async () => {
+    const sqlite = createDb();
+    sqlite.prepare('INSERT INTO sessions (id, status) VALUES (?, ?)').run('deleted', 'deleted');
+    sqlite.prepare('INSERT INTO sessions (id, status) VALUES (?, ?)').run('retained', 'active');
+
+    const sharedPath = 'C:\\chat-attachment-cache\\owner\\shared.bin';
+    const retainedPath = 'C:\\chat-attachment-cache\\owner\\retained.bin';
+    const deletedPath = 'C:\\chat-attachment-cache\\owner\\deleted.bin';
+    const unrelatedContent = JSON.stringify({ text: 'x'.repeat(1024 * 1024) });
+    const insert = sqlite.prepare(`
+      INSERT INTO messages (
+        id, client_id, session_id, role, content, created_at
+      ) VALUES (
+        @id, @id, @sessionId, 'user', @content, @createdAt
+      )
+    `);
+    insert.run({
+      id: 'retained-unrelated',
+      sessionId: 'retained',
+      content: unrelatedContent,
+      createdAt: 1,
+    });
+    insert.run({
+      id: 'retained-attachment',
+      sessionId: 'retained',
+      content: JSON.stringify({
+        files: [
+          { path: sharedPath },
+          'legacy-scalar-entry',
+          { path: retainedPath },
+          { path: sharedPath },
+        ],
+      }),
+      createdAt: 2,
+    });
+    insert.run({
+      id: 'deleted-attachment',
+      sessionId: 'deleted',
+      content: JSON.stringify({ files: [{ path: deletedPath }] }),
+      createdAt: 3,
+    });
+    insert.run({
+      id: 'malformed-attachment',
+      sessionId: 'retained',
+      content: '{"files":[{"path":"chat-attachment-cache',
+      createdAt: 4,
+    });
+
+    h.query.mockClear();
+    await expect(listPersistedChatAttachmentPaths()).resolves.toEqual([
+      sharedPath,
+      retainedPath,
+    ]);
+    expect(h.query).toHaveBeenCalledWith(
+      expect.stringContaining('json_tree'),
+      ['%chat-attachment-cache%'],
+    );
+    expect(h.query.mock.calls[0][0]).toContain('SELECT DISTINCT');
+  });
+
+  it('does not protect staged paths referenced only by deleted sessions', async () => {
+    const sqlite = createDb();
+    sqlite.prepare('INSERT INTO sessions (id, status) VALUES (?, ?)').run('active', 'active');
+    sqlite.prepare('INSERT INTO sessions (id, status) VALUES (?, ?)').run('deleted', 'deleted');
+    sqlite.prepare('INSERT INTO sessions (id, status) VALUES (?, ?)').run('archived', 'archived');
+
+    const insert = sqlite.prepare(`
+      INSERT INTO messages (
+        id, client_id, session_id, role, content, created_at
+      ) VALUES (
+        @id, @id, @sessionId, 'user', @content, @createdAt
+      )
+    `);
+    insert.run({
+      id: 'active-message',
+      sessionId: 'active',
+      content: JSON.stringify({ files: [{ path: 'C:\\chat-attachment-cache\\active.bin' }] }),
+      createdAt: 1,
+    });
+    insert.run({
+      id: 'deleted-message',
+      sessionId: 'deleted',
+      content: JSON.stringify({ files: [{ path: 'C:\\chat-attachment-cache\\deleted.bin' }] }),
+      createdAt: 2,
+    });
+    insert.run({
+      id: 'archived-message',
+      sessionId: 'archived',
+      content: JSON.stringify({ files: [{ path: 'C:\\chat-attachment-cache\\archived.bin' }] }),
+      createdAt: 3,
+    });
+
+    await expect(listPersistedChatAttachmentPaths()).resolves.toEqual([
+      'C:\\chat-attachment-cache\\active.bin',
+      'C:\\chat-attachment-cache\\archived.bin',
+    ]);
+  });
+});
+
 describe('local-db:messages:list cursor', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -147,6 +294,36 @@ describe('local-db:messages:list cursor', () => {
       'row-old',
     ]);
     expect((rows as Array<{ id: string; rowid: number }>).map((row) => row.rowid)).toEqual([1, 4]);
+  });
+
+  it('lists only rows after a stable cursor, including same-timestamp inserts', async () => {
+    const sqlite = createDb();
+    sqlite.prepare('INSERT INTO sessions (id, cleared_at) VALUES (?, NULL)').run('s1');
+    insertMessage(sqlite, { id: 'row-z', createdAt: 1_000, content: 'cursor' });
+    insertMessage(sqlite, { id: 'row-a', createdAt: 1_000, content: 'same timestamp newer' });
+    insertMessage(sqlite, { id: 'row-new', createdAt: 1_001, content: 'newest' });
+
+    registerMessageIpc();
+    const listHandler = h.handlers.get('local-db:messages:list');
+    const rows = await listHandler?.({}, 's1', { limit: 10, after: 'row-z' });
+
+    expect((rows as Array<{ id: string }>).map((row) => row.id)).toEqual([
+      'row-new',
+      'row-a',
+    ]);
+  });
+
+  it('falls back to the latest page when an after cursor is unknown', async () => {
+    const sqlite = createDb();
+    sqlite.prepare('INSERT INTO sessions (id, cleared_at) VALUES (?, NULL)').run('s1');
+    insertMessage(sqlite, { id: 'row-old', createdAt: 999, content: 'old' });
+    insertMessage(sqlite, { id: 'row-new', createdAt: 1_000, content: 'new' });
+
+    registerMessageIpc();
+    const listHandler = h.handlers.get('local-db:messages:list');
+    const rows = await listHandler?.({}, 's1', { limit: 1, after: 'missing' });
+
+    expect((rows as Array<{ id: string }>).map((row) => row.id)).toEqual(['row-new']);
   });
 
   it('keeps around windows stable for same timestamp rows', async () => {
@@ -270,6 +447,137 @@ describe('local-db:messages:list cursor', () => {
     // list/session + one visibility scan (plus the direct storage assertion);
     // never one SQLite query set per SDK segment.
     expect(prepareSpy).toHaveBeenCalledTimes(5);
+  });
+});
+
+describe('findPendingForkOrigin 来源标记重建', () => {
+  const FORK_AT = 5_000;
+
+  function insertForkedSession(
+    sqlite: Database.Database,
+    parent: string | null,
+    totalTokenUsage = 0,
+  ): void {
+    sqlite
+      .prepare(
+        'INSERT INTO sessions (id, cleared_at, parent_session_id, created_at, total_token_usage) VALUES (?, NULL, ?, ?, ?)',
+      )
+      .run('s1', parent, FORK_AT, totalTokenUsage);
+  }
+
+  function insertRowAt(
+    sqlite: Database.Database,
+    role: 'user' | 'assistant',
+    createdAt: number,
+  ): void {
+    sqlite
+      .prepare(
+        `
+      INSERT INTO messages (
+        id, client_id, session_id, role, content, tool_use_id, agent_meta,
+        agent_kind, created_at, rewind_at
+      ) VALUES (?, ?, 's1', ?, '"q"', NULL, NULL, 'cc', ?, NULL)
+    `,
+      )
+      .run(`${role}-${createdAt}`, `${role}-${createdAt}`, role, createdAt);
+  }
+
+  it('fork 后尚未跑过一轮:返回父会话 id(重启后同样可重建,不依赖内存态)', async () => {
+    const sqlite = createDb();
+    insertForkedSession(sqlite, 'parent-1');
+    await expect(findPendingForkOrigin('s1')).resolves.toBe('parent-1');
+  });
+
+  it('子会话跑过一轮(token 已累加且该轮 user 行仍存活)后不再返回', async () => {
+    const sqlite = createDb();
+    insertForkedSession(sqlite, 'parent-1', 1_234);
+    insertRowAt(sqlite, 'user', FORK_AT + 10);
+    await expect(findPendingForkOrigin('s1')).resolves.toBeNull();
+  });
+
+  it('Codex 回滚掉首个 post-fork turn 后重新 arm(token 计数不随 rewind 回退)', async () => {
+    // rewind 把该轮的 user / assistant 都标上 rewind_at，但 total_token_usage 留在原地；
+    // 只看 token 会让「回滚后重发」的 Codex 会话永远拿不回来源标记。
+    const sqlite = createDb();
+    insertForkedSession(sqlite, 'parent-1', 4_321);
+    sqlite
+      .prepare(
+        `INSERT INTO messages (
+          id, client_id, session_id, role, content, tool_use_id, agent_meta,
+          agent_kind, created_at, rewind_at
+        ) VALUES ('u-r', 'u-r', 's1', 'user', '"q"', NULL, NULL, 'codex', ?, ?)`,
+      )
+      .run(FORK_AT + 10, FORK_AT + 50);
+    sqlite
+      .prepare(
+        `INSERT INTO messages (
+          id, client_id, session_id, role, content, tool_use_id, agent_meta,
+          agent_kind, created_at, rewind_at
+        ) VALUES ('a-r', 'a-r', 's1', 'assistant', '"a"', NULL, NULL, 'codex', ?, ?)`,
+      )
+      .run(FORK_AT + 20, FORK_AT + 50);
+    await expect(findPendingForkOrigin('s1')).resolves.toBe('parent-1');
+  });
+
+  it('Codex 首轮完成(token>0 且 user 行存活)判定已消费', async () => {
+    const sqlite = createDb();
+    insertForkedSession(sqlite, 'parent-1', 4_321);
+    insertRowAt(sqlite, 'user', FORK_AT + 10);
+    await expect(findPendingForkOrigin('s1')).resolves.toBeNull();
+  });
+
+  it('Claude 会话(token 列恒为 0)靠 assistant 行判定已跑过一轮', async () => {
+    // recordSessionTurnTokens 只在 register.ts 的 codex done 分支调用,Claude 的
+    // total_token_usage 永远是 0;只认 token 会让 Claude fork 每次重启都重复注入。
+    const sqlite = createDb();
+    insertForkedSession(sqlite, 'parent-1');
+    insertRowAt(sqlite, 'assistant', FORK_AT + 10);
+    await expect(findPendingForkOrigin('s1')).resolves.toBeNull();
+  });
+
+  it('fork 后 /clear 过:不再注入(历史已被用户显式重置)', async () => {
+    const sqlite = createDb();
+    sqlite
+      .prepare(
+        'INSERT INTO sessions (id, cleared_at, parent_session_id, created_at, total_token_usage) VALUES (?, ?, ?, ?, 0)',
+      )
+      .run('s1', FORK_AT + 100, 'parent-1', FORK_AT);
+    await expect(findPendingForkOrigin('s1')).resolves.toBeNull();
+    await expect(findForkParentSessionId('s1')).resolves.toBeNull();
+  });
+
+  it('findForkParentSessionId 不受首发消费影响:切引擎/删消息重建上下文仍带血缘', async () => {
+    // 首轮已跑完(token 已累加)→ 一次性标记该消费;但 fork 是永久属性,
+    // 重建原生上下文时仍要带上,否则新上下文不知道自己是分叉。
+    const sqlite = createDb();
+    insertForkedSession(sqlite, 'parent-1', 5_000);
+    insertRowAt(sqlite, 'user', FORK_AT + 10);
+    await expect(findPendingForkOrigin('s1')).resolves.toBeNull();
+    await expect(findForkParentSessionId('s1')).resolves.toBe('parent-1');
+  });
+
+  it('已知边界:导入会话的合成时间戳会让来源标记漏注入一次(方向安全,故意接受)', async () => {
+    // importer 为强制行序写 createdAt+sequence / timestamp+lineNo,长 transcript 的
+    // 末尾行能超出真实墙钟数秒。此时复制来的 assistant 会被算成子会话自己的回应。
+    // 记录为已接受的取舍:方向是漏一次,而不是把内部说明重复灌给模型。
+    const sqlite = createDb();
+    insertForkedSession(sqlite, 'parent-1');
+    insertRowAt(sqlite, 'assistant', FORK_AT + 9_000);
+    await expect(findPendingForkOrigin('s1')).resolves.toBeNull();
+  });
+
+  it('goal 路径先落 user 行再 peek:仍返回父会话 id(不被 pre-dispatch 持久化骗过)', async () => {
+    // GoalController.setGoal 先 persistUserMessage 再 fireTurn→peek。
+    const sqlite = createDb();
+    insertForkedSession(sqlite, 'parent-1');
+    insertRowAt(sqlite, 'user', FORK_AT + 5);
+    await expect(findPendingForkOrigin('s1')).resolves.toBe('parent-1');
+  });
+
+  it('非 fork 会话恒为 null', async () => {
+    const sqlite = createDb();
+    insertForkedSession(sqlite, null, 999);
+    await expect(findPendingForkOrigin('s1')).resolves.toBeNull();
   });
 });
 
@@ -439,6 +747,10 @@ describe('getMessageDeletionTarget', () => {
       id: 'progress',
       role: 'assistant',
       deletedClientIds: ['progress', 'thinking', 'auto-resume', 'tool', 'final', 'error'],
+      subagentTurnWindow: {
+        startedAtInclusive: 1_000,
+        startedAtExclusive: 1_800,
+      },
     });
   });
 
@@ -493,6 +805,10 @@ describe('getMessageDeletionTarget', () => {
         'trigger-legacy-raw',
         'final',
       ],
+      subagentTurnWindow: {
+        startedAtInclusive: 1_000,
+        startedAtExclusive: 1_800,
+      },
     });
   });
 
@@ -552,6 +868,10 @@ describe('getMessageDeletionTarget', () => {
       'target',
       ...Array.from({ length: 40 }, (_, index) => `next-trigger-${index}`),
     ]);
+    expect(target?.subagentTurnWindow).toEqual({
+      startedAtInclusive: 1_000,
+      startedAtExclusive: 3_000,
+    });
   });
 
   it('keeps a blank real user message as a deletion boundary', async () => {
@@ -575,6 +895,9 @@ describe('getMessageDeletionTarget', () => {
       id: 'target',
       role: 'assistant',
       deletedClientIds: ['target'],
+      subagentTurnWindow: {
+        startedAtInclusive: 1_200,
+      },
     });
   });
 

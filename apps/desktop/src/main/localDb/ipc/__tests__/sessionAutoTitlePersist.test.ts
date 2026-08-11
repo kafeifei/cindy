@@ -30,7 +30,10 @@ vi.mock('../../../git-context/prRefsStore', () => ({
 }));
 vi.mock('../../../imageCacheStore', () => ({ removeSession: vi.fn(async () => undefined) }));
 vi.mock('../recentWorkdirs', () => ({ upsertRecentWorkdir: vi.fn(async () => undefined) }));
-vi.mock('../../../device-link/broadcast-tap.js', () => ({ tapWindowBroadcast: vi.fn() }));
+vi.mock('../../../device-link/broadcast-tap.js', () => ({
+  getSafeDataOwnerPushStamp: vi.fn(() => undefined),
+  tapWindowBroadcast: vi.fn(),
+}));
 vi.mock('../../agentIslandSessionPatch', () => ({ notifyAgentIslandSessionPatch: vi.fn() }));
 vi.mock('../../../messagePersistBroadcaster', () => ({ noteSessionClearBoundary: vi.fn() }));
 vi.mock('../../../sessionIds', () => ({ resolveBusinessSessionId: (id: string) => id }));
@@ -41,7 +44,6 @@ vi.mock('../../../maker-host/claude-transcript-relocation.js', () => ({
 import {
   getOverwritableAutoTitle,
   isUntitledSessionAwaitingAutoTitle,
-  normalizeAutoTitle,
   persistSessionTitleIfStillDraft,
 } from '../sessions';
 
@@ -123,14 +125,8 @@ function currentTitle(): string {
   }).title;
 }
 
-describe('normalizeAutoTitle', () => {
-  it('折叠空白 → trim → 截断 40 字(先 trim 再截断)', () => {
-    expect(normalizeAutoTitle('  帮我\n排查  登录失败 ')).toBe('帮我 排查 登录失败');
-    expect(normalizeAutoTitle(`\n${' '.repeat(50)}real text`)).toBe('real text');
-    expect(normalizeAutoTitle('排'.repeat(60))).toBe('排'.repeat(40));
-    expect(normalizeAutoTitle('   ')).toBe('');
-  });
-});
+// normalizeAutoTitle 的用例随实现搬到 packages/maker-shared/src/__tests__/sessionTitle.test.ts
+// (main / renderer / mobile 共用同一份实现,单测跟着实现走)。
 
 describe('persistSessionTitleIfStillDraft — 条件写', () => {
   beforeEach(() => createDb('New Maker'));
@@ -263,6 +259,9 @@ describe('getOverwritableAutoTitle — 覆写目标', () => {
 
     h.sqlite!.prepare('UPDATE sessions SET agent_kind = ? WHERE id = ?').run('codex', SESSION_ID);
     expect((await getOverwritableAutoTitle(SESSION_ID))?.agentKind).toBe('codex');
+
+    h.sqlite!.prepare('UPDATE sessions SET agent_kind = ? WHERE id = ?').run('pi', SESSION_ID);
+    expect((await getOverwritableAutoTitle(SESSION_ID))?.agentKind).toBe('pi');
   });
 
   it('用它当期望值就能覆写 fork 占位(端到端条件写)', async () => {

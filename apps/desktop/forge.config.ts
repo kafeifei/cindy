@@ -19,9 +19,11 @@ import {
   brandExecutableName,
   resolveCindyRegion,
 } from '@cindy/maker-shared/brand-identity';
+import { stageMacIOSSimulatorHelper } from './forge-ios-simulator-helper';
 import { stagePackagedThirdPartyNotices } from './forge-third-party-notices';
 
 const _require = createRequire(__filename);
+const DESKTOP_PACKAGE_VERSION = (_require('./package.json') as { version: string }).version;
 
 // ── 构建期身份(2026-07-17 Cindy 渠道分叉) ─────────────────────────────────────
 // 区域默认 global;中国大陆包由发布脚本显式注入 CINDY_AUTH_REGION=cn。appId 随区域
@@ -760,6 +762,19 @@ function extraResourcesForTarget(targetPlatform: string): string[] {
     base.unshift(`resources/${UPDATER_EXE}`);
   }
 
+  if (targetPlatform === 'darwin' || targetPlatform === 'mas') {
+    // WDA archive/manifest are runtime resources. The Host-owned Helper is
+    // temporarily copied here and moved to Contents/Helpers by postPackage so
+    // the signing pipeline can treat it as nested code.
+    base.push('resources/ios-simulator');
+  }
+
+  // macOS 「帮助 → 安装到命令行」symlink 的目标脚本(<App>/Contents/Resources/cli/cindy)。
+  // 仅 darwin 有此功能,其它平台不打进包。exec 位由 git 跟踪,extraResource 拷贝时保留。
+  if (targetPlatform === 'darwin') {
+    base.push('resources/cli');
+  }
+
   return base;
 }
 
@@ -845,6 +860,31 @@ function isMacForgePlatform(platform: ForgePlatform): boolean {
   return platform === 'darwin' || platform === 'mas';
 }
 
+function ensureMacIOSSimulatorWdaArchive(platform: ForgePlatform): void {
+  if (process.platform !== 'darwin' || !isMacForgePlatform(platform)) return;
+  const script = path.join(__dirname, 'scripts', 'ensure-wda-source-archive.mjs');
+  console.log(`[forge:prePackage] preparing pinned iOS Simulator WDA archive via ${script}...`);
+  const result = spawnSync(process.execPath, [script], {
+    cwd: __dirname,
+    stdio: 'inherit',
+  });
+  if (result.error) {
+    throw new Error(
+      `[forge] iOS Simulator WDA archive preparation failed: ${result.error.message}`,
+    );
+  }
+  if (result.signal) {
+    throw new Error(
+      `[forge] iOS Simulator WDA archive preparation terminated by signal ${result.signal}`,
+    );
+  }
+  if (result.status !== 0) {
+    throw new Error(
+      `[forge] iOS Simulator WDA archive preparation failed with exit code ${result.status}`,
+    );
+  }
+}
+
 const MACOS_VOICE_HELPER_DEPLOYMENT_TARGET = 'macos10.15';
 const MACOS_AGENT_ISLAND_HELPER_DEPLOYMENT_TARGET = 'macos14.0';
 const MACOS_COMPUTER_PERMISSION_GUIDE_HELPER_DEPLOYMENT_TARGET = 'macos13.0';
@@ -873,6 +913,52 @@ function swiftArchLabel(arch: ForgeArch, deploymentTarget: string): string {
   return swiftTargetTriplesForForgeArch(arch, deploymentTarget)
     .map((target) => target.split('-')[0])
     .join('+');
+}
+
+function iosSimulatorSidecarArch(arch: ForgeArch): 'arm64' | 'x86_64' | 'universal' {
+  switch (arch) {
+    case 'arm64':
+      return 'arm64';
+    case 'x64':
+      return 'x86_64';
+    case 'universal':
+      return 'universal';
+    default:
+      throw new Error(`[forge] unsupported iOS Simulator helper arch: ${arch}`);
+  }
+}
+
+function buildMacIOSSimulatorHelper(platform: ForgePlatform, arch: ForgeArch): void {
+  if (process.platform !== 'darwin' || !isMacForgePlatform(platform)) return;
+  const script = path.join(
+    __dirname,
+    '..',
+    '..',
+    'packages',
+    'ios-simulator-runtime',
+    'scripts',
+    'build-native-sidecar.mjs',
+  );
+  const helperArch = iosSimulatorSidecarArch(arch);
+  const result = spawnSync(process.execPath, [script], {
+    cwd: path.join(__dirname, '..', '..'),
+    env: {
+      ...process.env,
+      CINDY_IOS_SIDECAR_ARCH: helperArch,
+      CINDY_IOS_SIDECAR_OUTPUT_MODE: 'helper',
+      CINDY_IOS_SIDECAR_BUNDLE_ID: `${CINDY_APP_ID}.ios-simulator-helper`,
+      CINDY_IOS_SIDECAR_VERSION: process.env.APP_VERSION ?? DESKTOP_PACKAGE_VERSION,
+    },
+    stdio: 'inherit',
+  });
+  if (result.error) {
+    throw new Error(`[forge] iOS Simulator helper build failed: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    throw new Error(
+      `[forge] iOS Simulator helper build failed for ${helperArch} with exit code ${result.status}`,
+    );
+  }
 }
 
 function runSwiftcForTarget(src: string, dest: string, target: string, extraArgs: string[], label: string): void {
@@ -1076,6 +1162,22 @@ if (isWin) {
         // 接受)/ dev 'CindyDev'(仍与正式包隔离)。显式设值防 app-builder
         // 回落 package.json productName 造成 dev 与正式包同目录。
         productName: CINDY_EXE,
+        // Setup.exe 与 Uninstall <App>.exe 的 FileDescription 版本资源。
+        // app-builder-lib 只从 metadata(= apps/desktop/package.json)取
+        // description,没有顶层 config 字段;extraMetadata 是唯一的覆盖通道
+        // (packager.ts 在读完 package.json 后 deepAssign 进 metadata)。
+        // 不设时回落 package.json 的 npm 包描述,UAC 提权弹窗、文件属性、
+        // 快捷方式悬停提示上就会显示那段面向开发者的文本。
+        //
+        // ⚠️ 取 displayName 而非 CINDY_EXE:展示名两区(含 dev)共用 'Cindy',
+        // 而 exe 名 dev 派生为 'CindyDev'。用后者会让 dev 包的安装器显示
+        // CindyDev、装完的主 exe 却显示 Cindy(win32metadata 同样取
+        // displayName)——安装前后自相矛盾,正是本次要消除的那类不一致。
+        // 文件名层的区分由 productName / shortcutName 承担,与展示层解耦。
+        //
+        // prepackaged 模式下 doPack 直接 return,extraMetadata 不会重写
+        // 已由 electron-forge 打好的 app.asar 内 package.json。
+        extraMetadata: { description: BRAND_IDENTITY.displayName },
         nsis: {
           oneClick: false,
           allowToChangeInstallationDirectory: true,
@@ -1131,11 +1233,13 @@ const config: ForgeConfig = {
     appBundleId: CINDY_APP_ID,
     // exe 资源元数据(任务管理器进程名、文件右键属性的显示层)。只影响展示,
     // 与 exe 文件名 / AUMID / userData 等标识符解耦;显示层两区共用 Cindy
-    // (与 mac 显示名口径一致)。
+    // (与 mac 显示名口径一致)。FileDescription 走 BRAND_IDENTITY.displayName,
+    // 与 NSIS maker 的 extraMetadata.description 同一表达式——安装器/卸载器
+    // 与主 exe 的「说明」字段必须同值,否则 dev 包会安装前后显示两个名字。
     win32metadata: {
       CompanyName: 'XD',
       ProductName: 'Cindy',
-      FileDescription: 'Cindy',
+      FileDescription: BRAND_IDENTITY.displayName,
     },
     icon: 'resources/icon',
     // 自定义 URL scheme: xdt-maker://session/<id> | xdt-maker://project/<encoded-workingDir>
@@ -1147,8 +1251,8 @@ const config: ForgeConfig = {
       // 双 scheme 注册:cindy:// 主 + xdt-maker:// 永久兼容(存量分享链接不死)。
       { name: 'Cindy Deep Link', schemes: [...allDeepLinkSchemes()] },
     ],
-    // macOS 文件夹右键 "打开方式 → XDMaker" 入口:
-    //   声明 app 能接受 public.folder, Finder 自动把 XDMaker 出现在 "打开方式" 列表。
+    // macOS 文件夹右键 "打开方式 → Cindy" 入口:
+    //   声明 app 能接受 public.folder, Finder 自动把 Cindy 出现在 "打开方式" 列表。
     //   LSHandlerRank=Alternate: 不抢 Finder 默认 handler, 仅作为可选项之一。
     //   CFBundleTypeRole=Editor: 用户对该类型有 "打开+操作" 能力 (而非 Viewer 只看)。
     //   触发后 macOS 通过 app.on('open-file') 事件把目录路径推给 main 进程,
@@ -1172,6 +1276,8 @@ const config: ForgeConfig = {
         'Cindy uses Apple Events to read Contacts you import and to add or update Contacts you explicitly export.',
       NSContactsUsageDescription:
         'Cindy accesses Contacts only when you import them or explicitly export additions or updates.',
+      NSLocalNetworkUsageDescription:
+        'Cindy uses your local network to sync end-to-end encrypted Smart Contacts directly between your online desktop devices.',
       CFBundleDocumentTypes: [
         {
           CFBundleTypeName: 'Folder',
@@ -1269,11 +1375,13 @@ const config: ForgeConfig = {
     prePackage: async (_forgeConfig, platform, arch) => {
       const targetPlatform = requestedTargetPlatform();
       const targetArch = requestedTargetArch();
+      ensureMacIOSSimulatorWdaArchive(platform);
       if (targetPlatform === 'win32') {
         buildCindyUpdater();
       }
       stageRipgrep(targetPlatform, targetArch);
       stageAndroidPlatformTools(targetPlatform, targetArch);
+      buildMacIOSSimulatorHelper(platform, arch);
       buildMacVoiceInputTextInsertionHelper(platform, arch);
       buildMacVoiceInputModifierShortcutListener(platform, arch);
       buildMacAgentIslandHelper(platform, arch);
@@ -1287,6 +1395,7 @@ const config: ForgeConfig = {
         const noticeName = stagePackagedThirdPartyNotices(buildPath, opts.platform);
         console.log(`[forge:postPackage] staged ${noticeName} + restricted component disclosure`);
         signPackagedExes(buildPath);
+        stageMacIOSSimulatorHelper(buildPath, opts.platform, opts.arch);
         applyMacPackagedDisplayName(buildPath, opts.platform);
       }
     },
@@ -1308,6 +1417,32 @@ const config: ForgeConfig = {
           config: 'vite.db-worker.config.ts',
           // 借用 preload target 的 CJS 单文件输出；这里运行时是 Node worker_threads，
           // 不是 Electron preload。
+          target: 'preload',
+        },
+        {
+          entry: 'src/main/im/wechat/silkWorker.ts',
+          config: 'vite.silk-worker.config.ts',
+          // SILK/WASM 解码隔离在线程中，避免阻塞 Electron main。
+          target: 'preload',
+        },
+        {
+          entry: 'src/main/contacts-sync/contactsSyncCodecWorker.ts',
+          config: 'vite.contacts-sync-codec-worker.config.ts',
+          // 大通讯录 JSON/gzip/crypto 隔离在线程中，避免阻塞 Electron main。
+          target: 'preload',
+        },
+        {
+          entry: 'src/main/mcp-integrations/forgeIconConversionProcess.ts',
+          config: 'vite.forge-icon-conversion-process.config.ts',
+          // Sharp/libvips 转换在一次性 utility process 中执行；超时可 kill，
+          // 不把不可取消的 native 任务留在 Electron main。
+          target: 'preload',
+        },
+        {
+          entry: 'src/main/reviewer/reviewPdfUtilityProcess.ts',
+          config: 'vite.review-pdf-process.config.ts',
+          // 正式包关闭 RunAsNode；PDF.js 在一次性 utility process 中执行，
+          // 超时直接 kill，不阻塞 Electron main。
           target: 'preload',
         },
         {

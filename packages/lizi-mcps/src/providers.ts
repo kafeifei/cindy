@@ -1,8 +1,10 @@
 import type {
   AndroidMcpDeps,
+  IOSSimulatorMcpDeps,
   BrowserMcpDeps,
   ComputerMcpDeps,
   FeishuBotMcpHostDeps,
+  WechatBotMcpHostDeps,
   LiziMcpId,
   LiziMcpProvider,
   LiziMcpSessionContext,
@@ -14,6 +16,7 @@ import type {
   LspMcpDeps,
 } from './types.js';
 import { createFeishuBotMcpServer } from './cindy_feishuBotMcpServer.js';
+import { createWechatMcpServer } from './cindy_wechatMcpServer.js';
 import { createSlackMcpGatewayServer } from './cindy_slackMcpServer.js';
 import { createSchedulerMcpServer } from './cindy_schedulerMcpServer.js';
 import { createSshMcpServer } from './cindy_sshMcpServer.js';
@@ -25,6 +28,7 @@ import { createCindyLspMcpServer, detectTypeScriptProject } from './lsp/index.js
 import { createBrowserMcpServer } from './browser/index.js';
 import { createComputerMcpServer } from './computer/index.js';
 import { createAndroidMcpServer } from './android/index.js';
+import { createIOSSimulatorMcpServer } from './ios-simulator/index.js';
 import { resolveLiziMcpSessionContext } from './session-context.js';
 
 export interface CreateLiziMcpProvidersOptions {
@@ -33,11 +37,14 @@ export interface CreateLiziMcpProvidersOptions {
    */
   enabled?: readonly LiziMcpId[];
   android?: AndroidMcpDeps;
+  /** Host-owned embedded iOS Simulator lifecycle and interaction tools. */
+  iosSimulator?: IOSSimulatorMcpDeps;
   /** Browser automation tools. Host injects the neutral runtime implementation. */
   browser?: BrowserMcpDeps;
   /** Local desktop computer-use tools backed by a host-managed external driver. */
   computer?: ComputerMcpDeps;
   feishuBot?: FeishuBotMcpHostDeps;
+  wechatBot?: WechatBotMcpHostDeps;
   /**
    * cindy_slack: Slack 网关工具(经 hook 通道由 slack-hook-server 以托管
    * user token 调 Slack 官方 MCP, 接替退役的 cindy-slack 意识)。
@@ -95,6 +102,11 @@ function readFeishuChatId(ctx: LiziMcpSessionContext): string | null {
   return typeof raw === 'string' && raw.length > 0 ? raw : null;
 }
 
+function readWechatPeerId(ctx: LiziMcpSessionContext): string | null {
+  const raw = ctx.vendorOptions?.wechatPeerId;
+  return typeof raw === 'string' && raw.length > 0 ? raw : null;
+}
+
 /** 会话来源(如 'slack-hook'),feishu bot 用它在构建期注入渠道路由提示。 */
 function readSessionSource(ctx: LiziMcpSessionContext): string | undefined {
   const raw = ctx.vendorOptions?.source;
@@ -118,9 +130,14 @@ export function createLiziMcpProviders(
       // `runtime.call(req)` 内部把 `__mcpSessionId` 挂到 req 上。vendored runtime
       // 不识别这个字段会忽略;host 端 RsbWebviewBackend 优先读它,fallback 才走
       // `getActiveSessionId`(给非 MCP 路径,如设置页直接调 status 用)。
+      //
+      // sessionId 必须在 **tool-call 时** 解析,不能只在 factory 期读闭包:Codex
+      // HTTP bridge 的 server factory 阶段 ctx 是全局空值(sessionId undefined),
+      // 真实 session 由 bridge 按 params._meta.threadId 在 tool-call 时写进
+      // AsyncLocalStorage。factory 期绑死闭包会让 Codex agent 的所有浏览器请求
+      // 退回 UI-焦点推断 → tab 落进用户正在看的无关 session。
       toClaudeSdkConfig: (ctx) => {
         const baseDeps = opts.browser!;
-        const sessionId = ctx.sessionId;
         return {
           type: 'sdk',
           name: 'cindy_browser',
@@ -128,16 +145,18 @@ export function createLiziMcpProviders(
             ...baseDeps,
             getRuntime: () => {
               const inner = baseDeps.getRuntime();
-              if (!sessionId) return inner;
               return {
-                call: (req) =>
-                  inner.call({
+                call: (req) => {
+                  const sessionId = resolveLiziMcpSessionContext(ctx).sessionId;
+                  if (!sessionId) return inner.call(req);
+                  return inner.call({
                     ...req,
                     // Extra field on the request — vendored runtime ignores
                     // unknown keys, host RsbWebviewBackend reads it as the
                     // authoritative agent session.
                     __mcpSessionId: sessionId,
-                  } as typeof req),
+                  } as typeof req);
+                },
               };
             },
           }),
@@ -153,6 +172,20 @@ export function createLiziMcpProviders(
         type: 'sdk',
         name: 'cindy_android',
         instance: createAndroidMcpServer(opts.android!, {
+          sessionId: ctx.sessionId,
+          getSessionContext: () => resolveLiziMcpSessionContext(ctx),
+        }),
+      }),
+    });
+  }
+
+  if (opts.iosSimulator && selected(enabled, 'ios_simulator')) {
+    providers.push({
+      name: 'cindy_ios_simulator',
+      toClaudeSdkConfig: (ctx) => ({
+        type: 'sdk',
+        name: 'cindy_ios_simulator',
+        instance: createIOSSimulatorMcpServer(opts.iosSimulator!, {
           sessionId: ctx.sessionId,
           getSessionContext: () => resolveLiziMcpSessionContext(ctx),
         }),
@@ -236,6 +269,28 @@ export function createLiziMcpProviders(
     });
   }
 
+  if (opts.wechatBot && selected(enabled, 'cindy_wechat')) {
+    providers.push({
+      name: 'cindy_wechat',
+      toClaudeSdkConfig: (ctx) => ({
+        type: 'sdk',
+        name: 'cindy_wechat',
+        instance: createWechatMcpServer({
+          ...opts.wechatBot!,
+          getPeerId: async () => {
+            const current = resolveLiziMcpSessionContext(ctx);
+            return (
+              readWechatPeerId(current) ??
+              (await opts.wechatBot!.getActivePeerIdForSession(current.sessionId)) ??
+              (await opts.wechatBot!.getMostRecentPeerId())
+            );
+          },
+          workingDir: ctx.workingDir,
+        }),
+      }),
+    });
+  }
+
   if (opts.slackHook && selected(enabled, 'cindy_slack')) {
     providers.push({
       name: 'cindy_slack',
@@ -275,8 +330,9 @@ export function createLiziMcpProviders(
         type: 'sdk',
         name: 'cindy_scheduler',
         instance: createSchedulerMcpServer(opts.scheduler!, {
-          agentKind: ctx.agentKind === 'codex' ? 'codex' : 'claude-code',
+          agentKind: ctx.agentKind === 'codex' ? 'codex' : ctx.agentKind === 'pi' ? 'pi' : 'claude-code',
           workingDir: ctx.workingDir,
+          ...(ctx.getSessionContext ? { getSessionContext: ctx.getSessionContext } : {}),
           sessionId: ctx.sessionId,
           vendorOptions: ctx.vendorOptions,
         }),
@@ -314,8 +370,9 @@ export function createLiziMcpProviders(
         type: 'sdk',
         name: 'cindy_helper',
         instance: createXdtHelperMcpServer(opts.xdtHelper!, {
-          agentKind: ctx.agentKind === 'codex' ? 'codex' : 'claude-code',
+          agentKind: ctx.agentKind === 'codex' ? 'codex' : ctx.agentKind === 'pi' ? 'pi' : 'claude-code',
           workingDir: ctx.workingDir,
+          ...(ctx.getSessionContext ? { getSessionContext: ctx.getSessionContext } : {}),
           sessionId: ctx.sessionId,
           vendorOptions: ctx.vendorOptions,
         }),
@@ -336,8 +393,9 @@ export function createLiziMcpProviders(
         type: 'sdk',
         name: 'cindy_orca',
         instance: createOrcaMcpServer(opts.orca!, {
-          agentKind: ctx.agentKind === 'codex' ? 'codex' : 'claude-code',
+          agentKind: ctx.agentKind === 'codex' ? 'codex' : ctx.agentKind === 'pi' ? 'pi' : 'claude-code',
           workingDir: ctx.workingDir,
+          ...(ctx.getSessionContext ? { getSessionContext: ctx.getSessionContext } : {}),
           sessionId: ctx.sessionId,
           vendorOptions: ctx.vendorOptions,
         }),

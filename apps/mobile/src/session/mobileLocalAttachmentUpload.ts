@@ -29,6 +29,10 @@ export interface MobileLocalAttachmentUploadCandidate {
   kind: MobileLocalAttachmentKind;
   uri: string;
   name: string;
+  /** 发起上传的 composer 作用域(sessionId 等)；仅供宿主隔离迟到异步结果。 */
+  attachmentScopeKey?: string;
+  /** 同一作用域重复进入时也会递增的代际；避免 A → B → A 后接回最早 A 的旧结果。 */
+  attachmentScopeGeneration?: number;
   mimeType?: string;
   /** 原文件字节数,0 = 未知(上传前由 statSize 兜底)。 */
   size: number;
@@ -119,7 +123,7 @@ export interface MobileLocalAttachmentUploadDeps {
     isActive: () => boolean,
   ): void | Promise<void>;
   /** 单个失败(宿主展示错误文案);已被移除 / 丢弃的任务不会回调。localId 语义同 onUploaded。 */
-  onFailed(error: unknown, localId: string): void;
+  onFailed(error: unknown, localId: string, candidate: MobileLocalAttachmentUploadCandidate): void;
 }
 
 export interface MobileLocalAttachmentUploadController {
@@ -164,6 +168,14 @@ export interface MobileLocalAttachmentUploadController {
    * remove / retry 对 claimed 任务照常可用(outbox 条目的删除与重试复用它们)。
    */
   claim(localIds: readonly string[]): void;
+  /**
+   * claim 的逆操作:任务交还 composer 域(重回托盘、重新计入限额)。
+   *
+   * 乐观消息被收回成草稿时用(创建失败把待发消息交还输入框):任务本身继续跑,
+   * 落定后宿主的 outbox 路由找不到归属条目,产物自然回落到托盘。取消再重传是错的
+   * ——用户已经等过一次上传,且粘贴来源的本地文件可能已被回收(review P1)。
+   */
+  unclaim(localIds: readonly string[]): void;
   /**
    * 未 claim 且未丢弃任务的同步快照(顺序 = 入队序):发送时刻用它决定「这条消息
    * 要带走哪些在途上传」。failed = 已失败结算的卡(claim 后随消息进失败态);
@@ -349,7 +361,7 @@ export function createMobileLocalAttachmentUploadController(
       if (task.discarded) {
         outcome = 'discarded';
       } else {
-        deps.onFailed(err, task.localId);
+        deps.onFailed(err, task.localId, task.candidate);
         outcome = 'failed';
       }
     } finally {
@@ -498,6 +510,18 @@ export function createMobileLocalAttachmentUploadController(
         changed = true;
       }
       // claimed 任务离开托盘,同步刷一次 pending 列表。
+      if (changed) notifyPending();
+    },
+
+    unclaim(localIds) {
+      let changed = false;
+      for (const localId of localIds) {
+        const task = tasks.get(localId);
+        if (!task || task.discarded || !task.claimed) continue;
+        task.claimed = false;
+        changed = true;
+      }
+      // 任务回到托盘域,同步刷一次 pending 列表(失败卡也会重新出现,可 retry / X)。
       if (changed) notifyPending();
     },
 

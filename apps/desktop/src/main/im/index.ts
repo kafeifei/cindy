@@ -43,8 +43,9 @@
  *   but the first user reply hits "localDb not ready: call ensureReady(userId)
  *   first" — see chat with 王韬 (group 混(派科夫)) on 2026-05-07.
  *   `startImConnection()` is the explicit gate; it's idempotent and a no-op
- *   when the auto-update service is staging a relaunch (skip + retry on the
- *   next cold boot).
+ *   when the auto-update service is about to relaunch this process (skip +
+ *   retry on the next cold boot). "About to relaunch" is NOT the same as "a
+ *   patch is staged" — see `isUpdateRelaunchImminent()`.
  *
  * Credentials are independent from Cindy auth: the bot uses the user's own
  * channel credentials and keeps them across logout. Runtime connectivity is
@@ -52,14 +53,30 @@
  * the logged-in user's DbClient; a later login reconnects saved credentials.
  */
 
-import { ipcMain, BrowserWindow, type IpcMainEvent } from 'electron';
+import path from 'node:path';
+
+import { ipcMain, BrowserWindow, dialog, type IpcMainEvent } from 'electron';
 import { and, eq, like, ne, sql } from 'drizzle-orm';
 
 import { getDbClient } from '../localDb/client/current';
 import { sessions } from '../localDb/schema';
-import { im, feishuIm, discordIm } from './host';
+import {
+  im,
+  feishuIm,
+  discordIm,
+  telegramIm,
+  dingtalkIm,
+  wechatCompatibilityPolicy,
+  wechatIm,
+  wecomIm,
+} from './host';
 import { wireFeishuOrchestrator, type FeishuOrchestratorConfig } from './feishu';
 import { wireDiscordOrchestrator } from './discord';
+import { wireTelegramOrchestrator } from './telegram';
+import { wireDingTalkOrchestrator } from './dingtalk';
+import { wireWechatOrchestrator } from './wechat';
+import { wireWecomOrchestrator } from './wecom';
+import { resetTelegramGroupContextCursors } from './telegram/groupWindow';
 import { getImOrchestrator, listImOrchestrators } from './shared/orchestrator';
 import { createSerializedConnectionLifecycle } from './connectionLifecycle';
 import {
@@ -74,11 +91,26 @@ import type { ImOrchestratorConfig } from './shared/types';
 import { bindingStore, executeDetach } from './binding';
 import { IM_DEFAULT_EFFORT_OVERRIDES, IM_DEFAULT_SETTINGS } from '../../shared/imDefaultSettings';
 import { getAuthState } from '../authManager';
-import { getUpdateStatus } from '../updateService';
+import { getUpdateStatus, isUpdateRelaunchImminent } from '../updateService';
 
 import { createLogger } from '../logger';
+import { assertTrustedAppRendererEvent } from '../security/trustedAppRenderer';
+import {
+  readWechatChannelSettings,
+  resetWechatWorkingDir,
+  writeWechatWorkingDir,
+} from './wechat/channelSettings';
 
-export { im, feishuIm, discordIm } from './host';
+export {
+  registerTelegramBotConfigIpc,
+  im,
+  feishuIm,
+  discordIm,
+  telegramIm,
+  dingtalkIm,
+  wechatIm,
+  wecomIm,
+} from './host';
 
 const log = createLogger('main:im');
 
@@ -139,7 +171,37 @@ const DISCORD_CONFIG: ImOrchestratorConfig = {
   effortOverrides: IM_DEFAULT_EFFORT_OVERRIDES,
 };
 
+// 个人 Telegram bot 渠道与 Feishu/Discord 共享同一套产品默认值。
+const TELEGRAM_CONFIG: ImOrchestratorConfig = {
+  agentKind: IM_DEFAULT_SETTINGS.agentKind,
+  defaultModel: IM_DEFAULT_SETTINGS.agents[IM_DEFAULT_SETTINGS.agentKind].model,
+  defaultPermissionMode: 'auto',
+  effortOverrides: IM_DEFAULT_EFFORT_OVERRIDES,
+};
+
+const DINGTALK_CONFIG: ImOrchestratorConfig = {
+  agentKind: IM_DEFAULT_SETTINGS.agentKind,
+  defaultModel: IM_DEFAULT_SETTINGS.agents[IM_DEFAULT_SETTINGS.agentKind].model,
+  defaultPermissionMode: 'auto',
+  effortOverrides: IM_DEFAULT_EFFORT_OVERRIDES,
+};
+
+const WECHAT_CONFIG: ImOrchestratorConfig = {
+  agentKind: IM_DEFAULT_SETTINGS.agentKind,
+  defaultModel: IM_DEFAULT_SETTINGS.agents[IM_DEFAULT_SETTINGS.agentKind].model,
+  defaultPermissionMode: IM_DEFAULT_SETTINGS.permissionMode,
+  effortOverrides: IM_DEFAULT_EFFORT_OVERRIDES,
+};
+
+const WECOM_CONFIG: ImOrchestratorConfig = {
+  agentKind: IM_DEFAULT_SETTINGS.agentKind,
+  defaultModel: IM_DEFAULT_SETTINGS.agents[IM_DEFAULT_SETTINGS.agentKind].model,
+  defaultPermissionMode: IM_DEFAULT_SETTINGS.permissionMode,
+  effortOverrides: IM_DEFAULT_EFFORT_OVERRIDES,
+};
+
 export function startImOrchestrators(): void {
+  wechatCompatibilityPolicy.start();
   if (wired) return;
   wired = true;
   // Production bootstrap wires handlers before login/DbClient readiness.
@@ -155,6 +217,72 @@ export function startImOrchestrators(): void {
 
   wireFeishuOrchestrator(feishuIm, FEISHU_CONFIG);
   wireDiscordOrchestrator(discordIm, DISCORD_CONFIG);
+  wireTelegramOrchestrator(telegramIm, TELEGRAM_CONFIG);
+  wireDingTalkOrchestrator(dingtalkIm, DINGTALK_CONFIG);
+  wireWechatOrchestrator(wechatIm, WECHAT_CONFIG);
+  wireWecomOrchestrator(wecomIm, WECOM_CONFIG);
+
+  ipcMain.handle('wechatBot:get-state', (event) => {
+    assertTrustedAppRendererEvent(event);
+    return wechatIm.getState();
+  });
+  ipcMain.handle('wechatBot:authorize', (event) => {
+    assertTrustedAppRendererEvent(event);
+    return connectionLifecycle.runWhileStarted(() => wechatIm.authorize());
+  });
+  ipcMain.handle('wechatBot:cancel-authorization', (event) => {
+    assertTrustedAppRendererEvent(event);
+    wechatIm.cancelAuthorization();
+    return { ok: true };
+  });
+  ipcMain.handle('wechatBot:unbind', (event) => {
+    assertTrustedAppRendererEvent(event);
+    return connectionLifecycle.runWhileStarted(async () => {
+      await wechatIm.unbind();
+      return { ok: true };
+    });
+  });
+  ipcMain.handle('wechatBot:get-channel-settings', (event) => {
+    assertTrustedAppRendererEvent(event);
+    return readWechatChannelSettings();
+  });
+  ipcMain.handle('wechatBot:choose-working-directory', async (event) => {
+    assertTrustedAppRendererEvent(event);
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    if (!owner || owner.isDestroyed()) throw new Error('WECHAT_SETTINGS_WINDOW_UNAVAILABLE');
+    const result = await dialog.showOpenDialog(owner, {
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (result.canceled || !result.filePaths[0]) {
+      return { canceled: true as const, state: readWechatChannelSettings() };
+    }
+    try {
+      return {
+        canceled: false as const,
+        state: writeWechatWorkingDir(result.filePaths[0]),
+      };
+    } catch (error) {
+      log.warn('failed to save user-picked personal WeChat working directory', {
+        errorCode:
+          typeof error === 'object' &&
+          error !== null &&
+          'code' in error &&
+          typeof (error as { code?: unknown }).code === 'string'
+            ? (error as { code: string }).code
+            : 'UNKNOWN',
+        errorMessage: error instanceof Error ? error.message : String(error),
+      });
+      throw new Error('WECHAT_WORKING_DIR_UPDATE_FAILED');
+    }
+  });
+  ipcMain.handle('wechatBot:reset-working-directory', (event) => {
+    assertTrustedAppRendererEvent(event);
+    try {
+      return resetWechatWorkingDir();
+    } catch {
+      throw new Error('WECHAT_WORKING_DIR_UPDATE_FAILED');
+    }
+  });
 
   // bindingStore.preload() 故意不在这里跑 —— 它要 DbClient, 而 localDb 在
   // 用户登录后才 ensureReady (worker spawn + db open + smoke 后才 setCurrentDbClient)。
@@ -270,6 +398,8 @@ export function startImOrchestrators(): void {
 
 async function initializeImConnection(): Promise<void> {
   await reconcileOwnerScopedImWorkingDirs();
+  // 个人 Telegram 群窗口不做自动清理(Chris 2026-07-30: 本地群消息库即 bot
+  // 的长期记忆, 永久保留, 清理只按用户明确指令执行)。
   try {
     await bindingStore.preload();
   } catch (err) {
@@ -288,6 +418,20 @@ async function initializeImConnection(): Promise<void> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log.warn(`feishu sessions workspaceKind backfill failed (non-fatal): ${msg}`);
+  }
+  // Discord personal DM sessions use the same managed dialogue bucket as
+  // Feishu/Telegram. Older Discord rows were created before the adapter
+  // declared workspaceKind='dialogue' and otherwise remain grouped under the
+  // synthetic `discord-{appId}` working directory. Idempotent and deliberately
+  // does not bump updatedAt, so the migration does not reorder the sidebar.
+  try {
+    await getDbClient()
+      .drizzle.update(sessions)
+      .set({ workspaceKind: 'dialogue' })
+      .where(and(eq(sessions.source, 'discord'), ne(sessions.workspaceKind, 'dialogue')));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.warn(`discord sessions workspaceKind backfill failed (non-fatal): ${msg}`);
   }
   // 存量 feishu 会话的旧默认标题 `飞书 · {后6位}` 迁到新风格 `[飞书·DM] {后6位}`。
   try {
@@ -312,6 +456,8 @@ async function reconcileOwnerScopedImWorkingDirs(): Promise<void> {
   const db = getDbClient().drizzle;
   const feishuAdapter = getImOrchestrator('feishu')?.adapter;
   const discordAdapter = getImOrchestrator('discord')?.adapter;
+  const telegramAdapter = getImOrchestrator('telegram')?.adapter;
+  const wechatAdapter = getImOrchestrator('wechat')?.adapter;
 
   try {
     if (feishuAdapter) {
@@ -347,6 +493,54 @@ async function reconcileOwnerScopedImWorkingDirs(): Promise<void> {
         await db.update(sessions).set({ workingDir: scoped }).where(eq(sessions.id, row.id));
       }
     }
+
+    if (telegramAdapter) {
+      // source='telegram' 同时覆盖官方 hook 会话(imBotContextId 为 null)与
+      // 个人 bot 会话 — botContextId 空值守卫天然把官方行排除在外。
+      const rows = await db
+        .select({
+          id: sessions.id,
+          workingDir: sessions.workingDir,
+          botContextId: sessions.imBotContextId,
+        })
+        .from(sessions)
+        .where(eq(sessions.source, 'telegram'));
+      for (const row of rows) {
+        if (!row.botContextId) continue;
+        // /project 切到项目目录是用户显式选择, 重连不得覆盖回托管目录 —
+        // 本归一只服务"跨 owner 命名空间迁移的旧托管路径"。判定用完整尾段
+        // `…/im-working-dir/telegram-<botId>`(而非子串), 用户项目路径碰巧
+        // 含 'im-working-dir' 字样不会被误判(review P1)。
+        const managedTail = path.join('im-working-dir', `telegram-${row.botContextId}`);
+        if (
+          row.workingDir &&
+          !row.workingDir.endsWith(`${path.sep}${managedTail}`) &&
+          !row.workingDir.endsWith(`/${managedTail}`)
+        ) {
+          continue;
+        }
+        const scoped = telegramAdapter.sessions.ensureWorkingDir(row.botContextId);
+        if (row.workingDir === scoped) continue;
+        await db.update(sessions).set({ workingDir: scoped }).where(eq(sessions.id, row.id));
+      }
+    }
+
+    if (wechatAdapter) {
+      const rows = await db
+        .select({
+          id: sessions.id,
+          workingDir: sessions.workingDir,
+          botContextId: sessions.imBotContextId,
+        })
+        .from(sessions)
+        .where(eq(sessions.source, 'wechat'));
+      for (const row of rows) {
+        if (!row.botContextId) continue;
+        const scoped = wechatAdapter.sessions.ensureWorkingDir(row.botContextId);
+        if (row.workingDir === scoped) continue;
+        await db.update(sessions).set({ workingDir: scoped }).where(eq(sessions.id, row.id));
+      }
+    }
   } catch (err) {
     log.warn('IM owner-scoped working-dir reconciliation failed (non-fatal)', {
       error: err instanceof Error ? err.message : String(err),
@@ -356,7 +550,7 @@ async function reconcileOwnerScopedImWorkingDirs(): Promise<void> {
 
 const connectionLifecycle = createSerializedConnectionLifecycle({
   startConnection: initializeImConnection,
-  stopConnection: async () => {
+  stopConnection: async (reason) => {
     // Transports stop first so no new message can enter while account-scoped
     // orchestrator and binding caches are being discarded.
     try {
@@ -371,6 +565,10 @@ const connectionLifecycle = createSerializedConnectionLifecycle({
         }
       }
       bindingStore.resetRuntime();
+      // 普通退出、登出、换账号与模式切换都只清内存热缓存, 保留本地 DB 游标；
+      // 只有明确删除账号数据时才清持久表。Telegram bot 解绑由 hook-control 的
+      // binding identity reset 单独处理, 不把 auth logout 误当成数据删除。
+      await resetTelegramGroupContextCursors({ clearPersisted: reason === 'account-deletion' });
     }
   },
   onStartError: (err) => {
@@ -401,10 +599,17 @@ configureImAccountScope({
  * effect. FeishuIM.init() is a no-op when no credentials are saved, so the bot
  * stays idle until the user pastes appId / appSecret in Settings.
  *
- * Skips when an update is downloading or staged for relaunch — bringing the
- * bot up just to tear it down within seconds would spam the owner with
- * online/offline notifications. The next cold boot (after the update) will
+ * Skips only when the updater is actually about to replace this process —
+ * bringing the bot up just to tear it down within seconds would spam the owner
+ * with online/offline notifications. The next cold boot (after the update) will
  * connect normally.
+ *
+ * The gate MUST be `isUpdateRelaunchImminent()`, not the raw update status: a
+ * `ready` (staged) patch never relaunches on its own when the user turned
+ * auto-relaunch off, so gating on the status left this permanently skipped on
+ * every cold boot of an out-of-date install — the bot never came online and
+ * `feishuBot:save` kept failing with `[IM_NOT_READY]` (the account boundary is
+ * activated inside `im.init()`), with no way out but manually updating.
  */
 export function startImConnection(): void {
   if (connectionLifecycle.isStarted()) {
@@ -412,10 +617,9 @@ export function startImConnection(): void {
     return;
   }
 
-  const updateStatus = getUpdateStatus();
-  if (updateStatus === 'downloading' || updateStatus === 'ready') {
+  if (isUpdateRelaunchImminent()) {
     log.info(
-      `startImConnection: skip (updateService status=${updateStatus}); will connect on next cold boot`,
+      `startImConnection: skip (update relaunch imminent, updateService status=${getUpdateStatus()}); will connect on next cold boot`,
     );
     return;
   }
@@ -448,5 +652,5 @@ export async function stopImConnection(reason: string): Promise<void> {
     // are released, so old-account work cannot resume against a new account.
     await waitForImAccountGenerationIdle(closingGeneration);
   }
-  await connectionLifecycle.stop();
+  await connectionLifecycle.stop(reason);
 }

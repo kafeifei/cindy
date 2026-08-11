@@ -17,6 +17,7 @@ export * from './providers.js';
 // + @cindy/@cindy/im,与本已删模块无关。
 
 export * from './cindy_feishuBotMcpServer.js';
+export * from './cindy_wechatMcpServer.js';
 export * from './cindy_feishuBotToolRegistry.js';
 
 export * from './cindy_schedulerMcpServer.js';
@@ -38,6 +39,7 @@ export * from './session-context.js';
 export * from './lsp/index.js';
 
 export * from './android/index.js';
+export * from './ios-simulator/index.js';
 export * from './browser/index.js';
 export * from './computer/index.js';
 

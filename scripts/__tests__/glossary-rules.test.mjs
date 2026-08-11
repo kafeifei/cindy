@@ -29,7 +29,7 @@ import {
   makeSourceTermMatcher,
 } from '../shared/glossary-rules.mjs';
 import { validateAgainstSchema } from '../shared/json-schema-lite.mjs';
-import { renderGlossaryDoc } from '../shared/glossary-doc.mjs';
+import { normalizeDocEol, renderGlossaryDoc } from '../shared/glossary-doc.mjs';
 
 const ROOT = path.resolve(fileURLToPath(new URL('../..', import.meta.url)));
 
@@ -171,10 +171,11 @@ test('FULL_WIDTH_PUNCT: 覆盖全部受检半角标点', () => {
 test('标点规则的 locale 适用范围有数据依据', () => {
   // ja 实测半角冒号 124:78 才是主流(日文 UI 惯例),套用中文全角规则会制造大批假阳性。
   assert.equal(HALFWIDTH_PUNCT_LOCALES.has('zh-CN'), true);
+  assert.equal(HALFWIDTH_PUNCT_LOCALES.has('zh-TW'), true);
   assert.equal(HALFWIDTH_PUNCT_LOCALES.has('ja'), false);
   assert.equal(HALFWIDTH_PUNCT_LOCALES.has('ko'), false);
-  // 省略号三语一致以「…」为主流。
-  for (const locale of ['zh-CN', 'ja', 'ko']) {
+  // 省略号四语一致以「…」为主流。
+  for (const locale of ['zh-CN', 'zh-TW', 'ja', 'ko']) {
     assert.equal(ELLIPSIS_LOCALES.has(locale), true, `${locale} 应纳入省略号规则`);
   }
 });
@@ -342,9 +343,23 @@ test('glossary.json: locales 与 desktop SUPPORTED_LOCALES 一致', () => {
 test('GLOSSARY.md 与 glossary.json 同步', () => {
   const doc = fs.readFileSync(path.join(ROOT, 'i18n', 'GLOSSARY.md'), 'utf8');
   assert.equal(
-    doc,
-    renderGlossaryDoc(glossary),
+    normalizeDocEol(doc),
+    normalizeDocEol(renderGlossaryDoc(glossary)),
     'i18n/GLOSSARY.md 已过期,运行 pnpm i18n:glossary-doc 重新生成',
+  );
+});
+
+// 契约:同步校验只看内容,不看行尾。autocrlf=true 的 Windows checkout 会把
+// GLOSSARY.md 转成 CRLF,而渲染结果恒为 LF;若比较不归一化,门禁在 Windows 上
+// 必红且无法自愈(重新生成写 LF,下次 checkout 又变 CRLF)。
+test('GLOSSARY.md 同步校验对 CRLF 检出不误报', () => {
+  const rendered = renderGlossaryDoc(glossary);
+  const asCrlf = rendered.replace(/\n/g, '\r\n');
+  assert.notEqual(asCrlf, rendered, '前置条件:CRLF 版本应与 LF 版本逐字符不同');
+  assert.equal(
+    normalizeDocEol(asCrlf),
+    normalizeDocEol(rendered),
+    'CRLF 检出必须被判为同步——比较前要归一化行尾',
   );
 });
 
@@ -649,7 +664,7 @@ test('ELLIPSIS_LOCALES 必须含 en', () => {
   // DESIGN.md §11 Voice & Content 明文要求英文也用「…」而非三个半角点。
   // 漏掉 en 等于让门禁替既有违规背书(实测当时 en 侧有 54 处)。
   assert.ok(ELLIPSIS_LOCALES.has('en'));
-  for (const l of ['zh-CN', 'ja', 'ko']) assert.ok(ELLIPSIS_LOCALES.has(l), l);
+  for (const l of ['zh-CN', 'zh-TW', 'ja', 'ko']) assert.ok(ELLIPSIS_LOCALES.has(l), l);
 });
 
 test('countOccurrences: 默认大小写敏感,与 occursIn 同口径', () => {

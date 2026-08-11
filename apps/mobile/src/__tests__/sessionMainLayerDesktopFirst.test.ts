@@ -11,7 +11,7 @@ describe('mobile session main layer desktop-first noise budget', () => {
 
     expect(emptySource).toContain('message.renderer.emptyMessages');
     expect(emptySource).not.toContain('这台电脑暂无活动消息');
-    expect(emptySource).not.toContain('先在桌面端创建或继续一个会话');
+    expect(emptySource).not.toContain('先在桌面端创建或继续一个任务');
     expect(emptySource).not.toContain('emptyText');
   });
 
@@ -42,10 +42,11 @@ describe('mobile session main layer desktop-first noise budget', () => {
     const syncEnd = source.indexOf('function MessageHistoryToggle', syncStart);
     const syncSource = source.slice(syncStart, syncEnd);
 
-    // banner 渲染条件(useShowConnectionBanner):请求级 error / 可分类连接问题
-    // 立即显示;普通弱网断线经防闪窗口后也显示,不再彻底静默。
+    // banner 渲染条件(useShowConnectionBanner):请求级 / transport hold error、可分类连接问题、
+    // 目标设备熔断 open(电脑端未响应)立即显示;普通弱网断线经防闪窗口后也显示,不再彻底静默。
     expect(routeSource).toContain('{showConnectionBanner ? (');
-    expect(source).toContain('useShowConnectionBanner(status, connectionError, connectionIssue)');
+    expect(source.replace(/\r\n/g, '\n'))
+      .toContain('useShowConnectionBanner(\n    status,\n    connectionRecoveryError,');
     expect(routeSource).not.toContain('connectionError || (loading && !currentSession)');
     expect(syncSource).toContain("t('session.screen.awaitingSync')");
     expect(syncSource).toContain("t('session.screen.resync')");
@@ -75,15 +76,18 @@ describe('mobile session main layer desktop-first noise budget', () => {
   });
 
   it('lets Lead sessions compose messages while gating write-orchestration on the write read-only reason', () => {
-    const source = readFileSync(resolve(process.cwd(), 'app/sessions/[sessionId].tsx'), 'utf8');
+    // Windows checkout 使用 CRLF；源码契约中的多行 LF 片段必须先统一行尾再比较。
+    const source = readFileSync(resolve(process.cwd(), 'app/sessions/[sessionId].tsx'), 'utf8')
+      .replace(/\r\n/g, '\n');
 
     // composer 能力(buildSessionOperationLayout)与 header 徽标走 composer-only reason(Lead=可发消息)。
     expect(source).toContain('const composerReadOnlyReason = useMemo(');
     expect(source).toContain('sessionCollaborationComposerReadOnlyReason(currentSession)');
-    // 缓存种入行在 fresh 同步前经同一通道禁发(cacheSeededReason 前置,codex review R15),
-    // 新建会话乐观管线的合成行(pendingLocalCreation)同走该通道禁发;Lead 可发消息
-    // 的语义不变——fresh 元数据到达后两个 reason 均为 null。
-    expect(source).toContain('readOnlyReason: cacheSeededReason ?? pendingCreationReason ?? composerReadOnlyReason,');
+    // 「会话参数未就绪」的两条理由(缓存种入 / 新建在途)**不再**进这个通道:它会把整个
+    // 输入框换成只读卡片,而它们只表示还不能 enqueue。composer 保持可用,发送改走 outbox
+    // 排队(见 optimisticSessionComposer.test.ts),这两条理由只留给队列行操作。
+    expect(source).toContain('      readOnlyReason: composerReadOnlyReason,\n');
+    expect(source).toContain('const queueInlineReadOnlyReason = collaborationReadOnlyReason\n    ?? cacheSeededReason\n    ?? pendingCreationReason');
     expect(source).toContain('readOnlyReason={composerReadOnlyReason}');
     // header notice:协作会话(可聊天的 Lead)显示协作标签而非"只读模式"。
     expect(source).toContain('const collaborationLabel = sessionCollaborationLabel(session);');
@@ -98,9 +102,10 @@ describe('mobile session main layer desktop-first noise budget', () => {
     const source = readFileSync(resolve(process.cwd(), 'app/sessions/[sessionId].tsx'), 'utf8');
 
     expect(source).toContain('connectionEpoch');
-    expect(source).toContain('lastPresenceSnapshot');
+    expect(source).toContain('getPresenceAvailability(deviceId)');
     expect(source).toContain('targetAvailableRef');
-    expect(source).toContain("lastPresenceSnapshot.deviceId !== deviceId");
+    expect(source).toContain('wasAvailable !== true');
+    expect(source).not.toContain('lastPresenceSnapshot');
     expect(source).not.toContain('presenceVersion');
   });
 
@@ -158,6 +163,15 @@ describe('mobile session main layer desktop-first noise budget', () => {
     expect(desktopSource).toContain('const titleClass');
     expect(desktopSource).not.toContain('SYSTEM');
     expect(cardSource).toContain('<Text style={styles.systemCardTitle}>{card.title}</Text>');
+    expect(cardSource).toContain('function MobileAutoResumeActionRow');
+    expect(cardSource).toContain('message.systemCard.autoResume.detail.reason');
+    expect(cardSource).toContain('message.systemCard.autoResume.detail.attempt');
+    expect(cardSource).toContain('message.systemCard.autoResume.detail.sessionTotal');
+    expect(cardSource).toContain('CompactActivityIndicator');
+    expect(cardSource).toContain('message.systemCard.autoResume.pendingWithProgress');
+    expect(cardSource).toContain('importantForAccessibility="no-hide-descendants"');
+    expect(cardSource).toContain('accessible={false}');
+    expect(source).toMatch(/autoResumeHeader:\s*\{[\s\S]*?minHeight:\s*44,/);
     expect(cardSource).not.toContain('SYSTEM');
     expect(cardSource).not.toContain('systemCardEyebrow');
     expect(source).not.toContain('systemCardEyebrow: {');

@@ -25,7 +25,7 @@ worktree 会话契约、直推 `main` 的额外门禁与 review 严重度口径�
   `apps/desktop/logs/`，读日志时拼 baseRepo 的绝对路径。
 - **结束前必须 commit**：会话被删除或归档时脏 worktree 会先存内容快照再删目录。**PR
   merged／closed 不等于 Cindy 会话已结束**：只要 owning session 仍 active，任何外部 Git
-  cleanup 都必须跳过该 `.cindy-worktrees` / `.xdt-worktrees` 目录与本地 `xdt/*` 分支，交给
+  cleanup 都必须跳过该 `.cindy-worktrees` / `.xdt-worktrees` 目录与本地 `cindy/*` / `xdt/*` 分支，交给
   用户显式归档／删除会话时回收；禁止手动 `git worktree remove` 造成 active session 的 cwd
   悬空。手动干活时可放 `.worktree-keep` 哨兵文件豁免自动回收。
 - **stale prebundle 白屏**：给带依赖的内部包新增 export 后，运行中实例可能因 stale Vite
@@ -66,11 +66,25 @@ worktree 会话契约、直推 `main` 的额外门禁与 review 严重度口径�
   宿主删除／归档会话时自动存的内容快照（见第 1 节），以及会话必须收尾、测试却来不及
   修好时的收尾 commit——后者 commit message 必须标注 `WIP`，且在门禁通过前不得
   push、不得提 PR。
-  - **完整单测的外层超时**：`pnpm test:unit` 是全仓串行门禁，正常执行可能超过数分钟。
+  - **完整单测的外层超时**：`pnpm test:unit` 是全仓完整门禁，正常执行可能超过数分钟。
     调用它的 agent／自动化工具不得使用 120 秒或更短的绝对超时；未知当前耗时时，外层
     兜底超时至少设为 15 分钟。工具支持后台运行或 yielded process handle 时优先使用该
     模式并短轮询进度，不要因为调用端停止等待就误判失败、杀掉仍在正常运行的测试或重复
     启动一轮。Vitest 的单测试例超时仍由各 package 配置控制，不受这条外层约束影响。
+  - **workspace 有界并行**：`test-workspaces.mjs` 默认最多并行
+    `min(4, os.availableParallelism())` 个普通 workspace；每个普通 Vitest workspace 只使用
+    1 个 worker。Mobile 使用完整的 4-worker 配额；Desktop 使用基准验证过的单池最多
+    8-worker 配额，低于 8 CPU 时按 `os.availableParallelism()` 自动下调。重型 workspace
+    必须独占执行，避免外层并发与内部 worker 池相乘。
+    排查并发相关问题时可用
+    `pnpm test:unit -- --workspace-concurrency=1` 临时退回 workspace 串行；该参数只改变
+    workspace 调度，不减少测试覆盖。
+  - **跨 worktree 重型门禁串行**：本地运行 `unit`、`all`、`db`、`git-integration`
+    tier 时，`test-workspaces.mjs` 会按 Git common-dir 获取同仓共享的 loopback TCP 锁；
+    同一 clone 的后到进程会打印持有者 PID、tier 与 worktree 路径并排队，不同 clone
+    互不影响。`guard` tier 和 CI／GitHub Actions 不参与。等待超过 15 分钟以退出码 `75`
+    结束，表示测试尚未运行，不得当作测试失败排查；排队是正常状态，不要 kill 后重跑。
+    只有明确确认资源足够且需要有意重叠时，才可追加 `--no-lock` 作为逃生口。
 - **在门禁之上按风险追加验证**：跨模块、高风险或基础设施改动追加更广泛验证（如仓库根
   `pnpm test:all`），**最终以 CI 门禁为准**。不得通过 skip、删除或弱化测试制造通过；
   PR「怎么验证的」一节必须**如实**填写，没跑不许写已跑。

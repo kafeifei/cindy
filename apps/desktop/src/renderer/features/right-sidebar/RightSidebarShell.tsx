@@ -23,6 +23,7 @@ import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'r
 import { useTranslation } from 'react-i18next';
 
 import { createLogger } from '@/lib/logger';
+import { isSecondaryWindow } from '@/lib/secondaryWindow';
 import { useAppShortcut } from '@/hooks/useAppShortcut';
 import { useMacFullscreen } from '@/hooks/useMacFullscreen';
 import { RightSidebarDetach } from '@/components/layout/RightSidebarDetach';
@@ -30,12 +31,7 @@ import { RightSidebarMaximize } from '@/components/layout/RightSidebarMaximize';
 import { CHROME_ACTIONS_GEOMETRY } from '@/components/layout/chromeActionsGeometry';
 import { TabBar, TabStrip } from './TabBar';
 import { EmptyState } from './EmptyState';
-import {
-  getTabKind,
-  hydrateTabState,
-  listGhostTabMenuMetas,
-  useTabKindRegistryVersion,
-} from './registry';
+import { getTabKind, hydrateTabState } from './registry';
 import {
   addOrFocusSingletonTab,
   addTab,
@@ -54,6 +50,14 @@ import type { TabKindHostContext, TabKindId, TabState } from './types';
 // getTabKind 查 registry。
 import './plugins';
 import { initRsbBrowserBridge } from './lib/rsbBrowserBridge';
+import { initIOSSimulatorFocusBridge } from './lib/iosSimulatorFocusBridge';
+import { initPopupRouter, setPopupFallbackSession } from './lib/popupRouter';
+import { useInstalledGhosts } from '@/cindy-brain/useInstalledGhosts';
+import {
+  isIOSSimulatorPluginAvailable,
+  mergeIOSSimulatorVisibleTabOrder,
+  projectIOSSimulatorTabs,
+} from './iosSimulatorPluginAvailability';
 
 const log = createLogger('rightSidebar.shell');
 /**
@@ -80,6 +84,8 @@ interface RightSidebarShellProps {
   workdir: string;
   /** 非空 = SSH remote 会话(workdir 为远端路径);见 TabKindHostContext.remoteHostId。 */
   remoteHostId: string | null;
+  /** device-link 会话归属：null = 已确认本机，undefined = 尚未解析。 */
+  deviceLinkDeviceId?: string | null;
   /** RightSidebar aside 当前是否真实展开。折叠时 keep-alive body 仍挂载但不可见。 */
   shellVisible?: boolean;
   isMac: boolean;
@@ -100,6 +106,8 @@ interface RightSidebarShellProps {
    * 子窗口不应消费这段空间。
    */
   reserveLeftChromeActions?: boolean;
+  /** 工具面板处于最左 rail 邻位时，顶栏为浮动 ChromeActions 挖 no-drag 命中区并预留布局空间。 */
+  railChromeActionsHitHole?: boolean;
   /** 「在新窗口中打开侧边栏」;仅 Win 端 TabBar 内渲染按钮(Mac 走 MainLayout 浮层)。 */
   onDetach?: () => void;
   /** TabBar 横带是否作为窗口拖拽区(见 TabBar 同名 prop):主窗口内嵌形态传
@@ -122,6 +130,7 @@ export function RightSidebarShell({
   sessionId,
   workdir,
   remoteHostId,
+  deviceLinkDeviceId,
   shellVisible = true,
   isMac,
   unifiedTopbar = false,
@@ -133,6 +142,7 @@ export function RightSidebarShell({
   panelSide = 'right',
   onAllTabsClosed,
   reserveLeftChromeActions = false,
+  railChromeActionsHitHole = false,
 }: RightSidebarShellProps) {
   const { isFullscreen } = useMacFullscreen();
   const chromeActionsLeft =
@@ -145,7 +155,22 @@ export function RightSidebarShell({
     unifiedTopbar && reserveLeftChromeActions
       ? chromeActionsLeft + CHROME_ACTIONS_GEOMETRY.clusterWidth
       : 0;
+  // rail 邻位时浮动 ChromeActions 从工具面板左缘开始。命中洞保持 absolute
+  // 对齐窗口坐标；另加正常流中的 spacer，把 TabStrip 推到按钮簇之后。
+  const railChromeActionsSpacerWidth =
+    unifiedTopbar && !isFullscreen && railChromeActionsHitHole
+      ? CHROME_ACTIONS_GEOMETRY.clusterWidth
+      : 0;
   const { t } = useTranslation();
+  const installedGhosts = useInstalledGhosts();
+  const iosSimulatorPluginAvailable = useMemo(
+    // Session secondary windows do not own the Main/RSB capability family and
+    // intentionally skip the Host focus bridge. Hide (but preserve) persisted
+    // Simulator tabs there instead of exposing an authorization action that
+    // can never succeed.
+    () => !isSecondaryWindow() && isIOSSimulatorPluginAvailable(installedGhosts),
+    [installedGhosts],
+  );
 
   // RSB browser bridge (Phase 2):在 Shell 整个生命周期内只 init 一次。bridge 内部
   // 自带 idempotent guard,strict-mode 双 effect / 重复挂载都安全。bridge 绑定
@@ -155,6 +180,7 @@ export function RightSidebarShell({
   // 就断了。Shell 真的退出场景在 app quit,进程整体下线无所谓。
   useEffect(() => {
     initRsbBrowserBridge();
+    initIOSSimulatorFocusBridge();
   }, []);
 
   // 订阅当前 sessionId 桶变化 —— useSyncExternalStore 在 sessionId 变化时,
@@ -189,24 +215,88 @@ export function RightSidebarShell({
     });
   }, [sessionId]);
 
-  const tabs = bucket.tabs;
-  const activeTabId = bucket.activeTabId;
+  const projectedTabs = useMemo(
+    () => projectIOSSimulatorTabs(bucket.tabs, bucket.activeTabId, iosSimulatorPluginAvailable),
+    [bucket.activeTabId, bucket.tabs, iosSimulatorPluginAvailable],
+  );
+  const tabs = projectedTabs.tabs;
+  const activeTabId = projectedTabs.activeTabId;
 
-  // 插件页签(panel.position:'tab')随装/卸/停用动态注册,版本号驱动重渲——
-  // EmptyState 的插件行与「+」菜单动态分组都吃这份数据。
-  const tabRegistryVersion = useTabKindRegistryVersion();
-  // 注册表是模块级 Map,不在 React 数据流里 —— 版本号是唯一变化信号,拿它当 dep。
-  const ghostTabMetas = useMemo(() => listGhostTabMenuMetas(), [tabRegistryVersion]);
+  // If a now-hidden simulator tab owned the active marker, move the persisted
+  // marker to a visible tab (or null). The simulator tab itself remains stored
+  // and returns when the plugin is enabled again.
+  useEffect(() => {
+    if (!bucket.hydrated || !sessionId || bucket.activeTabId === activeTabId) return;
+    void setActiveTab(sessionId, activeTabId).catch((err) => {
+      log.error('hidden simulator active-tab reconciliation failed', {
+        sessionId,
+        activeTabId,
+        err,
+      });
+    });
+  }, [activeTabId, bucket.activeTabId, bucket.hydrated, sessionId]);
+
+  const prevTabCountRef = useRef<number | null>(null);
+  useEffect(() => {
+    prevTabCountRef.current = null;
+  }, [sessionId]);
+
+  // A historical simulator-only bucket must not leave an empty public sidebar
+  // open before the plugin is installed. Preserve the hidden tab, but collapse
+  // the shell each time the user/session makes it visible in this state.
+  const hiddenOnlyCollapseRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!shellVisible) {
+      hiddenOnlyCollapseRef.current = null;
+      return;
+    }
+    const shouldCollapse =
+      bucket.hydrated &&
+      bucket.tabs.length > 0 &&
+      tabs.length === 0 &&
+      bucket.tabs.some((tab) => tab.kind === 'ios-simulator') &&
+      !iosSimulatorPluginAvailable &&
+      prevTabCountRef.current === null;
+    if (!shouldCollapse || !sessionId) {
+      hiddenOnlyCollapseRef.current = null;
+      return;
+    }
+    if (hiddenOnlyCollapseRef.current === sessionId) return;
+    hiddenOnlyCollapseRef.current = sessionId;
+    onAllTabsClosed?.();
+  }, [
+    bucket.hydrated,
+    bucket.tabs,
+    iosSimulatorPluginAvailable,
+    onAllTabsClosed,
+    sessionId,
+    shellVisible,
+    tabs.length,
+  ]);
+
+  // 面板收束(2026-08):插件页签不再注册进右侧栏。历史会话里持久化的
+  // `ghost:*` tab 是旧形态残留,发现即静默关闭 —— 这些 kind 已无渲染方,
+  // 留着只会落到 PlaceholderBody 变成"敬请期待"的死页签。
+  useEffect(() => {
+    if (!bucket.hydrated || !sessionId) return;
+    const legacyGhostTabs = bucket.tabs.filter((tab) => tab.kind.startsWith('ghost:'));
+    if (legacyGhostTabs.length === 0) return;
+    void (async () => {
+      for (const tab of legacyGhostTabs) {
+        try {
+          await closeTab(sessionId, tab.id);
+        } catch (err) {
+          log.error('legacy ghost tab prune failed', { sessionId, tabId: tab.id, err });
+        }
+      }
+    })();
+  }, [bucket.hydrated, bucket.tabs, sessionId]);
 
   // 关掉最后一个 tab → 通知 host 自动收起侧栏。只在 tab 数「从 >0 变 0」的转变时
   // 触发,不是"等于 0"就触发:
   //   - hydrated 后首帧 prev===null 不触发(区分"刚加载出来就是空"与"关到空");
   //   - 展开一个本就 0-tab 的 session 也不会被立刻折叠,用户仍能在 EmptyState 加 tab。
   // sessionId 变化时重置计数,避免"切到一个空 session"被误判成"关空"。
-  const prevTabCountRef = useRef<number | null>(null);
-  useEffect(() => {
-    prevTabCountRef.current = null;
-  }, [sessionId]);
   useEffect(() => {
     if (!bucket.hydrated) return; // 未 hydrate 的空数组不算"关空"
     const prev = prevTabCountRef.current;
@@ -220,6 +310,10 @@ export function RightSidebarShell({
     (kind: TabKindId) => {
       if (!sessionId) {
         log.warn('handleAdd ignored: sessionId is null', { kind });
+        return;
+      }
+      if (kind === 'ios-simulator' && !iosSimulatorPluginAvailable) {
+        log.warn('handleAdd ignored: iOS Simulator plugin is unavailable');
         return;
       }
       const plugin = getTabKind(kind);
@@ -238,7 +332,7 @@ export function RightSidebarShell({
         log.error('handleAdd failed', { sessionId, kind, err });
       });
     },
-    [sessionId],
+    [iosSimulatorPluginAvailable, sessionId],
   );
 
   const handleClose = useCallback(
@@ -264,11 +358,16 @@ export function RightSidebarShell({
   const handleReorder = useCallback(
     (orderedIds: string[]) => {
       if (!sessionId) return;
-      void reorderTabs(sessionId, orderedIds).catch((err) => {
+      const fullOrder = mergeIOSSimulatorVisibleTabOrder(
+        bucket.tabs,
+        orderedIds,
+        iosSimulatorPluginAvailable,
+      );
+      void reorderTabs(sessionId, fullOrder).catch((err) => {
         log.error('handleReorder failed', { sessionId, orderedIds, err });
       });
     },
-    [sessionId],
+    [bucket.tabs, iosSimulatorPluginAvailable, sessionId],
   );
 
   const handleCycleTab = useCallback(
@@ -308,7 +407,7 @@ export function RightSidebarShell({
   const handleCloseOthers = useCallback(
     async (keepTabId: string) => {
       if (!sessionId) return;
-      const targets = bucket.tabs.filter((t) => t.id !== keepTabId).map((t) => t.id);
+      const targets = tabs.filter((t) => t.id !== keepTabId).map((t) => t.id);
       for (const tabId of targets) {
         try {
           await closeTab(sessionId, tabId);
@@ -318,13 +417,13 @@ export function RightSidebarShell({
         }
       }
     },
-    [sessionId, bucket.tabs],
+    [sessionId, tabs],
   );
 
   // 右键菜单"关闭所有":关掉本 session 的全部 tab。
   const handleCloseAll = useCallback(async () => {
     if (!sessionId) return;
-    const targets = bucket.tabs.map((t) => t.id);
+    const targets = tabs.map((t) => t.id);
     for (const tabId of targets) {
       try {
         await closeTab(sessionId, tabId);
@@ -333,31 +432,18 @@ export function RightSidebarShell({
         break;
       }
     }
-  }, [sessionId, bucket.tabs]);
+  }, [sessionId, tabs]);
 
-  // 订阅 main 端的 webview popup 推送 —— guest webview 内 window.open /
-  // target=_blank / window.location 跨 host 时,把 popup URL 路由到一个新的
-  // web-browser RSB tab(对齐 Codex `main-cC-d0ezP.js:48849` 的 foreground/
-  // background-tab 智能路由,简化版:都开前台 tab)。
-  // 注:sessionId 为 null 时(刚 mount 还没拿到 session)推上来的 popup 暂时丢弃 ——
-  // RSB 自身在没 sessionId 时也不显示,用户也看不到 webview,实际不会触发 popup。
+  // popup 路由已挪到窗口级常驻模块(lib/popupRouter.ts):订阅不随 Shell 生命
+  // 周期,用户离开聊天视图 / main 端归属等待期间 route 切换都不再丢 popup。
+  // Shell 只负责两件事:确保 router 已 init(幂等,与 bridge 同款),以及把
+  // "用户正在看的 session"喂给 router 作无归属 popup 的回落目标(保留最后
+  // 已知值,Shell 卸载期间到达的 popup 仍有处可去)。
   useEffect(() => {
-    if (!sessionId) return;
-    const off = window.electronAPI.onRsbBrowserPopup(({ url }) => {
-      // 给新 tab 一份完整 default state,只把 url 替换成 popup URL;hydrateState
-      // 会把缺字段补回默认。background-tab disposition 暂不区分,统一前台打开;
-      // 日后要支持后台 tab 时再按 disposition 分支选 setActive。
-      const initialState = {
-        url,
-        title: '',
-        favicon: null,
-        isAudible: false,
-      };
-      void addTab(sessionId, 'web-browser', initialState).catch((err) => {
-        log.error('rsb popup → addTab failed', { sessionId, url, err });
-      });
-    });
-    return off;
+    initPopupRouter();
+  }, []);
+  useEffect(() => {
+    setPopupFallbackSession(sessionId);
   }, [sessionId]);
 
   useEffect(() => {
@@ -383,6 +469,32 @@ export function RightSidebarShell({
           className="relative flex h-[46px] shrink-0 flex-none items-center border-b border-[var(--border-default)] bg-[var(--panel-bg)] px-2"
           style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
         >
+          {!isFullscreen && railChromeActionsHitHole && (
+            <div
+              aria-hidden
+              data-testid="right-sidebar-rail-chrome-actions-hit-hole"
+              className="absolute left-0 top-0 h-full"
+              style={
+                {
+                  width: CHROME_ACTIONS_GEOMETRY.clusterWidth,
+                  WebkitAppRegion: 'no-drag',
+                } as React.CSSProperties
+              }
+            />
+          )}
+          {railChromeActionsSpacerWidth > 0 && (
+            <div
+              aria-hidden
+              data-testid="right-sidebar-rail-chrome-actions-spacer"
+              className="h-full shrink-0"
+              style={
+                {
+                  width: railChromeActionsSpacerWidth,
+                  WebkitAppRegion: 'no-drag',
+                } as React.CSSProperties
+              }
+            />
+          )}
           {leftChromeActionsSpacerWidth > 0 && (
             <div
               aria-hidden
@@ -413,6 +525,7 @@ export function RightSidebarShell({
             onCloseAll={handleCloseAll}
             pillVariant="chip"
             addButtonWrapperClassName="h-[30px]"
+            iosSimulatorAvailable={iosSimulatorPluginAvailable}
           />
           {/* 右端两态(M2,2026-07-09 Lizi 口径修订):
               - 贴右(默认)/ maximize 撑满:MainLayout 的 mac 浮层按钮钉在窗口
@@ -461,6 +574,7 @@ export function RightSidebarShell({
           onCloseOthers={handleCloseOthers}
           onCloseAll={handleCloseAll}
           chromeWindowDrag={chromeWindowDrag}
+          iosSimulatorAvailable={iosSimulatorPluginAvailable}
         />
       )}
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--panel-bg)]">
@@ -473,10 +587,11 @@ export function RightSidebarShell({
           <EmptyState
             onAddFileTab={() => handleAdd('file-browser')}
             onAddReviewTab={() => handleAdd('review')}
+            onAddSubagentsTab={() => handleAdd('subagents')}
+            onAddBackgroundTasksTab={() => handleAdd('background-tasks')}
+            onAddResourceUsageTab={() => handleAdd('resource-usage')}
             onAddBrowserTab={() => handleAdd('web-browser')}
             onAddTerminalTab={() => handleAdd('terminal')}
-            ghostTabMetas={ghostTabMetas}
-            onAddGhostTab={handleAdd}
           />
         ) : (
           // 所有 tab 都挂载,只切换可见性(规则 7:杜绝切顶层 tab 时 plugin 内部 state /
@@ -490,6 +605,7 @@ export function RightSidebarShell({
               sessionId={sessionId}
               workdir={workdir}
               remoteHostId={remoteHostId}
+              deviceLinkDeviceId={deviceLinkDeviceId}
               shellVisible={shellVisible}
               t={t}
             />
@@ -506,6 +622,7 @@ interface PluginBodyHostProps {
   sessionId: string | null;
   workdir: string;
   remoteHostId: string | null;
+  deviceLinkDeviceId?: string | null;
   shellVisible: boolean;
   t: ReturnType<typeof useTranslation>['t'];
 }
@@ -525,6 +642,7 @@ function PluginBodyHost({
   sessionId,
   workdir,
   remoteHostId,
+  deviceLinkDeviceId,
   shellVisible,
   t,
 }: PluginBodyHostProps) {
@@ -542,6 +660,7 @@ function PluginBodyHost({
       sessionId: sessionId ?? '',
       workdir,
       remoteHostId,
+      deviceLinkDeviceId,
       patchState: (patch: unknown) => {
         if (!sessionId) return;
         void patchTabState(sessionId, tab.id, (current) => {
@@ -565,10 +684,9 @@ function PluginBodyHost({
       onVisibilityChange: () => {
         // Phase 4/5 真消费(webview mute / 暂停媒体);v1 noop。
       },
-      setCloseInterceptor: (interceptor) =>
-        setTabCloseInterceptor(tab.id, interceptor),
+      setCloseInterceptor: (interceptor) => setTabCloseInterceptor(tab.id, interceptor),
     }),
-    [sessionId, workdir, remoteHostId, tab.id],
+    [sessionId, workdir, remoteHostId, deviceLinkDeviceId, tab.id],
   );
 
   // active 切换:走 effect 通知 plugin(plugin 自己内部用 ctx.onVisibilityChange
@@ -605,7 +723,7 @@ function PluginBodyHost({
 /** Plugin 未注册的兜底。 */
 function PlaceholderBody({ tab, t }: { tab: TabState; t: ReturnType<typeof useTranslation>['t'] }) {
   return (
-    <div className="flex flex-1 items-center justify-center text-[12px] text-[var(--text-tertiary)]">
+    <div className="flex flex-1 items-center justify-center text-12 text-[var(--text-tertiary)]">
       <span>{t('rightSidebar.tabs.placeholderHint', { kind: tab.kind })}</span>
     </div>
   );

@@ -2,6 +2,7 @@ import { join as pathJoin } from 'node:path';
 
 import {
   createLiziMcpProviders,
+  resolveLiziMcpSessionContext,
   type LiziMcpProvider,
   type LiziMcpSessionContext,
   type LspServerPool,
@@ -9,11 +10,13 @@ import {
 import type { OrcaMcpDeps } from '@cindy/mcps';
 import { createCindyGhostsMcpServer } from 'cindy-tools';
 import type { MakerMemoryManager } from '@cindy/maker-core';
-import { getCindyGhostsMcpDeps } from './ghost.js';
+import { getCindyGhostsMcpDeps, type GhostGrantLiveSessionState } from './ghost.js';
+import { createGroupHistoryMcpServer } from './groupHistoryMcpServer.js';
 import { getAndroidMcpDeps } from './android.js';
+import { getIOSSimulatorMcpDeps } from './ios-simulator.js';
 import { getBrowserMcpDeps } from './browser.js';
 import { getComputerMcpDeps } from './computer.js';
-import { feishuIm } from '../im';
+import { feishuIm, wechatIm } from '../im';
 import { getSlackToolBridge } from '../hook-control/slackToolBridge.js';
 import { createLogger } from '../logger.js';
 import { getScheduler } from '../scheduler-host/index.js';
@@ -37,7 +40,7 @@ import {
 import { isIpcError } from '../../shared/ipc-errors.js';
 import type { PluginRegistry } from '../maker-host/plugins/plugin-registry.js';
 import { getDesktopContactsManager } from '../maker-host/maker-contacts-host.js';
-import { broadcastContactsChanged } from '../maker-ipc/contacts-ipc.js';
+import { broadcastContactsChanged } from '../maker-host/contacts-change-broadcast.js';
 import { readContactsSettings } from '../maker-host/contacts-settings-store.js';
 import { readSystemContacts, writeSystemContacts } from '../maker-host/system-contacts.js';
 import { BUILTIN_LIZI_MCP_IDS, pluginIdForProviderName } from '../maker-host/plugins/builtin-plugins.js';
@@ -54,6 +57,11 @@ export interface DesktopMcpProvidersDeps {
   pluginRegistry: PluginRegistry;
   /** Device-link transport stays host-injected so provider tests do not load Electron runtime services. */
   invokeRemote: ChatHistoryReaderDeps['invokeRemote'];
+  /** 插件文件交接只认活跃 Session 的实时权限；缺失时由 ghost.ts fail closed。 */
+  getLiveSessionGrantState?: (
+    sessionId: string,
+    sessionInstanceId: string,
+  ) => GhostGrantLiveSessionState | null;
 }
 
 export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMcpProvider[] {
@@ -79,6 +87,13 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
         // Keep that snapshot for a busy turn when a disable refresh is deferred;
         // a successfully rebuilt bridge omits this provider via the outer gate.
         context?.agentKind === 'codex' || pluginRegistry.isEnabled('android'),
+    }),
+    iosSimulator: getIOSSimulatorMcpDeps({
+      // Project-scoped gating is applied by the provider wrapper below using
+      // the live MCP session context. This host-level check preserves the
+      // existing global fallback for non-session callers.
+      isIOSSimulatorEnabled: (context) =>
+        pluginRegistry.isEnabled('ios-simulator', context?.workingDir),
     }),
     browser: getBrowserMcpDeps(),
     computer: getComputerMcpDeps({
@@ -141,6 +156,36 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
         }
       },
       logger: createLogger('mcp/cindy_feishu_bot'),
+    },
+    wechatBot: {
+      getActivePeerIdForSession: (sessionId) =>
+        wechatIm.getActivePeerIdForSession(sessionId),
+      getMostRecentPeerId: () => wechatIm.getMostRecentPeerId(),
+      sendMessage: async (peerId, text) => {
+        try {
+          const { messageId } = await wechatIm.sendText(peerId, text);
+          return { ok: true, messageId };
+        } catch (error) {
+          createLogger('mcp/cindy_wechat').warn(
+            'sendMessage failed target=...%s detail=%s',
+            peerId.slice(-8),
+            error instanceof Error ? error.message : String(error),
+          );
+          return { ok: false, reason: 'SEND_FAIL' };
+        }
+      },
+      sendFile: async (peerId, absPath, displayName) => {
+        const result = await wechatIm.sendFile(peerId, absPath, displayName);
+        if (!result.ok) {
+          createLogger('mcp/cindy_wechat').warn(
+            'sendFile failed target=...%s reason=%s',
+            peerId.slice(-8),
+            result.reason ?? 'unknown',
+          );
+        }
+        return result;
+      },
+      logger: createLogger('mcp/cindy_wechat'),
     },
     // cindy_slack(2026-07-19): Slack 网关工具。桥经 hook-control 的零依赖
     // 注册表取用(静态 import ipc.ts 会与 maker-host 闭环, 见 slackToolBridge
@@ -250,7 +295,7 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           if (isIpcError(err) && err.code === 'NOT_FOUND') {
-            return { ok: false, errorCode: 'NOT_FOUND', message };
+            return { ok: false, errorCode: err.code, message };
           }
           return { ok: false, errorCode: 'INTERNAL', message };
         }
@@ -284,19 +329,54 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
           return { ok: true, changed };
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          if (isIpcError(err) && err.code === 'NOT_FOUND') {
-            return { ok: false, errorCode: 'NOT_FOUND', message };
+          if (isIpcError(err)) {
+            if (err.code === 'NOT_FOUND' || err.code === 'PRECONDITION_FAILED') {
+              return { ok: false, errorCode: err.code, message };
+            }
           }
           return { ok: false, errorCode: 'INTERNAL', message };
         }
       },
-      sendToSession: async ({ targetSessionId, message, dispatcherSessionId, title, useWorktree }) => {
+      sendToSession: async ({
+        targetSessionId,
+        message,
+        dispatcherSessionId,
+        title,
+        useWorktree,
+        workingDir,
+        agentKind,
+        model,
+        effort,
+        fast,
+      }) => {
         const svc = tryGetOrcaCollabService();
         if (!svc) {
           return { ok: false, errorCode: 'HOST_NOT_READY', message: 'orca collab service not initialized' };
         }
         try {
-          return await svc.sendToSession({ targetSessionId, message, dispatcherSessionId, title, useWorktree });
+          const hasExecutionOverrides =
+            agentKind !== undefined
+            || model !== undefined
+            || effort !== undefined
+            || fast !== undefined;
+          return await svc.sendToSession({
+            targetSessionId,
+            message,
+            dispatcherSessionId,
+            title,
+            useWorktree,
+            workingDir,
+            ...(hasExecutionOverrides
+              ? {
+                  execution: {
+                    agentKind,
+                    model,
+                    effort,
+                    fastMode: fast,
+                  },
+                }
+              : {}),
+          });
         } catch (err) {
           return { ok: false, errorCode: 'INTERNAL', message: err instanceof Error ? err.message : String(err) };
         }
@@ -356,19 +436,22 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
     return {
       ...p,
       isEnabled: (ctx: LiziMcpSessionContext) => {
-        // Codex 的共享 app-server 在还没有 thread/workdir 的阶段构建 MCP
-        // 工具清单。普通工具必须先全部注册，真正调用时由 HTTP bridge 按新会话
-        // 冻结的策略阻断；否则某个用户默认会错误地影响所有项目。机器级工具
+        // Codex 与 Pi 的共享 app-server / bridge 在还没有 thread/workdir 的阶段构建
+        // MCP 工具清单。普通工具必须先全部注册，真正调用时由 HTTP bridge 按新会话
+        // 冻结的策略阻断；否则某个用户默认会错误地影响所有项目（空 workdir 快照被缓存后，
+        // 全局启用但项目停用的工具仍暴露、反向配置则永久缺席，codex review）。机器级工具
         // 仍沿用现有 spawn-time gate + 环境重建语义。
-        const deferOrdinaryCodexGate =
-          ctx.agentKind === 'codex' && !ctx.workingDir && !GLOBAL_PLUGIN_IDS.has(pluginId);
+        const deferOrdinaryGate =
+          (ctx.agentKind === 'codex' || ctx.agentKind === 'pi')
+          && !ctx.workingDir
+          && !GLOBAL_PLUGIN_IDS.has(pluginId);
         // Orca 工具面必须在会话生命周期内保持稳定：Claude query 不会在项目策略
         // 动态启用后重建 MCP。创建入口仍由 Main 按调用时的项目策略 fail closed。
         const keepOrcaProviderStable = pluginId === 'collab';
         // Plugin gate：registry 负责 essential / machine / project / user / default 判定。
         if (
           !keepOrcaProviderStable &&
-          !deferOrdinaryCodexGate &&
+          !deferOrdinaryGate &&
           !pluginRegistry.isEnabled(pluginId, ctx.workingDir)
         ) {
           return false;
@@ -386,6 +469,18 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
   // plugin gate——工具面恒定是缓存前缀稳定的前提,"没装任何意识"表现为
   // ghost_list 返回空清单而非 server 消失,LLM 不困惑、老会话即时生效。
   gated.push({
+    name: 'cindy_group_history',
+    isEnabled: () => true,
+    toClaudeSdkConfig: (ctx) => ({
+      type: 'sdk',
+      name: 'cindy_group_history',
+      instance: createGroupHistoryMcpServer({
+        getSessionContext: () => resolveLiziMcpSessionContext(ctx),
+      }),
+    }),
+  });
+
+  gated.push({
     name: 'cindy',
     isEnabled: () => true,
     // ctx 闭包进 deps:claude in-process 路径的 tool-call 没有 ALS 语境,
@@ -394,7 +489,11 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
     toClaudeSdkConfig: (ctx) => ({
       type: 'sdk',
       name: 'cindy',
-      instance: createCindyGhostsMcpServer(getCindyGhostsMcpDeps(ctx)),
+      instance: createCindyGhostsMcpServer(
+        getCindyGhostsMcpDeps(ctx, {
+          getLiveSessionGrantState: deps.getLiveSessionGrantState,
+        }),
+      ),
     }),
   });
 

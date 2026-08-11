@@ -1,10 +1,20 @@
 import { dialog, ipcMain, screen, BrowserWindow, type Display, type OpenDialogOptions } from 'electron';
 import path from 'node:path';
 import { release as getOsRelease } from 'node:os';
-import { SESSION_ACTIVITY_CHANNEL } from '@cindy/device-link';
-import type { AgentEvent, InteractionDecision, InteractionRequest } from '@cindy/maker-core';
+import { SESSION_ACTIVITY_CHANNEL, type SessionActivityPayload } from '@cindy/device-link';
+import {
+  isTerminalAgentErrorEvent,
+  type AgentEvent,
+  type InteractionDecision,
+  type InteractionRequest,
+} from '@cindy/maker-core';
 import type { SchedulerEvent } from '@cindy/maker-scheduler';
 import { BRAND_NAME } from '@cindy/maker-shared/branding';
+import { isDefaultDraftSessionTitle } from '@cindy/maker-shared/session-title';
+import {
+  isProductTurnCompletionTailEvent,
+  isTurnContinuationBoundaryEvent,
+} from '@cindy/maker-shared/turn-continuation';
 import type { ApplicationMenuCommand } from '../../shared/applicationMenuCommands.js';
 
 import { hasSessionAttention as hasAppBadgeSessionAttention } from '../appBadgeService.js';
@@ -40,6 +50,7 @@ import {
   AGENT_ISLAND_SESSION_SNAPSHOTS_CHANNEL,
   type AgentIslandDisplayOption,
   type AgentIslandDisplayState,
+  type AgentIslandPillSnapshot,
   type AgentIslandSessionActivity,
   type AgentIslandDisplayTarget,
   type AgentIslandMascotSkin,
@@ -61,6 +72,7 @@ import {
   applyAgentIslandUserPrompt,
   buildAgentIslandDisplayState,
   buildAllSessionActivitySnapshots,
+  closeAgentIslandSessionPreservingUnread,
   completeAgentIslandSessionWithoutAttention,
   createAgentIslandUserPromptRollbackToken,
   createAgentIslandState,
@@ -86,6 +98,7 @@ import {
 } from './state.js';
 import { createLocalizedToolRowWording } from './toolWording.js';
 import {
+  type AgentIslandDisplayIdentity,
   type AgentIslandLayoutPreference,
   computeAgentIslandCarrierSize,
   computeAgentIslandWindowBounds,
@@ -97,16 +110,21 @@ import {
 } from './MacAgentIslandNativeHost.js';
 import { AGENT_ISLAND_DISPLAY_CONFIG } from './displayConfig.js';
 import {
+  readAgentIslandDetachedLayoutPreferences,
   readAgentIslandLayoutPreferences,
   writeAgentIslandLayoutPreference,
+  writeAgentIslandLayoutPreferences,
 } from './layoutPreferenceStore.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
 import { tapWindowBroadcast } from '../device-link/broadcast-tap.js';
 import {
+  beginProtectedFolderCheck,
   detectProtectedFolderEperm,
+  endProtectedFolderCheck,
+  markEpermGuidanceShown,
   openFolderPrivacySettings,
+  probeProtectedFolderAccess,
   releaseEpermGuidance,
-  shouldShowEpermGuidance,
   type ProtectedFolderKind,
 } from '../file-access/permissions.js';
 import { SessionActivityRelay } from './sessionActivityRelay.js';
@@ -137,6 +155,8 @@ interface AgentIslandUserPromptDebugMeta {
   source?: string;
   clientId?: string;
   notifiedAt?: number;
+  /** The prompt replaces a failed turn whose terminal event was intentionally withheld. */
+  replacesCurrentTurn?: boolean;
 }
 
 export interface AgentIslandServiceDeps {
@@ -214,6 +234,7 @@ export class AgentIslandService {
   }>();
   private readonly metadataLoading = new Set<string>();
   private readonly layoutPreferencesByDisplayId: Map<number, AgentIslandLayoutPreference>;
+  private readonly detachedLayoutPreferences: AgentIslandLayoutPreference[];
   private nativeFailureLogged = false;
   private enabled = false;
   private enabledSynced = false;
@@ -269,6 +290,7 @@ export class AgentIslandService {
     // lazy t() 闭包跟随 locale 运行时切换,注入一次即可(strings 仍每次 publish 重建)。
     setAgentIslandToolWording(this.state, createLocalizedToolRowWording());
     this.layoutPreferencesByDisplayId = readAgentIslandLayoutPreferences();
+    this.detachedLayoutPreferences = readAgentIslandDetachedLayoutPreferences();
     this.nativeHost = deps.nativeHost ?? new MacAgentIslandNativeHost({
       onPointerZones: (zones) => this.handleNativePointerZones(zones),
       onExpand: (displayId) => this.handleNativeExpand(displayId),
@@ -594,7 +616,10 @@ export class AgentIslandService {
     setAgentIslandAppFocused(this.state, focused, now);
   }
 
-  handleAgentEvent(meta: AgentIslandSessionMeta, event: AgentEvent): void {
+  handleAgentEvent(
+    meta: AgentIslandSessionMeta,
+    event: AgentEvent,
+  ): void {
     const hydrated = this.hydrateMeta(meta);
     const providerTurnId = providerTurnIdFromAgentEvent(event);
     const replacementPending =
@@ -680,10 +705,9 @@ export class AgentIslandService {
       const folderKind = data?.isError !== false && data?.fullText
         ? detectProtectedFolderEperm(data.fullText)
         : null;
-      if (folderKind && shouldShowEpermGuidance(folderKind)) {
-        void this.showFolderEpermGuidance(folderKind).catch((error: unknown) => {
-          releaseEpermGuidance(folderKind);
-          log.warn('failed to show folder access guidance', { kind: folderKind, error });
+      if (folderKind) {
+        void this.resolveProtectedFolderDenial(folderKind).catch((error: unknown) => {
+          log.warn('protected folder guidance flow failed', { kind: folderKind, error });
         });
       }
     }
@@ -748,7 +772,7 @@ export class AgentIslandService {
     }
   }
 
-  handleUserPrompt(meta: AgentIslandSessionMeta, prompt: string, debugMeta: AgentIslandUserPromptDebugMeta = {}): void {
+  handleUserPrompt(meta: AgentIslandSessionMeta, prompt: string, debugMeta: AgentIslandUserPromptDebugMeta = {}): boolean {
     const receivedAt = Date.now();
     const hydrated = this.hydrateMeta(meta);
     const previousInteractionEpoch = this.interactionEpochBySession.get(hydrated.sessionId);
@@ -756,12 +780,16 @@ export class AgentIslandService {
     const wasReplacementTurnPending = this.replacementTurnPendingSessionIds.has(hydrated.sessionId);
     const wasReplacementTurnDispatching =
       this.replacementTurnDispatchingSessionIds.has(hydrated.sessionId);
-    const deferInteractionEpochUntilDispatch = wasStopped || wasReplacementTurnPending;
+    const startsReplacementTurn = debugMeta.replacesCurrentTurn === true;
+    const deferInteractionEpochUntilDispatch =
+      startsReplacementTurn || wasStopped || wasReplacementTurnPending;
     if (!deferInteractionEpochUntilDispatch) {
       this.advanceInteractionEpoch(hydrated.sessionId);
     }
     if (wasStopped) {
       this.stoppedSessionIds.delete(hydrated.sessionId);
+    }
+    if (wasStopped || startsReplacementTurn) {
       this.replacementTurnPendingSessionIds.add(hydrated.sessionId);
     }
     if (deferInteractionEpochUntilDispatch) {
@@ -802,11 +830,12 @@ export class AgentIslandService {
         this.replacementTurnDispatchingSessionIds.delete(hydrated.sessionId);
       }
       this.restoreInteractionEpoch(hydrated.sessionId, previousInteractionEpoch);
-      return;
+      return false;
     }
     this.ensureMetadata(hydrated.sessionId);
     this.syncSessionAttention(hydrated.sessionId);
     this.publish();
+    return true;
   }
 
   commitUserPrompt(sessionId: string, clientId: string | undefined): void {
@@ -947,7 +976,8 @@ export class AgentIslandService {
   }
 
   private prunePermissionRequestsForAgentEvent(sessionId: string, event: AgentEvent): void {
-    if (event.type === 'done' || event.type === 'error') {
+    if (isTurnContinuationBoundaryEvent(event)) return;
+    if (event.type === 'done' || isTerminalAgentErrorEvent(event)) {
       this.deletePermissionRequestsForSession(sessionId);
       return;
     }
@@ -968,7 +998,18 @@ export class AgentIslandService {
     }
   }
 
-  handleSessionClosed(sessionId: string): void {
+  /**
+   * @param options.reason
+   *   `'discarded'`(默认)= 这条记录不该再存在(会话归档 / 删除、Orca worker 被策略
+   *   清除),条目硬删。
+   *   `'process-closed'` = 只是 agent 进程收了(典型:临时会话调度 run 终态后的
+   *   closeSession),仍在展示的完成 / 错误卡片必须留着走完 dwell,否则刚弹出的卡片会
+   *   当场消失。见 `closeAgentIslandSessionPreservingUnread`。
+   */
+  handleSessionClosed(
+    sessionId: string,
+    options: { reason?: 'discarded' | 'process-closed' } = {},
+  ): void {
     this.stoppedSessionIds.delete(sessionId);
     this.replacementTurnPendingSessionIds.delete(sessionId);
     this.replacementTurnDispatchingSessionIds.delete(sessionId);
@@ -984,7 +1025,11 @@ export class AgentIslandService {
     this.deferredCompletions.delete(sessionId);
     // Remote auth retry closes the failed session before the renderer reports
     // whether its replacement turn started, so keep that deferred error here.
-    removeAgentIslandSession(this.state, sessionId);
+    if (options.reason === 'process-closed') {
+      closeAgentIslandSessionPreservingUnread(this.state, sessionId, Date.now());
+    } else {
+      removeAgentIslandSession(this.state, sessionId);
+    }
     this.deletePermissionRequestsForSession(sessionId);
     this.publish();
   }
@@ -1035,13 +1080,13 @@ export class AgentIslandService {
   /**
    * badge 桥接来的会话已读信号(renderer → appBadgeService → 这里)。
    * source 默认 'passive'(fail-safe):renderer 未声明意图的清除一律当被动信号,
-   * 未读 error 条目免疫;只有真实展示路径(useErrorReadAck / 全部标为已读等)
-   * 显式带 'explicit' 才能清掉未读的报错。
+   * 未读 error 条目免疫;只有处置路径(用户操作报错横幅 / 全部标为已读 /
+   * pending-alerts 派生收敛)显式带 'explicit' 才能清掉未处理的报错。
    */
   handleSessionAttentionCleared(sessionId: string, source: 'explicit' | 'passive' = 'passive'): void {
     const ack = acknowledgeAgentIslandSessionRead(this.state, sessionId, Date.now(), { source });
     // 未读 error 对 passive 免疫:state 未动,也**不能**给远端发收尾包 —— 否则手机
-    // 列表行的 error 红点会被导航级被动信号清掉,破坏「已读以真实展示为准」。
+    // 列表行的 error 红点会被导航级被动信号清掉,破坏「未处置就不消失」。
     if (ack === 'error-immune') return;
     if (ack === 'not-found') {
       // not-found(典型:重启后 state / relay 条目丢失,远端仍挂着旧未读)只对
@@ -1103,23 +1148,78 @@ export class AgentIslandService {
       workingDir: patch.workingDir !== undefined ? patch.workingDir : current.workingDir,
       workspaceKind: patch.workspaceKind !== undefined ? patch.workspaceKind : current.workspaceKind,
     };
-    this.metadataCache.set(sessionId, next);
-    if (!patchAgentIslandMetadata(this.state, { sessionId, ...next })) return;
-    this.publish();
+    this.commitMetadata(sessionId, next);
   }
 
-  replaySessionActivity(): void {
-    this.sessionActivityRelay.replay(this.buildSessionActivityPayload());
+  /**
+   * 按需重放当前会话活动快照。`emit` 由调用方(bootstrap)注入定向 sink 时,
+   * 快照只投给刚完成 sessions 订阅的那一台控制端;不传则沿默认广播通道扇出。
+   */
+  replaySessionActivity(emit?: (payload: SessionActivityPayload) => void): void {
+    this.sessionActivityRelay.replay(this.buildSessionActivityPayload(), emit);
+  }
+
+  /**
+   * 会话元数据的**唯一写出口**:落 cache + patch state + 发布。
+   *
+   * 这里**只存原始标题**,不做本地化投影 —— 投影统一推迟到 {@link localizeDisplayState}
+   * (构建送给 native 的 payload 那一刻)。两个理由:
+   *
+   *   - `metadataCache` 必须是原始值 —— {@link ensureMetadata} 靠
+   *     `isPlaceholderSessionTitle(cached.title)` 判断「还没拿到权威标题、需要重拉」。
+   *     把本地化文案写进 cache 会让该判定恒为 false,权威标题永远不会再被加载。
+   *   - `state` 也必须是原始值 —— 否则切换应用语言时,`refreshLocalization()` 只重建
+   *     `state.strings` 并 republish,不会重新投影 metadata,灵动岛会一直显示旧语言的
+   *     兜底文案,直到下一次 metadata 事件才纠正(PR #1031 review P1)。存原始值 +
+   *     publish 时投影,切语言后的那次 republish 自然就是新语言,不需要任何重投影逻辑。
+   */
+  private commitMetadata(
+    sessionId: string,
+    meta: { title: string | null; workingDir: string | null; workspaceKind: string | null },
+  ): void {
+    this.metadataCache.set(sessionId, meta);
+    if (!patchAgentIslandMetadata(this.state, { sessionId, ...meta })) return;
+    this.publish();
   }
 
   private hydrateMeta(meta: AgentIslandSessionMeta): AgentIslandSessionMeta & { title?: string | null } {
     const cached = this.metadataCache.get(meta.sessionId);
     return {
       ...meta,
+      // 原始标题:投影只在 publish 构建 payload 时做(见 commitMetadata 的说明)。
       title: cached?.title ?? null,
       workingDir: cached?.workingDir ?? meta.workingDir,
       workspaceKind: cached?.workspaceKind ?? meta.workspaceKind,
     };
+  }
+
+  /**
+   * agent 输出里的关键词只是粗筛,真相由 Main 亲自向系统核实一次:
+   *
+   * - 读得动 → 那条 EPERM 与 TCC 无关(agent 常常只是读到了**写着这个词的文件内容**),
+   *   什么都不做,也不消耗该目录的提醒名额。
+   * - 读不动 → 确认被拒,才提示用户。这次探测同时把 TCC 归因落到 Cindy.app 上,系统
+   *   自己的授权弹窗有机会出现;用户在系统弹窗里点了允许,readdir 随即成功,这里就不再
+   *   叠一个自制弹窗。只有系统确实不肯再问(此前被拒过)才走到引导去系统设置这一步。
+   */
+  private async resolveProtectedFolderDenial(kind: ProtectedFolderKind): Promise<void> {
+    if (!beginProtectedFolderCheck(kind)) return;
+    try {
+      const access = await probeProtectedFolderAccess(kind);
+      if (access !== 'denied') {
+        log.debug(`protected folder guidance skipped: kind=${kind} access=${access}`);
+        return;
+      }
+      markEpermGuidanceShown(kind);
+      try {
+        await this.showFolderEpermGuidance(kind);
+      } catch (error) {
+        releaseEpermGuidance(kind);
+        log.warn('failed to show folder access guidance', { kind, error });
+      }
+    } finally {
+      endProtectedFolderCheck(kind);
+    }
   }
 
   private async showFolderEpermGuidance(kind: ProtectedFolderKind): Promise<void> {
@@ -1151,15 +1251,11 @@ export class AgentIslandService {
     this.metadataLoading.add(sessionId);
     void getSessionRowSnapshot(sessionId)
       .then((row) => {
-        const metadata = {
+        this.commitMetadata(sessionId, {
           title: row?.title ?? null,
           workingDir: row?.workingDir ?? null,
           workspaceKind: row?.workspaceKind ?? null,
-        };
-        this.metadataCache.set(sessionId, metadata);
-        if (patchAgentIslandMetadata(this.state, { sessionId, ...metadata })) {
-          this.publish();
-        }
+        });
       })
       .catch((err) => {
         log.warn('session metadata load failed', {
@@ -1350,10 +1446,12 @@ export class AgentIslandService {
     }
 
     this.hiddenPublished = false;
-    const displayState = withAgentIslandConfig(
-      buildAgentIslandDisplayState(this.state, now),
-      this.soundSettings,
-      this.mascotSkin,
+    const displayState = this.localizeDisplayState(
+      withAgentIslandConfig(
+        buildAgentIslandDisplayState(this.state, now),
+        this.soundSettings,
+        this.mascotSkin,
+      ),
     );
     this.emitSessionActivityToRenderer();
     this.scheduleNextPublish(now);
@@ -1374,6 +1472,32 @@ export class AgentIslandService {
     )) {
       this.logNativeRendererUnavailable(displayState);
     }
+  }
+
+  /**
+   * 哨兵标题 → 本地化文案的**唯一投影点**:构建送给 native 的 payload 那一刻。
+   *
+   * 不变量:`metadataCache` 与 `state` 一律存**原始**标题,只有这里把哨兵换成兜底文案。
+   *
+   * 放在这里(而不是写 cache / 写 state 时)换来两个性质:
+   *   - **切语言即时生效**:`refreshLocalization()` 只重建 `strings` 再 publish,而 publish
+   *     每次都重新走本函数,所以那次 republish 自然带新语言 —— 不需要「本地化刷新时重投影
+   *     metadata」这类额外逻辑(PR #1031 review P1)。
+   *   - **判定不被污染**:`ensureMetadata` 仍能用 `isPlaceholderSessionTitle(cached.title)`
+   *     判断该不该重拉权威标题。
+   *
+   * 只投影哨兵;真实标题与 null 原样透传(null 由 native 走它自己的空标题分支)。
+   */
+  private localizeDisplayState(state: AgentIslandDisplayState): AgentIslandDisplayState {
+    if (!state.sessions.some((s) => isDefaultDraftSessionTitle(s.title))) return state;
+    return {
+      ...state,
+      sessions: state.sessions.map((session) =>
+        isDefaultDraftSessionTitle(session.title)
+          ? { ...session, title: t('ccAgent.common.unnamedSession') }
+          : session,
+      ),
+    };
   }
 
   private scheduleNextPublish(now: number): void {
@@ -1459,11 +1583,19 @@ export class AgentIslandService {
   }
 
   private handleNativeLayoutPreference(preference: AgentIslandLayoutPreference): void {
-    const displayId = typeof preference.displayId === 'number' && Number.isFinite(preference.displayId)
+    const displays = this.getAvailableDisplays();
+    this.reconcileLayoutPreferencesForDisplays(displays);
+    const nativeDisplayId = typeof preference.displayId === 'number' && Number.isFinite(preference.displayId)
       ? preference.displayId
-      : this.getTargetDisplay().id;
+      : this.getTargetDisplay(displays).id;
+    const display = this.displayForNativeId(nativeDisplayId, displays);
+    if (!display) return;
+    const displayId = display.id;
     const current = this.layoutPreferencesByDisplayId.get(displayId) ?? {};
-    const next: AgentIslandLayoutPreference = { ...current };
+    const next: AgentIslandLayoutPreference = {
+      ...current,
+      ...(display ? this.displayIdentityForDisplay(display, displays) : {}),
+    };
     if (typeof preference.centerXRatio === 'number' && Number.isFinite(preference.centerXRatio)) {
       next.centerXRatio = preference.centerXRatio;
     }
@@ -1477,6 +1609,10 @@ export class AgentIslandService {
       next.centerXRatio === current.centerXRatio
       && next.compactContentWidth === current.compactContentWidth
       && next.expandedContentWidth === current.expandedContentWidth
+      && next.displayName === current.displayName
+      && next.displayIndex === current.displayIndex
+      && next.displayInternal === current.displayInternal
+      && sameDisplayBounds(next.displayBounds, current.displayBounds)
     ) {
       return;
     }
@@ -1523,6 +1659,7 @@ export class AgentIslandService {
   private handleNativeScreenMetrics(metrics: {
     screens: AgentIslandNativeScreenMetrics[];
     preferredDisplayId: number | null;
+    forceRefresh: boolean;
   }): void {
     const signature = metrics.screens
       .map((item) => [
@@ -1533,7 +1670,11 @@ export class AgentIslandService {
         Math.round(item.topBarHeight),
       ].join(':'))
       .join('|');
-    if (signature === this.screenMetricsSignature && metrics.preferredDisplayId === this.nativePreferredDisplayId) {
+    if (
+      !metrics.forceRefresh
+      && signature === this.screenMetricsSignature
+      && metrics.preferredDisplayId === this.nativePreferredDisplayId
+    ) {
       return;
     }
     this.screenMetricsByDisplayId.clear();
@@ -1549,7 +1690,9 @@ export class AgentIslandService {
     frames: AgentIslandNativeFrame[];
     statesByDisplayId?: Record<string, AgentIslandDisplayState>;
   } {
-    const displays = this.getTargetDisplays();
+    const availableDisplays = this.getAvailableDisplays();
+    this.reconcileLayoutPreferencesForDisplays(availableDisplays);
+    const displays = this.getTargetDisplays(availableDisplays);
     const statesByDisplayId = this.computeDisplayStatesByDisplayId(displayState, displays);
     const frames = displays.map((display) => {
       const stateForDisplay = statesByDisplayId?.[String(display.id)] ?? displayState;
@@ -1581,7 +1724,7 @@ export class AgentIslandService {
 
   private computeNativeFrame(displayState: AgentIslandDisplayState, display: Display): AgentIslandNativeFrame {
     const rawScreenMetrics = this.getScreenLayoutMetrics(display);
-    const layoutPreference = this.layoutPreferencesByDisplayId.get(display.id) ?? {};
+    const layoutPreference = this.getLayoutPreferenceForDisplay(display);
     const expanded = displayState.notchStatus === 'expanded';
     const hasSession = displayState.totalCount > 0;
     const screenMetrics = this.getEffectiveScreenLayoutMetrics({
@@ -1606,6 +1749,9 @@ export class AgentIslandService {
       hasSession,
       displayWidth: display.bounds.width,
       screenMetrics,
+      // Keep the carrier wide enough for the native count badge; without this the
+      // native side's own reservation gets clamped away and the badge is clipped.
+      pillSnapshot: displayState.pillSnapshot,
     });
     const minimumContentWidth = getAgentIslandMinimumContentWidth({
       expanded,
@@ -1619,6 +1765,7 @@ export class AgentIslandService {
         display,
         screenMetrics,
         minimumContentWidth,
+        pillSnapshot: displayState.pillSnapshot,
       })
       : null;
     const contentWidth = preferredContentWidth !== null
@@ -1656,8 +1803,7 @@ export class AgentIslandService {
     };
   }
 
-  private getTargetDisplays(): Display[] {
-    const displays = this.getAvailableDisplays();
+  private getTargetDisplays(displays = this.getAvailableDisplays()): Display[] {
     if (this.displayTarget.mode === 'display') {
       const selectedDisplay = this.resolveSelectedDisplay(displays);
       if (!selectedDisplay) {
@@ -1672,6 +1818,178 @@ export class AgentIslandService {
       return [selectedDisplay];
     }
     return displays;
+  }
+
+  private getLayoutPreferenceForDisplay(display: Display): AgentIslandLayoutPreference {
+    const preference = this.layoutPreferencesByDisplayId.get(display.id);
+    if (!preference) return {};
+    if (hasPersistedLayoutIdentity(preference)) return preference;
+
+    // 0.1.31 and earlier stored only the runtime display id. On a multi-display
+    // setup that id can be reused by another monitor, so an old wide compact
+    // width and center are unsafe to apply to a centered hardware-notch
+    // display. Preserve the expanded preference, but let compact layout derive
+    // its current notch-safe defaults until the next native drag records identity.
+    const displays = this.getAvailableDisplays();
+    const metrics = this.getScreenLayoutMetrics(display);
+    if (displays.length > 1 && metrics?.hasNotch) {
+      return {
+        ...preference,
+        centerXRatio: undefined,
+        compactContentWidth: undefined,
+      };
+    }
+    return preference;
+  }
+
+  private reconcileLayoutPreferencesForDisplays(displays: Display[]): void {
+    const entries = Array.from(this.layoutPreferencesByDisplayId.entries());
+    if (
+      (entries.length === 0 && this.detachedLayoutPreferences.length === 0) ||
+      displays.length === 0
+    )
+      return;
+
+    const next = new Map<number, AgentIslandLayoutPreference>();
+    const nextDetached: AgentIslandLayoutPreference[] = [];
+    const claimedDisplayIds = new Set<number>();
+    const assignedPreferences = new Set<AgentIslandLayoutPreference>();
+    const identityEntries = [
+      ...entries
+        .filter(([, preference]) => hasPersistedLayoutIdentity(preference))
+        .map(([storedDisplayId, preference]) => ({ storedDisplayId, preference })),
+      ...this.detachedLayoutPreferences.map((preference) => ({
+        storedDisplayId: null,
+        preference,
+      })),
+    ];
+
+    // Keep an identity-bearing preference on its current id when the identity
+    // still resolves there. This is the common case and also makes collisions
+    // deterministic before looking for migrated ids.
+    for (const { storedDisplayId, preference } of identityEntries) {
+      if (storedDisplayId === null) continue;
+      const direct = this.displayById(displays, storedDisplayId);
+      const resolved = findDisplayByIdentity(displays, preference);
+      if (!direct || !resolved || resolved.id !== direct.id) continue;
+      next.set(direct.id, {
+        ...preference,
+        ...this.displayIdentityForDisplay(direct, displays),
+      });
+      claimedDisplayIds.add(direct.id);
+      assignedPreferences.add(preference);
+    }
+
+    // Resolve the remaining identity-bearing entries as a one-to-one batch.
+    // Do not mutate the live map while iterating: two exchanged runtime ids
+    // must be able to swap without one migration overwriting the other.
+    for (const { preference } of identityEntries) {
+      if (assignedPreferences.has(preference)) continue;
+      const resolved = findDisplayByIdentity(displays, preference);
+      if (!resolved || claimedDisplayIds.has(resolved.id)) continue;
+      next.set(resolved.id, {
+        ...preference,
+        ...this.displayIdentityForDisplay(resolved, displays),
+      });
+      claimedDisplayIds.add(resolved.id);
+      assignedPreferences.add(preference);
+    }
+
+    // Identity-bearing preferences that cannot currently resolve remain
+    // detached from runtime ids. This preserves a disconnected display even
+    // when another online display reuses its previous id.
+    for (const { preference } of identityEntries) {
+      if (!assignedPreferences.has(preference)) {
+        nextDetached.push(preference);
+      }
+    }
+
+    // Keep old id-only entries for backwards compatibility when their id still
+    // names an unclaimed display. If an identity-bearing entry already claims
+    // that id, the ambiguous legacy value must not overwrite the safer match.
+    for (const [storedDisplayId, preference] of entries) {
+      if (hasPersistedLayoutIdentity(preference)) continue;
+      const direct = this.displayById(displays, storedDisplayId);
+      if (direct && !claimedDisplayIds.has(direct.id)) {
+        next.set(direct.id, preference);
+        claimedDisplayIds.add(direct.id);
+        continue;
+      }
+      // Keep disconnected legacy entries so a future display with the same id
+      // can still use the old preference; no physical identity exists to do a
+      // safer reconnect migration yet.
+      if (!direct && !next.has(storedDisplayId)) {
+        next.set(storedDisplayId, preference);
+      }
+    }
+
+    if (
+      sameLayoutPreferenceMap(this.layoutPreferencesByDisplayId, next) &&
+      sameLayoutPreferenceList(this.detachedLayoutPreferences, nextDetached)
+    ) {
+      return;
+    }
+    this.clearPendingLayoutPreferenceWrites();
+    this.layoutPreferencesByDisplayId.clear();
+    for (const [displayId, preference] of next) {
+      this.layoutPreferencesByDisplayId.set(displayId, preference);
+    }
+    this.detachedLayoutPreferences.splice(
+      0,
+      this.detachedLayoutPreferences.length,
+      ...nextDetached,
+    );
+    this.writeLayoutPreferencesSafely(next, nextDetached);
+  }
+
+  private clearPendingLayoutPreferenceWrites(): void {
+    this.pendingLayoutPreferenceWrites.clear();
+    if (this.layoutPreferenceWriteTimer) {
+      clearTimeout(this.layoutPreferenceWriteTimer);
+      this.layoutPreferenceWriteTimer = null;
+    }
+  }
+
+  private writeLayoutPreferencesSafely(
+    preferences: Map<number, AgentIslandLayoutPreference>,
+    detachedPreferences: readonly AgentIslandLayoutPreference[],
+  ): void {
+    try {
+      writeAgentIslandLayoutPreferences(preferences, detachedPreferences);
+    } catch (error) {
+      log.warn('agent island layout preferences migration write failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private displayForNativeId(displayId: number | null, displays: Display[]): Display | null {
+    if (typeof displayId !== 'number' || !Number.isFinite(displayId)) return null;
+    const direct = this.displayById(displays, displayId);
+    // AppKit and Electron expose the same system display id, while their frame
+    // coordinates use different vertical origins. A matching id is therefore
+    // stronger evidence than a full-bounds comparison.
+    if (direct) return direct;
+    const metrics = this.screenMetricsByDisplayId.get(displayId);
+    if (!metrics) return null;
+    const exactBounds = displays.filter((display) => sameDisplayBounds(display.bounds, metrics.frame));
+    if (exactBounds.length === 1) return exactBounds[0] ?? null;
+    const sameSize = displays.filter((display) => (
+      display.bounds.width === metrics.frame.width
+      && display.bounds.height === metrics.frame.height
+    ));
+    return sameSize.length === 1 ? (sameSize[0] ?? null) : null;
+  }
+
+  private displayIdentityForDisplay(display: Display, displays: Display[]): AgentIslandDisplayIdentity {
+    return {
+      displayName: typeof display.label === 'string' && display.label.trim()
+        ? display.label.trim()
+        : undefined,
+      displayIndex: displays.findIndex((item) => item.id === display.id) + 1,
+      displayInternal: Boolean(display.internal),
+      displayBounds: { ...display.bounds },
+    };
   }
 
   private resolveSelectedDisplay(displays: Display[]): Display | null {
@@ -1704,44 +2022,7 @@ export class AgentIslandService {
     displays: Display[],
     target: Extract<AgentIslandDisplayTarget, { mode: 'display' }>,
   ): Display | null {
-    let candidates = displays;
-    const name = target.displayName?.trim();
-    if (name) {
-      candidates = candidates.filter((display) => (
-        typeof display.label === 'string' && display.label.trim() === name
-      ));
-    }
-
-    if (typeof target.displayInternal === 'boolean') {
-      candidates = candidates.filter((display) => (
-        Boolean(display.internal) === target.displayInternal
-      ));
-    }
-
-    const persistedBounds = target.displayBounds;
-    if (persistedBounds) {
-      const exactBounds = candidates.filter((display) => (
-        sameDisplayBounds(display.bounds, persistedBounds)
-      ));
-      if (exactBounds.length === 1) return exactBounds[0] ?? null;
-      if (exactBounds.length > 1) {
-        candidates = exactBounds;
-      } else {
-        const sameSize = candidates.filter((display) => (
-          display.bounds.width === persistedBounds.width
-          && display.bounds.height === persistedBounds.height
-        ));
-        if (sameSize.length === 1) return sameSize[0] ?? null;
-        if (sameSize.length > 1) candidates = sameSize;
-      }
-    }
-
-    if (typeof target.displayIndex === 'number' && target.displayIndex >= 1) {
-      const byIndex = displays[target.displayIndex - 1];
-      if (byIndex && candidates.includes(byIndex)) return byIndex;
-    }
-
-    return candidates.length === 1 ? (candidates[0] ?? null) : null;
+    return findDisplayByIdentity(displays, target);
   }
 
   private normalizePreferredContentWidth(input: {
@@ -1751,6 +2032,7 @@ export class AgentIslandService {
     display: Display;
     screenMetrics: AgentIslandScreenLayoutMetrics | null;
     minimumContentWidth: number;
+    pillSnapshot?: AgentIslandPillSnapshot | null;
   }): number {
     if (input.expanded) {
       return input.desiredWidth;
@@ -1767,6 +2049,7 @@ export class AgentIslandService {
       maxWidth,
       hasSession: input.hasSession,
       screenMetrics: input.screenMetrics,
+      pillSnapshot: input.pillSnapshot,
     });
   }
 
@@ -1775,7 +2058,7 @@ export class AgentIslandService {
     const mainWindowDisplay = mainWindow && !mainWindow.isDestroyed()
       ? screen.getDisplayMatching(mainWindow.getBounds())
       : null;
-    const nativePreferred = this.displayById(displays, this.nativePreferredDisplayId);
+    const nativePreferred = this.displayForNativeId(this.nativePreferredDisplayId, displays);
     if (AGENT_ISLAND_DISPLAY_CONFIG.selectionMode === 'native-preferred-then-xdmaker-window') {
       if (nativePreferred) return nativePreferred;
       if (mainWindowDisplay) return mainWindowDisplay;
@@ -1785,7 +2068,7 @@ export class AgentIslandService {
       if (nativePreferred) return nativePreferred;
     }
     if (AGENT_ISLAND_DISPLAY_CONFIG.preferHardwareNotchFallback) {
-      const notchDisplay = displays.find((display) => this.screenMetricsByDisplayId.get(display.id)?.hasNotch);
+      const notchDisplay = displays.find((display) => this.screenMetricsForDisplay(display)?.hasNotch);
       if (notchDisplay) return notchDisplay;
     }
     if (AGENT_ISLAND_DISPLAY_CONFIG.preferInternalDisplayFallback) {
@@ -1823,12 +2106,27 @@ export class AgentIslandService {
   }
 
   private getScreenLayoutMetrics(display: Display): AgentIslandScreenLayoutMetrics | null {
-    const metrics = this.screenMetricsByDisplayId.get(display.id);
+    const metrics = this.screenMetricsForDisplay(display);
     if (!metrics) return null;
     return {
       hasNotch: metrics.hasNotch,
       notchWidth: metrics.notchWidth,
     };
+  }
+
+  private screenMetricsForDisplay(display: Display): AgentIslandNativeScreenMetrics | null {
+    const direct = this.screenMetricsByDisplayId.get(display.id);
+    if (direct) return direct;
+    const exactBounds = Array.from(this.screenMetricsByDisplayId.values()).filter((metrics) => (
+      sameDisplayBounds(display.bounds, metrics.frame)
+    ));
+    if (exactBounds.length === 1) return exactBounds[0] ?? null;
+    const sameSize = Array.from(this.screenMetricsByDisplayId.values()).filter((metrics) => (
+      metrics.frame.width === display.bounds.width
+      && metrics.frame.height === display.bounds.height
+    ));
+    if (sameSize.length === 1) return sameSize[0] ?? null;
+    return null;
   }
 
   private getEffectiveScreenLayoutMetrics(input: {
@@ -1974,6 +2272,7 @@ function buildAgentIslandStrings(): AgentIslandStrings {
     input: t('agentIsland.native.input'),
     done: t('agentIsland.native.done'),
     running: t('agentIsland.native.running'),
+    networkReconnecting: t('agentIsland.native.networkReconnecting'),
     updatingTasks: t('agentIsland.native.updatingTasks'),
     awaitingPermission: t('agentIsland.native.awaitingPermission'),
     awaitingQuestion: t('agentIsland.native.awaitingQuestion'),
@@ -2033,10 +2332,97 @@ function hasPersistedDisplayIdentity(
     || target.displayBounds !== undefined;
 }
 
-function sameDisplayBounds(
-  a: { x: number; y: number; width: number; height: number },
-  b: { x: number; y: number; width: number; height: number },
+function hasPersistedLayoutIdentity(preference: AgentIslandLayoutPreference): boolean {
+  return Boolean(preference.displayName?.trim())
+    || typeof preference.displayIndex === 'number'
+    || typeof preference.displayInternal === 'boolean'
+    || preference.displayBounds !== undefined;
+}
+
+function findDisplayByIdentity(
+  displays: Display[],
+  identity: AgentIslandDisplayIdentity,
+): Display | null {
+  let candidates = displays;
+  const name = identity.displayName?.trim();
+  if (name) {
+    candidates = candidates.filter((display) => (
+      typeof display.label === 'string' && display.label.trim() === name
+    ));
+  }
+
+  if (typeof identity.displayInternal === 'boolean') {
+    candidates = candidates.filter((display) => (
+      Boolean(display.internal) === identity.displayInternal
+    ));
+  }
+
+  const persistedBounds = identity.displayBounds;
+  if (persistedBounds) {
+    const exactBounds = candidates.filter((display) => (
+      sameDisplayBounds(display.bounds, persistedBounds)
+    ));
+    if (exactBounds.length === 1) return exactBounds[0] ?? null;
+    if (exactBounds.length > 1) {
+      candidates = exactBounds;
+    } else {
+      const sameSize = candidates.filter((display) => (
+        display.bounds.width === persistedBounds.width
+        && display.bounds.height === persistedBounds.height
+      ));
+      if (sameSize.length === 1) return sameSize[0] ?? null;
+      if (sameSize.length > 1) candidates = sameSize;
+    }
+  }
+
+  // Display enumeration order is runtime-local and may change after reconnect,
+  // reboot, or topology changes. An index must never break an otherwise
+  // ambiguous physical-identity match; failing closed keeps the preference
+  // detached instead of assigning it to the wrong monitor.
+  return candidates.length === 1 ? (candidates[0] ?? null) : null;
+}
+
+function sameLayoutPreferenceMap(
+  a: Map<number, AgentIslandLayoutPreference>,
+  b: Map<number, AgentIslandLayoutPreference>,
 ): boolean {
+  if (a.size !== b.size) return false;
+  for (const [displayId, preference] of a) {
+    const other = b.get(displayId);
+    if (!other || !sameLayoutPreference(preference, other)) return false;
+  }
+  return true;
+}
+
+function sameLayoutPreferenceList(
+  a: readonly AgentIslandLayoutPreference[],
+  b: readonly AgentIslandLayoutPreference[],
+): boolean {
+  return (
+    a.length === b.length &&
+    a.every((preference, index) => sameLayoutPreference(preference, b[index] ?? {}))
+  );
+}
+
+function sameLayoutPreference(
+  a: AgentIslandLayoutPreference,
+  b: AgentIslandLayoutPreference,
+): boolean {
+  return a.displayId === b.displayId
+    && a.centerXRatio === b.centerXRatio
+    && a.compactContentWidth === b.compactContentWidth
+    && a.expandedContentWidth === b.expandedContentWidth
+    && a.displayName === b.displayName
+    && a.displayIndex === b.displayIndex
+    && a.displayInternal === b.displayInternal
+    && sameDisplayBounds(a.displayBounds, b.displayBounds);
+}
+
+function sameDisplayBounds(
+  a: { x: number; y: number; width: number; height: number } | null | undefined,
+  b: { x: number; y: number; width: number; height: number } | null | undefined,
+): boolean {
+  if (!a || !b) return a === b;
   return a.x === b.x
     && a.y === b.y
     && a.width === b.width
@@ -2090,13 +2476,11 @@ function getAgentIslandSoundEventForTransition(
 }
 
 function isCompletionDoneEvent(event: AgentEvent): boolean {
-  if (event.type === 'done') return true;
-  if (event.type !== 'status') return false;
-  const data = event.data as { isRunning?: unknown; status?: unknown } | undefined;
-  return data?.isRunning === false && data.status === 'Done';
+  return isProductTurnCompletionTailEvent(event);
 }
 
 function isCancelledTerminalEvent(event: AgentEvent): boolean {
+  if (isTurnContinuationBoundaryEvent(event)) return false;
   if (event.type !== 'done' && event.type !== 'status') return false;
   const data = event.data as { cancelled?: unknown } | undefined;
   return data?.cancelled === true;

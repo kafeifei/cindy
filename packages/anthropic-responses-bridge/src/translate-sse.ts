@@ -2,8 +2,9 @@
  * 流式响应翻译 —— OpenAI Responses SSE → Anthropic Messages SSE(有状态)。
  *
  * 用法:server 逐条 parse 上游 `data:` 行成对象,喂给 `push(event)`,拿回 0..N 条
- * Anthropic SSE 事件顺序写回客户端。上游流结束后调 `finish()` 兜底收尾(极少触发,
- * 正常 response.completed 已收尾)。
+ * Anthropic SSE 事件顺序写回客户端。上游流结束后调 `finish()`:正常 response.completed
+ * 已收尾时它是 no-op,否则按流截断发 error(不合成 message_stop)。非流式调用方走
+ * `pushJson()` 把整个 Responses JSON 喂进同一状态机。
  *
  * Responses 事件序列(Phase0 探针实测):
  *   response.created → in_progress
@@ -106,7 +107,10 @@ export class SseTranslator {
     this.signaturePrefix = slash > 0 ? model.slice(0, slash + 1) : '';
   }
 
-  /** deferred 事件队列(见 DEFERRABLE_TYPES 注释):仅在 tool_use 块打开期间入队。 */
+  /**
+   * deferred 事件队列(见 DEFERRABLE_TYPES 注释):**任一不可打断块**(tool_use / thinking)
+   * 打开期间,其它 item 的 DEFERRABLE_TYPES 事件都会入队 —— 不只是 tool_use。
+   */
   private deferred: unknown[] = [];
 
   /** 当前打开的块是否不可打断(tool_use / thinking,见 DEFERRABLE_TYPES 注释)。 */
@@ -167,6 +171,14 @@ export class SseTranslator {
   }
 
   private handleEvent(e: Record<string, unknown>, type: string, out: AnthropicSseEvent[]): void {
+    // OpenAI 系上游流内错误的惯用形态是 `event: error` + `data: {"error":{...}}` ——
+    // data 帧本身没有 type 字段,原先落 default 分支被静默丢弃,CLI 只能拿到空 200 SSE
+    // 报 "empty or malformed response" 并盲目重试(#941)。正常 Responses 事件一律带
+    // type,无 type 且携带对象 error 字段的帧可无歧义判定为错误帧。
+    if (!type && e.error && typeof e.error === 'object') {
+      this.onFailed(e, out);
+      return;
+    }
     switch (type) {
       case 'response.created':
       case 'response.in_progress': {
@@ -211,21 +223,88 @@ export class SseTranslator {
     }
   }
 
-  /** 上游流意外结束(没收到 response.completed)时兜底收尾。 */
-  finish(): AnthropicSseEvent[] {
+  /**
+   * 上游读流中途失败(reader 抛错)时的收尾:关块 + `error` 事件,**不发**
+   * message_delta/message_stop——已经写出部分内容后再补正常收尾,Claude Code 会把
+   * 截断响应当成正常完成,上游读取错误被完全掩盖(review 反馈 P1)。已收尾(错误帧
+   * 已翻译 / completed 已处理)则返回空,不重复报错。
+   */
+  fail(message: string): AnthropicSseEvent[] {
     if (this.finished) return [];
     const out: AnthropicSseEvent[] = [];
-    // 断流时不再有解锁事件,强制回放暂存队列(fc 块 args 已注定残缺,如实关块)。
-    this.drainDeferred(out, true);
-    this.closeAllOpenBlocks(out);
-    if (this.messageStarted) {
-      out.push({
-        event: 'message_delta',
-        data: { type: 'message_delta', delta: { stop_reason: this.defaultStopReason(), stop_sequence: null }, usage: { output_tokens: 0 } },
-      });
-      out.push({ event: 'message_stop', data: { type: 'message_stop' } });
+    this.emitFailure(message, out);
+    return out;
+  }
+
+  /** 上游流结束时验证已收到 Responses terminal event;否则按截断失败收尾。 */
+  finish(): AnthropicSseEvent[] {
+    if (this.finished) return [];
+    return this.fail('upstream stream ended before response.completed (stream_truncated)');
+  }
+
+  /**
+   * 非流式 Responses JSON → 与 SSE 相同的 Anthropic 事件状态机。
+   *
+   * 先合成标准 Responses 生命周期事件,再复用 push():content block 顺序、reasoning blob、
+   * tool arguments、usage 和 stop reason 因而与流式路径保持一致。
+   */
+  pushJson(raw: unknown): AnthropicSseEvent[] {
+    const response = asRecord(raw);
+    if (Object.keys(response).length === 0) {
+      return this.fail('upstream returned an invalid Responses JSON object');
     }
-    this.finished = true;
+    if (response.status === 'failed' || response.error) {
+      return this.push({ type: 'response.failed', response });
+    }
+    if (response.status !== 'completed' && response.status !== 'incomplete') {
+      return this.fail('upstream returned a non-terminal Responses JSON object');
+    }
+
+    const out: AnthropicSseEvent[] = [];
+    out.push(...this.push({ type: 'response.created', response }));
+    const output = Array.isArray(response.output) ? response.output : [];
+    for (let outputIndex = 0; outputIndex < output.length; outputIndex += 1) {
+      const item = asRecord(output[outputIndex]);
+      const itemType = typeof item.type === 'string' ? item.type : '';
+      out.push(...this.push({ type: 'response.output_item.added', output_index: outputIndex, item }));
+
+      if (itemType === 'message') {
+        const content = Array.isArray(item.content) ? item.content : [];
+        for (const partValue of content) {
+          const part = asRecord(partValue);
+          if (part.type === 'output_text' && typeof part.text === 'string') {
+            out.push(...this.push({
+              type: 'response.output_text.delta',
+              output_index: outputIndex,
+              delta: part.text,
+            }));
+          }
+        }
+      } else if (itemType === 'reasoning') {
+        const summary = Array.isArray(item.summary) ? item.summary : [];
+        for (const partValue of summary) {
+          const part = asRecord(partValue);
+          if (part.type === 'summary_text' && typeof part.text === 'string') {
+            out.push(...this.push({
+              type: 'response.reasoning_summary_text.delta',
+              output_index: outputIndex,
+              delta: part.text,
+            }));
+          }
+        }
+      } else if (itemType === 'function_call' && typeof item.arguments === 'string') {
+        out.push(...this.push({
+          type: 'response.function_call_arguments.delta',
+          output_index: outputIndex,
+          delta: item.arguments,
+        }));
+      }
+
+      out.push(...this.push({ type: 'response.output_item.done', output_index: outputIndex, item }));
+    }
+
+    const status = response.status === 'incomplete' ? 'response.incomplete' : 'response.completed';
+    out.push(...this.push({ type: status, response }));
     return out;
   }
 
@@ -515,9 +594,24 @@ export class SseTranslator {
     if (this.finished) return;
     const resp = asRecord(e.response);
     const err = asRecord(resp.error ?? e.error);
-    const message = typeof err.message === 'string' ? err.message : 'upstream response failed';
-    // 关掉半开的块,再发一条 Anthropic error 事件(SDK 会把它当 turn 级错误处理)。
-    // 已到达的暂存内容先按原序回放,不随失败一起丢。
+    const baseMessage = typeof err.message === 'string' ? err.message : 'upstream response failed';
+    // 上游错误码(code / type,如 context_length_exceeded)一并透传:这是用户判断
+    // 「该压缩还是该换模型」的关键信息,也是 CLI 识别可操作错误的原料。
+    const code =
+      typeof err.code === 'string' && err.code
+        ? err.code
+        : typeof err.type === 'string' && err.type
+          ? err.type
+          : '';
+    const message = code && !baseMessage.includes(code) ? `[${code}] ${baseMessage}` : baseMessage;
+    this.emitFailure(message, out);
+  }
+
+  /**
+   * 失败收尾的公共实现(流内错误帧与 fail() 共用):已到达的暂存内容先按原序回放、
+   * 关掉半开的块,再发一条 Anthropic error 事件(SDK 会把它当 turn 级错误处理)。
+   */
+  private emitFailure(message: string, out: AnthropicSseEvent[]): void {
     this.drainDeferred(out, true);
     this.closeAllOpenBlocks(out);
     out.push({

@@ -84,10 +84,8 @@ export const MODEL_ACCESS_STATUS_CHANNEL = 'model-access:status-change';
 
 /**
  * 服务端下发的网关聊天模型条目(model-access-server GET /models):
- * AIGateway /model-groups 的 mode=chat 投影(存在性 + token 上限权威)+
- * 服务端内置常量表富化(agents/展示元数据)。XD 供应商模型列表的权威来源。
- * 客户端字段优先级:本条目 > 产品目录同 id 条目 > 合成默认
- * (active-catalog setXdGatewayModels)。
+ * 上游 model-groups 的公开字段 + 服务端生成的旧客户端兼容字段。
+ * 新字段优先转换为客户端 Catalog 能力；字段缺失时才回退兼容字段。
  */
 /** 单个 runtime tab 上与基线不同的能力字段(服务端 perAgent 覆盖块,客户端按 agent 应用)。 */
 export interface ModelAccessAgentOverride {
@@ -109,8 +107,8 @@ export interface ModelGroupTieredPricing {
 /**
  * model-access-server 从 AIGateway /model-groups 白名单透传的价格字段。
  * 字段名和数值保持 Gateway 原样（per token）；Desktop 在构建 quote 时才转
- * per-million-token。币种以条目声明的 currency 为准，未声明按 Gateway 原生
- * USD——绝不按构建区域改标或折算。
+ * per-million-token。Cindy AI Gateway 的缺省币种由运行区域决定：CN 为 CNY，
+ * Global 为 USD。
  */
 export interface ModelGroupPricing {
   costDiscount?: number;
@@ -151,14 +149,32 @@ export interface ModelGroupPricing {
   tieredPricing?: ModelGroupTieredPricing[];
 }
 
+/**
+ * Model Access Server 下发的模型条目。
+ *
+ * 同一含义只有一个字段:Gateway 的能力字段(contextLength / maxInputTokens /
+ * supportedEndpoints / reasoning / supportsServiceTier / architecture)由服务端一次
+ * 归一化成这里的 contextWindow / agents / efforts + defaultEffort / supportsFastMode /
+ * modalities,上游原名字段不下发、客户端也不再二次转换(见 model-access/index.ts 的
+ * applyGatewayModels)。旧版服务端只给归一化字段,语义相同,故无需兼容分支。
+ *
+ * 其中 contextLength 与 maxInputTokens 在 Gateway 侧本就同值(文档:contextLength
+ * currently mirrors maxInputTokens),统一由 contextWindow 表达。
+ */
 export interface ModelAccessGatewayModel extends ModelGroupPricing {
   id: string;
   /**
-   * 本条目价格字段的计费币种声明(透传 Gateway)。缺省表示 Gateway 原生口径
-   * USD;客户端不得按构建区域改标或折算——单位永远跟随下发数据。
-   * 注意:本地记账账本是单币种的,只有**每个**条目都显式声明同一非 USD 币种
-   * 时目录才整体切换;与目录币种冲突的声明条目不出报价(费用退回 SDK 实报
-   * USD 兜底),见 modelPriceQuote.resolveGatewayCatalogCurrency。
+   * Gateway 原生 mode(issue #882:权威分类字段,字段值不改名)。原样透传,可能
+   * 缺省(旧缓存 / 服务端尚未覆盖到的模型)——**不代表**本条目已被服务端判定
+   * 为聊天模型,是否可进 Agent availableModels 仍由客户端 isChatEligible 判定
+   * (mode==='chat' 才算;缺省时回退 classification.ts 的 id 正则兜底),见
+   * @cindy/model-providers classifyModel / isChatEligible。
+   */
+  mode?: string;
+  /**
+   * Gateway 原生价格币种,是该账号计价与记账的权威来源;旧版服务端未下发时才按
+   * 运行区域回退。它不保证等于构建区域 —— 结算币种由服务端按账号所属租户下发,
+   * 消费方一律以本字段(或其派生的 currentLedgerCurrency)为准,不按区域推断。
    */
   currency?: 'USD' | 'CNY';
   /** 进哪些 runtime tab;缺省 = 仅 claude-code(网关 /v1/messages 翻译覆盖面最广)。 */
@@ -168,6 +184,8 @@ export interface ModelAccessGatewayModel extends ModelGroupPricing {
   description?: string;
   contextWindow?: number;
   maxOutputTokens?: number;
+  /** 输入 / 输出模态(服务端由 Gateway architecture 归一化而来)。 */
+  modalities?: { input: string[]; output: string[] };
   efforts?: string[];
   defaultEffort?: string | null;
   sortOrder?: number;
@@ -175,6 +193,12 @@ export interface ModelAccessGatewayModel extends ModelGroupPricing {
   supportsFastMode?: boolean;
   /** 是否默认出现在模型选择器;缺省按 true(默认可见)。 */
   defaultEnabled?: boolean;
+  /**
+   * 该模型是哪些 agent 的**新对话默认种子**（源自协议 ListModels v2 的 newSessionDefault，
+   * 服务端权威、按区域下发)。与 sortOrder / defaultEnabled 独立;客户端据它选新对话默认。
+   * 缺省 = 不作为任何 agent 的默认。pi 由客户端从 'claude-code' 投影(见 active-catalog)。
+   */
+  newSessionDefault?: ('claude-code' | 'codex')[];
   /**
    * 展示图标 id(AI Gateway 侧登记,见 @cindy/model-providers CatalogModel.icon /
    * resolveModelIconKind);缺省或未知值客户端回落来源供应商标。

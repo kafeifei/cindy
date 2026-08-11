@@ -6,6 +6,7 @@
   "ossApiBaseUrl": "https://oss.cindy.com.cn",
   "heartbeatUrl": "https://heartbeat.cindy.com.cn",
   "telegramHookWsUrl": "wss://telegram-hook.cindy.app",
+  "xHookWsUrl": "wss://x-hook.cindy.app",
   "slackHookWsUrl": "wss://slack-hook.cindy.app",
   "websiteUrl": "https://cindy.com.cn",
   "modelAccessApiBaseUrl": "https://model-access.cindy.com.cn",
@@ -15,5 +16,6 @@
   "pluginApiBaseUrl": "https://plugin.cindy.com.cn",
   "cdnBaseUrl": "https://hotfix.cindy.com.cn/cindy",
   "mobileUpdateBaseUrl": "https://mobile-update.cindy.com.cn",
+  "authDesktopCallbackUrl": "https://auth.cindy.com.cn/api/auth/desktop/callback",
   "review": "0.1.0"
 }

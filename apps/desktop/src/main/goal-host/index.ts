@@ -12,8 +12,9 @@ import type { Maker } from '@cindy/maker-core';
 
 import { createLogger } from '../logger.js';
 import {
-  applyPendingAgentSwitchForDirectSend,
+  acquirePendingAgentSwitchForDirectSend,
   isSessionInTurn,
+  stopActiveGoalTurnForClear,
 } from '../maker-ipc/register.js';
 import { createMessage } from '../localDb/ipc/messages.js';
 import { readGoalSettings, writeGoalSettings } from '../maker-host/goal-settings-store.js';
@@ -49,8 +50,9 @@ export function startGoalController(deps: StartGoalControllerDeps): GoalControll
         maker: deps.maker,
         warn: (message, meta) => logger.warn(message, meta),
       }),
-    applyPendingAgentSwitch: applyPendingAgentSwitchForDirectSend,
+    acquirePendingAgentSwitch: acquirePendingAgentSwitchForDirectSend,
     isSessionInTurn,
+    stopActiveGoalTurn: stopActiveGoalTurnForClear,
     beforeDispatchUserTurn: deps.beforeDispatchUserTurn,
     onUndispatchedUserTurn: deps.onUndispatchedUserTurn,
     emitStatus: deps.broadcastStatus,

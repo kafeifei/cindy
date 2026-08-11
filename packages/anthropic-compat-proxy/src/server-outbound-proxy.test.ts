@@ -1,8 +1,10 @@
+import dns from 'node:dns';
 import { createServer as createHttpServer } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createAnthropicCompatProxy } from './server.js';
 import { listenOnAvailableLoopbackPort } from './test-loopback-server.js';
+import { startSocks5Stub } from './test-socks5-stub.js';
 import type { ProxyHandle } from './types.js';
 
 /**
@@ -85,6 +87,61 @@ describe('anthropic-compat-proxy outbound proxy wiring', () => {
     expect(connects).toEqual(['upstream.invalid:443']);
   });
 
+  it('tunnels upstreams through SOCKS5 and hands the domain to the proxy unresolved', async () => {
+    const seen: Array<{ url: string; host?: string }> = [];
+    const upstream = createHttpServer((req, res) => {
+      seen.push({ url: req.url ?? '', host: req.headers.host });
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ via: 'socks5' }));
+    });
+    const upstreamPort = await listenOnAvailableLoopbackPort(upstream);
+    cleanups.push(() => new Promise<void>((r) => upstream.close(() => r())));
+    const stub = await startSocks5Stub({ tunnelToPort: upstreamPort });
+    cleanups.push(() => stub.close());
+
+    proxy = await createAnthropicCompatProxy({
+      // 上游用保证不可解析的 .invalid 假域:请求能成功本身就证明域名没有在本地解析,
+      // 而是原样交给了代理(本 feature 修的正是 getaddrinfo ENOTFOUND 那条链路)。
+      upstream: 'http://upstream.invalid:8080/v1',
+      transformRequest: [],
+      resolveOutboundProxy: () => `socks5://127.0.0.1:${stub.port}`,
+    });
+
+    const res = await fetch(`${proxy.url}/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'x', messages: [] }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ via: 'socks5' });
+
+    expect(stub.requests).toEqual([{ atyp: 0x03, host: 'upstream.invalid', port: 8080 }]);
+    // L4 隧道:请求仍是 origin-form,Host 与**直连**时逐字节一致(转发层设的
+    // `host: target.hostname`),没有 HTTP 代理那套绝对形式 + Host 重写。
+    expect(seen).toEqual([{ url: '/v1/messages', host: 'upstream.invalid' }]);
+  });
+
+  it('encodes IPv6 literal upstreams as ATYP=0x04 through the whole forward path', async () => {
+    // 回归:parseUpstream 保留 WHATWG hostname 的方括号,并一路传到 agent 的
+    // options.host。桩直接拒绝 CONNECT(0x05),用例只关心送出去的目标编码。
+    const stub = await startSocks5Stub({ replyCode: 0x05 });
+    cleanups.push(() => stub.close());
+
+    proxy = await createAnthropicCompatProxy({
+      upstream: 'http://[2001:db8::1]:8080',
+      transformRequest: [],
+      resolveOutboundProxy: () => `socks5://127.0.0.1:${stub.port}`,
+    });
+
+    const res = await fetch(`${proxy.url}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'x', messages: [] }),
+    });
+    expect(res.status).toBe(502);
+    expect(stub.requests).toEqual([{ atyp: 0x04, host: '2001:db8:0:0:0:0:0:1', port: 8080 }]);
+  });
+
   it('never consults the resolver for loopback upstreams', async () => {
     const upstream = createHttpServer((_req, res) => {
       res.writeHead(200, { 'content-type': 'application/json' });
@@ -110,42 +167,51 @@ describe('anthropic-compat-proxy outbound proxy wiring', () => {
   });
 
   it('falls back to direct connection when the resolver throws or returns unsupported urls', async () => {
-    let directRequests = 0;
-    const upstream = createHttpServer((_req, res) => {
-      directRequests += 1;
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ direct: true }));
-    });
-    const upstreamPort = await listenOnAvailableLoopbackPort(upstream);
-    cleanups.push(() => new Promise<void>((r) => upstream.close(() => r())));
+    // 本用例是文件里唯一真的对 .invalid 假域做**直连**(前面的用例域名都原样交给
+    // 代理桩,不走本地解析)。macOS 上 NXDOMAIN 即时返回,但 Windows 的解析器会
+    // 带着 DNS 搜索后缀逐个重查,轻松拖过测试超时。桩掉 .invalid 的 lookup 让它
+    // 立即 ENOTFOUND —— 仍走真实 net.connect 失败路径,只是把结果变成确定性的;
+    // 其余域名(本文件只有 IP 字面量,压根不进 lookup)原样放行。
+    const realLookup = dns.lookup;
+    vi.spyOn(dns, 'lookup').mockImplementation(((hostname: string, options: unknown, callback?: unknown) => {
+      const cb = (typeof options === 'function' ? options : callback) as (err: NodeJS.ErrnoException | null) => void;
+      if (!hostname.endsWith('.invalid')) {
+        return (realLookup as (...args: unknown[]) => unknown)(hostname, options, callback);
+      }
+      const err: NodeJS.ErrnoException = Object.assign(
+        new Error(`getaddrinfo ENOTFOUND ${hostname}`),
+        { code: 'ENOTFOUND', syscall: 'getaddrinfo', hostname },
+      );
+      queueMicrotask(() => cb(err));
+    }) as typeof dns.lookup);
+    cleanups.push(() => { vi.restoreAllMocks(); });
 
     const warns: string[] = [];
     proxy = await createAnthropicCompatProxy({
-      // URL parsing keeps 0.0.0.0 distinct from the explicit loopback forms that
-      // bypass the resolver, while Node routes it to this local test server.
-      upstream: `http://0.0.0.0:${upstreamPort}`,
+      upstream: 'http://upstream.invalid:8080',
       transformRequest: [],
       resolveOutboundProxy: () => { throw new Error('resolver boom'); },
       logger: { warn: (msg) => { warns.push(msg); } },
     });
 
-    // resolver 异常不能炸掉请求；fail-open 后必须实际抵达直连上游。
+    // 直连假域必然失败，但必须是上游连接的 502，而非 resolver 异常炸掉请求链路。
     const res = await fetch(`${proxy.url}/v1/messages`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ model: 'x', messages: [] }),
     });
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ direct: true });
+    expect(res.status).toBe(502);
+    expect((await res.json() as { error: { message: string } }).error.message).toContain('upstream unreachable');
     expect(warns.some((m) => m.includes('outbound proxy resolver threw'))).toBe(true);
 
     await proxy.dispose();
 
     const warns2: string[] = [];
     proxy = await createAnthropicCompatProxy({
-      upstream: `http://0.0.0.0:${upstreamPort}`,
+      upstream: 'http://upstream.invalid:8080',
       transformRequest: [],
-      resolveOutboundProxy: () => 'socks5://127.0.0.1:1080',
+      // socks4 仍不支持(无认证、无 IPv6),按不支持的形态回落直连。
+      resolveOutboundProxy: () => 'socks4://127.0.0.1:1080',
       logger: { warn: (msg) => { warns2.push(msg); } },
     });
     const res2 = await fetch(`${proxy.url}/v1/messages`, {
@@ -153,9 +219,8 @@ describe('anthropic-compat-proxy outbound proxy wiring', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ model: 'x', messages: [] }),
     });
-    expect(res2.status).toBe(200);
-    expect(await res2.json()).toEqual({ direct: true });
+    expect(res2.status).toBe(502);
+    expect((await res2.json() as { error: { message: string } }).error.message).toContain('upstream unreachable');
     expect(warns2.some((m) => m.includes('unsupported outbound proxy url'))).toBe(true);
-    expect(directRequests).toBe(2);
   });
 });

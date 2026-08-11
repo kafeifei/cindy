@@ -3,7 +3,9 @@ import { gzipSync, gunzipSync } from 'node:zlib';
 import type { ClientRequest, IncomingMessage } from 'node:http';
 import type { AsrEvent, AsrProvider, AudioTrace } from '@cindy/voice-input-core';
 import { createLogger } from '../logger.js';
+import { createOutboundHttpAgent } from '../maker-host/outbound-fetch.js';
 import { resamplePcm16 } from './RealtimeAsrWebSocketProvider.js';
+import { volcengineSaucLanguageCode } from './language.js';
 import { mergeRecoveredTranscript } from './transcriptMerge.js';
 import { describeAsrHandshakeTraceId, describeAsrWebSocketTarget } from './voiceInputAsrConfig.js';
 
@@ -136,12 +138,17 @@ export class VolcengineSaucAsrProvider implements AsrProvider {
           authorizationToken: this.proxyApiKey!,
         };
     if (this.stopRequested) throw new Error('Volcengine SAUC ASR connection stopped.');
+    // `ws` 不吃系统代理;直连时为 undefined,行为与不传一致。
+    const agent = await createOutboundHttpAgent(connection.websocketUrl);
+    // 解析代理是一次异步往返,期间可能已停录 —— 复查后再建连,不留孤儿 socket。
+    if (this.stopRequested) throw new Error('Volcengine SAUC ASR connection stopped.');
     const socket = new WebSocket(connection.websocketUrl, {
       headers: {
         Authorization: `Bearer ${connection.authorizationToken}`,
         'X-Api-Resource-Id': this.resourceId,
         'X-Api-Connect-Id': buildConnectId(),
       },
+      agent,
     });
     this.socket = socket;
     this.attachSocketHandlers(socket);
@@ -424,6 +431,7 @@ export class VolcengineSaucAsrProvider implements AsrProvider {
   private sendInitialRequest(): void {
     const socket = this.socket;
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    const language = volcengineSaucLanguageCode(this.sourceLanguage);
     socket.send(encodeFullClientRequest({
       user: {
         uid: 'xdt-maker',
@@ -443,9 +451,7 @@ export class VolcengineSaucAsrProvider implements AsrProvider {
         end_window_size: NONSTREAM_END_WINDOW_MS,
         enable_punc: true,
         enable_itn: true,
-        ...(this.sourceLanguage && this.sourceLanguage.toLowerCase() !== 'auto'
-          ? { language: this.sourceLanguage }
-          : {}),
+        ...(language ? { language } : {}),
       },
     }));
   }
