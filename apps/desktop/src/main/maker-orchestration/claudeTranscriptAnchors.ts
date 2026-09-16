@@ -1,5 +1,5 @@
+import { cindyManagedHomeDir } from '../cloudPilotDistribution.js';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 
 const PROJECT_KEY_MAX_LENGTH = 200;

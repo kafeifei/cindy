@@ -1,3 +1,4 @@
+import { cindyManagedHomeDir } from './cloudPilotDistribution.js';
 /**
  * Cross-process state machine for the globally visible Ghost skill projection.
  *
@@ -9,7 +10,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import os from 'node:os';
 
 import { app } from 'electron';
 
@@ -79,11 +79,11 @@ function filePath(): string {
   // This marker deliberately lives beside the shared home-level Ghost skill
   // projection. It must be visible to every Cindy instance using this OS user;
   // profile-scoped application state remains under app.getPath('userData').
-  return path.join(os.homedir(), '.cindy', FILE_NAME);
+  return path.join(cindyManagedHomeDir(), '.cindy', FILE_NAME);
 }
 
 function quarantinePath(): string {
-  return path.join(os.homedir(), '.cindy', QUARANTINE_FILE_NAME);
+  return path.join(cindyManagedHomeDir(), '.cindy', QUARANTINE_FILE_NAME);
 }
 
 function lockPath(): string {

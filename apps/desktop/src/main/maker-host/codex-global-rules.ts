@@ -1,4 +1,4 @@
-import os from 'node:os';
+import { cindyManagedHomeDir } from '../cloudPilotDistribution.js';
 import path from 'node:path';
 import { promises as fsp } from 'node:fs';
 
@@ -36,7 +36,7 @@ interface PathState {
   reason?: string;
 }
 
-export function codexGlobalRulesPaths(codexHome: string, homeDir = os.homedir()) {
+export function codexGlobalRulesPaths(codexHome: string, homeDir = cindyManagedHomeDir()) {
   return {
     codexHome,
     sourceRulesFile: path.join(homeDir, '.codex', CODEX_GLOBAL_RULES_FILE_NAME),

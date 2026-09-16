@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import type { AgentKind as ModelAgent, CatalogModel, ProviderView } from '@cindy/model-providers';
 
 import {
   resolveDeviceLinkDraftDefaults,
+  resolveDeviceLinkDraftAgent,
   shouldReseedDeviceLinkDraftDefaults,
 } from '../deviceLinkDraftDefaults';
 import type { AgentCapabilities } from '@/hooks/useAgentCapabilities';
@@ -432,5 +434,104 @@ describe('capabilities refresh clamp contract', () => {
       permissionMode: undefined,
       providerId: 'anthropic',
     });
+  });
+});
+
+
+function catalogModel(id: string, patch: Partial<CatalogModel> = {}): CatalogModel {
+  return { id, name: id, contextWindow: 200_000, efforts: ['medium', 'high'],
+    defaultEffort: 'medium', ...patch };
+}
+function provider(id: string, agent: ModelAgent, models: CatalogModel[], patch: Partial<ProviderView> = {}): ProviderView {
+  return { id, name: id, source: 'builtin', agents: [agent], connected: true,
+    auth: { method: 'managed' }, access: { kind: 'managed' }, routing: { [agent]: { upstream: 'https://models.example.invalid', authStrategy: 'none' } }, models: { [agent]: models }, ...patch };
+}
+
+describe('remote defaults use the execution host connected catalog', () => {
+  it('does not pick the Opus cold seed from a disconnected subscription', () => {
+    const providers = [
+      provider('anthropic', 'claude-code', [catalogModel('claude-opus-4-8')], { connected: false }),
+      provider('xd', 'claude-code', [catalogModel('usable')]),
+    ];
+    expect(resolveDeviceLinkDraftDefaults(caps(), {
+      model: 'claude-opus-4-8', modelChosenByUser: false,
+    }, undefined, 'claude-code', providers)).toMatchObject({ model: 'usable', providerId: 'xd' });
+  });
+
+  it.each([
+    { connected: false }, { suspended: true },
+    { modelDiscoveryFailure: { kind: 'upstream' as const, at: '2026-09-16T00:00:00Z' } },
+    { routing: { 'claude-code': { disabled: true, upstream: 'https://models.example.invalid', authStrategy: 'none' as const } } },
+  ])('skips unavailable provider routes: %j', (patch) => {
+    const providers = [provider('blocked', 'claude-code', [catalogModel('seed')], patch),
+      provider('valid', 'claude-code', [catalogModel('available')])];
+    expect(resolveDeviceLinkDraftDefaults(caps(), { model: 'seed', modelChosenByUser: false },
+      undefined, 'claude-code', providers)).toMatchObject({ model: 'available', providerId: 'valid' });
+  });
+
+  it('skips payment-required, disabled, retired and non-chat models', () => {
+    const models = [
+      catalogModel('paid', { availability: 'requires_payment' }),
+      catalogModel('disabled', { disabled: true }),
+      catalogModel('retired', { status: 'retired' }),
+      catalogModel('embedding', { mode: 'embedding' }),
+      catalogModel('usable'),
+    ];
+    expect(resolveDeviceLinkDraftDefaults(caps(), null, undefined, 'claude-code',
+      [provider('xd', 'claude-code', models)])).toMatchObject({ model: 'usable', providerId: 'xd' });
+  });
+
+  it('keeps a valid explicit selection over a newly marked recommendation', () => {
+    const models = [catalogModel('recommended', { newSessionDefault: ['claude-code'] }), catalogModel('saved')];
+    expect(resolveDeviceLinkDraftDefaults(caps(), {
+      model: 'saved', providerId: 'xd', modelChosenByUser: true, effort: 'high',
+    }, undefined, 'claude-code', [provider('xd', 'claude-code', models)])).toMatchObject({
+      model: 'saved', providerId: 'xd', effort: 'high',
+    });
+  });
+
+  it('a stale saved selection falls back in the current catalog without mutating the preference', () => {
+    const draft = { model: 'removed', modelChosenByUser: true, providerId: 'xd', effort: 'ultra' };
+    expect(resolveDeviceLinkDraftDefaults(caps(), draft, undefined, 'claude-code',
+      [provider('xd', 'claude-code', [catalogModel('available')])])).toMatchObject({
+      model: 'available', providerId: 'xd', effort: 'medium',
+    });
+    expect(draft.model).toBe('removed');
+  });
+
+  it('an authoritative empty catalog cannot resurrect the Opus placeholder', () => {
+    expect(resolveDeviceLinkDraftDefaults(caps(), { model: 'claude-opus-4-8' },
+      undefined, 'claude-code', [])).toMatchObject({ model: '', providerId: null, fastMode: false });
+  });
+
+  it('the provider actually chosen supplies effort and Fast capabilities', () => {
+    expect(resolveDeviceLinkDraftDefaults(caps(), {
+      model: 'claude-opus-4-8', modelChosenByUser: true, providerId: 'xd', effort: 'xhigh', fastMode: true,
+    }, undefined, 'claude-code', [provider('xd', 'claude-code', [catalogModel('claude-opus-4-8', {
+      efforts: ['medium'], defaultEffort: 'medium', supportsFastMode: false,
+    })])])).toMatchObject({ effort: 'medium', fastMode: false });
+  });
+});
+
+describe('remote engine preference', () => {
+  const availableVendors = new Set(['cc', 'codex', 'pi'] as const);
+  const providers = [provider('xd', 'pi', [catalogModel('z-ai/glm-5.3-flash', {
+    newSessionDefault: ['pi'], supportsImageInput: true,
+  })])];
+  it('a fresh cloud profile uses the existing available default tuple, not the controller engine', () => {
+    expect(resolveDeviceLinkDraftAgent({ currentAgent: 'claude-code',
+      remoteDraft: { preferredAgentKind: 'claude-code', defaultTupleCustomized: false },
+      providers, availableVendors })).toBe('pi');
+  });
+  it('an explicit engine survives changed recommendations', () => {
+    expect(resolveDeviceLinkDraftAgent({ currentAgent: 'claude-code',
+      remoteDraft: { preferredAgentKind: 'codex', defaultTupleCustomized: true },
+      providers: [...providers, provider('xd-codex', 'codex', [catalogModel('saved')])], availableVendors })).toBe('codex');
+  });
+  it('old hosts and unavailable engines do not borrow local login state or invent an engine', () => {
+    expect(resolveDeviceLinkDraftAgent({ currentAgent: 'claude-code', remoteDraft: {}, providers, availableVendors })).toBe('claude-code');
+    expect(resolveDeviceLinkDraftAgent({ currentAgent: 'claude-code',
+      remoteDraft: { preferredAgentKind: 'codex', defaultTupleCustomized: true }, providers,
+      availableVendors: new Set(['cc']) })).toBe('claude-code');
   });
 });

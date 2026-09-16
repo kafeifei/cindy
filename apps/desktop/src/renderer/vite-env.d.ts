@@ -2436,6 +2436,8 @@ interface ElectronAPI {
     appDefaultModelRequestId?: string;
     ownerStamp: import('../shared/dataOwnerPush').DataOwnerPushStamp;
     selectedRoute?: import('../shared/botModelChain').BotModelRoute;
+    vendor?: 'cc' | 'codex' | 'pi';
+    defaultTupleCustomized?: boolean;
     lastByVendor: Partial<
       Record<
         'cc' | 'codex' | 'pi',

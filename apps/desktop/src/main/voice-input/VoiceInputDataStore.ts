@@ -1,3 +1,4 @@
+import { isCloudPilotDistribution } from '../cloudPilotDistribution.js';
 import { app, BrowserWindow, ipcMain } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -529,7 +530,10 @@ export class VoiceInputDataStore {
       }
       this.state = {
         version: 1,
-        settings: getDefaultVoiceInputSettings(process.platform),
+        // A parallel pilot must not install the formal app's default native
+        // hotkey listener. An explicit shortcut saved in this profile still works.
+        settings: { ...getDefaultVoiceInputSettings(process.platform),
+          ...(isCloudPilotDistribution() ? { shortcut: null } : {}) },
         history: [],
       };
       // 读不到投影文件时手上的 settings 是默认空值,拿它去回收等于宣告「用户把

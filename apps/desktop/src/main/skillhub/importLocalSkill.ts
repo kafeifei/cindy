@@ -1,3 +1,4 @@
+import { cindyManagedHomeDir } from '../cloudPilotDistribution.js';
 /**
  * Local skill import — zip or standalone SKILL.md → ~/.agents/skills/<name>/ (or custom installPath).
  *
@@ -6,7 +7,6 @@
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { app } from 'electron';
 import JSZip from 'jszip';
@@ -388,14 +388,14 @@ function resolveFinalDir(
   name: string,
   installPath?: string,
 ): { finalDir: string } | { errorCode: ImportLocalErrorCode; message: string } {
-  return resolveImportInstallPath(name, installPath, os.homedir());
+  return resolveImportInstallPath(name, installPath, cindyManagedHomeDir());
 }
 
 async function reconcileProjectLinks(...skillPaths: string[]): Promise<string | undefined> {
   const projectWorkingDir = skillPaths
     .map((skillPath) => projectWorkingDirFromSkillPath(skillPath))
     .find((workingDir): workingDir is string => Boolean(workingDir));
-  if (!projectWorkingDir || path.resolve(projectWorkingDir) === path.resolve(os.homedir())) {
+  if (!projectWorkingDir || path.resolve(projectWorkingDir) === path.resolve(cindyManagedHomeDir())) {
     return undefined;
   }
   try {
@@ -550,7 +550,7 @@ export async function importLocalSkill(params: ImportLocalParams): Promise<Impor
 
     // Global default path: Claude discovery symlink (same as market install).
     if (!params.installPath) {
-      const claudeLink = path.join(os.homedir(), '.claude', 'skills', name);
+      const claudeLink = path.join(cindyManagedHomeDir(), '.claude', 'skills', name);
       try {
         await ensureSymlinkToShared(claudeLink, finalDir);
       } catch (err) {

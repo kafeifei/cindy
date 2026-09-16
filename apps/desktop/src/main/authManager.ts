@@ -14,6 +14,8 @@
  */
 
 import { BrowserWindow, net, safeStorage, app, shell, powerMonitor } from 'electron';
+import { getInstanceConfig, instanceRefreshDelay } from './instance-runtime/config.js';
+import { acknowledgeInstanceLogin, assertInstanceAuthMutationAllowed, getInstanceSession, instanceAuthReady } from './instance-runtime/host.js';
 import crypto from 'node:crypto';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -3088,6 +3090,10 @@ function scheduleRefresh(token: string): void {
     clearTimeout(refreshTimer);
     refreshTimer = null;
   }
+  if (getInstanceConfig()) {
+    refreshTimer = setTimeout(() => { void refresh(); }, instanceRefreshDelay(token));
+    return;
+  }
   // 续期节奏对 passive 实例不设闸门。本 PR 的契约是「passive 不写/不删共享的
   // auth 持久状态」;「谁负责续期」是正交问题,不在这里解决。让 passive 停止续期
   // 会让它的 access token 过期后再无替换途径(primary 的续期只更新磁盘 token,
@@ -3774,6 +3780,7 @@ async function expireRuntimeAuth(
  * racing teardown and local credential deletion.
  */
 export function invalidateSession(reason: string): Promise<void> {
+  if (getInstanceConfig() && reason !== 'instance-grant-invalid') return Promise.resolve();
   if (sessionInvalidationPromise) return sessionInvalidationPromise;
 
   const rejectedAccountKey =
@@ -3834,6 +3841,7 @@ export async function waitForSessionInvalidation(): Promise<void> {
 // ── Public API ──────────────────────────────────────────────────────────────
 
 export function getAccessToken(): string | null {
+  if (getInstanceConfig() && !instanceAuthReady(accessToken)) return null;
   return accessToken;
 }
 
@@ -3964,6 +3972,7 @@ export async function switchSavedAccount(
     validateBeforeCommit?: (loginEpoch: number) => void;
   } = {},
 ): Promise<void> {
+  assertInstanceAuthMutationAllowed();
   const switchLoginFlowEpoch = loginFlowEpoch;
   const parsedKey = parseDesktopAccountKey(rawAccountKey);
   if (!parsedKey) throw new AuthApiError('INVALID_AUTH_ACTION', 400, 'Invalid account key');
@@ -4068,6 +4077,7 @@ export async function switchSavedAccount(
 }
 
 export async function beginAddAccountLogin(): Promise<DesktopLoginActionResult> {
+  assertInstanceAuthMutationAllowed();
   if (isPassiveSharedUserDataInstance()) {
     throw new AuthApiError(
       'PASSIVE_AUTH_MUTATION_BLOCKED',
@@ -4125,6 +4135,7 @@ export function hasNoPersistedAuthCredentials(): boolean {
 
 /** Enter the account-free local session through the shared projection boundary. */
 export async function enterLocalMode(): Promise<AuthState> {
+  assertInstanceAuthMutationAllowed();
   browserAuthorizationSlot.cancelActive();
   // Local mode has a different data owner. Drop process-local generic OAuth
   // tokens before switching the committed owner so cloud credentials cannot
@@ -4471,7 +4482,34 @@ export async function updateServerProfile(
   };
 }
 
+let managedAuthFlight: Promise<void> | null = null;
+
+function authenticateManagedInstance(): Promise<void> {
+  if (managedAuthFlight) return managedAuthFlight;
+  managedAuthFlight = (async () => {
+    try {
+      const managed = getInstanceSession(authServerUrl(AUTH_REGION), AUTH_REGION, hasNoPersistedAuthCredentials);
+      const pair = await managed.rotate();
+      await completeLogin({ status: 'ok', ...pair });
+    } catch (error) {
+      if (error instanceof AuthApiError && [401, 403].includes(error.statusCode)) {
+        await invalidateSession('instance-grant-invalid');
+      } else {
+        scheduleRefreshRetryAfterTransientFailure();
+      }
+      const code = error instanceof Error && /^INSTANCE_[A-Z_]+$/.test(error.message) ? error.message : 'INSTANCE_AUTH_DEPENDENCY_FAILED';
+      log.warn('instance authentication not ready', { code });
+      throw new Error('INSTANCE_AUTH_NOT_READY');
+    }
+  })().finally(() => { managedAuthFlight = null; });
+  return managedAuthFlight;
+}
+
 export async function initialize(options: AuthInitializeOptions = {}): Promise<AuthState> {
+  if (getInstanceConfig()) {
+    if (!instanceAuthReady(accessToken)) await authenticateManagedInstance();
+    return snapshotAuthState();
+  }
   // A renderer can mount after the boundary-pending broadcast. Keep startup
   // fail-closed until the serialized owner transition settles instead of
   // restoring the outgoing owner's credentials and turns from disk.
@@ -5052,6 +5090,7 @@ async function completeLogin(
     validateBeforeCommit?: (loginEpoch: number) => void;
   } = {},
 ): Promise<AuthFlowState> {
+  assertInstanceAuthMutationAllowed(outcome);
   assertLoginFlowCurrent(expectedLoginFlowEpoch);
   const loginEpoch = ++authStateEpoch;
   const deletionWasRestored =
@@ -5148,6 +5187,7 @@ async function completeLogin(
                 foreignDeviceLocalSignOut = false;
                 currentUser = nextUser;
                 credentialStoreHealth.noteRecovered();
+                acknowledgeInstanceLogin(outcome);
                 if (!isPassiveSharedUserDataInstance()) {
                   canaryFlagStore.clear();
                 }
@@ -5641,6 +5681,7 @@ async function runLoginAction(action: DesktopLoginAction): Promise<DesktopLoginA
 }
 
 export async function dispatchLoginAction(action: unknown): Promise<DesktopLoginActionResult> {
+  assertInstanceAuthMutationAllowed();
   const dispatchLoginFlowEpoch = loginFlowEpoch;
   // Terminal logout clears credentials synchronously, then tears down the old
   // account boundary in the background so the rejecting request can unwind.
@@ -5681,6 +5722,14 @@ export async function dispatchLoginAction(action: unknown): Promise<DesktopLogin
 }
 
 export async function refresh(): Promise<boolean> {
+  if (getInstanceConfig()) {
+    try {
+      await authenticateManagedInstance();
+      return true;
+    } catch {
+      return false;
+    }
+  }
   if (getActiveAppSession().mode === 'local') {
     log.debug('runtime refresh skipped in local mode');
     return false;
@@ -6037,6 +6086,7 @@ function revokeLoggedOutAccountBestEffort(input: {
 }
 
 export async function logout(): Promise<void> {
+  assertInstanceAuthMutationAllowed();
   if (isPassiveSharedUserDataInstance()) {
     throw new AuthApiError(
       'PASSIVE_AUTH_MUTATION_BLOCKED',

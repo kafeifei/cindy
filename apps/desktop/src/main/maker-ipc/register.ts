@@ -5767,7 +5767,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       providerId: p.providerId ?? '',
       modelId: p.modelId,
       active: p.active === true,
-      ...(p.markModelChoice === false ? { markModelChoice: false } : {}),
+      ...(typeof p.markModelChoice === 'boolean' ? { markModelChoice: p.markModelChoice } : {}),
       ...(p.effort !== undefined ? { effort: p.effort } : {}),
       ...(p.fast !== undefined ? { fast: p.fast } : {}),
       ...(p.thinking !== undefined ? { thinking: p.thinking } : {}),

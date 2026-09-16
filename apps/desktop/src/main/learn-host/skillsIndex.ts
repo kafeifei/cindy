@@ -1,3 +1,4 @@
+import { cindyManagedHomeDir } from '../cloudPilotDistribution.js';
 /**
  * skillsIndex.ts —— 已装 skill 清单(learn 的"改 vs 加"决策依据)。
  *
@@ -10,7 +11,6 @@
  */
 
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import matter from 'gray-matter';
 
@@ -53,7 +53,7 @@ export function formatSkillsIndexBlock(entries: InstalledSkillEntry[], truncated
 
 /** 扫描全局 skill 根,读每个 SKILL.md 的 frontmatter name/description。 */
 export async function listInstalledSkills(): Promise<{ entries: InstalledSkillEntry[]; truncatedCount: number }> {
-  const root = path.join(os.homedir(), '.agents', 'skills');
+  const root = path.join(cindyManagedHomeDir(), '.agents', 'skills');
   let dirs: string[];
   try {
     const dirents = (await fs.readdir(root, { withFileTypes: true })).filter(

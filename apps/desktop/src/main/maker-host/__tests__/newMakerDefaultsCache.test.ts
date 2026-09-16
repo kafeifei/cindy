@@ -119,6 +119,20 @@ describe('getRemoteNewMakerDefaults (device-link 远程草稿镜像)', () => {
     });
   });
 
+  it('远程默认携带执行端当前引擎，仍按请求返回各自模型，不改变旧字段含义', () => {
+    seed({
+      vendor: 'codex', defaultTupleCustomized: true,
+      lastByVendor: { cc: { model: 'opus' }, codex: { model: 'sol', providerId: 'xd' } },
+      modelChosenByVendor: { codex: true }, fastModeByModel: {}, effortByModel: {},
+    });
+    expect(getRemoteNewMakerDefaults('claude-code')).toMatchObject({
+      model: 'opus', preferredAgentKind: 'codex', defaultTupleCustomized: true,
+    });
+    expect(getRemoteNewMakerDefaults('codex')).toMatchObject({
+      model: 'sol', providerId: 'xd', modelChosenByUser: true, preferredAgentKind: 'codex',
+    });
+  });
+
   it('reads thinkingEnabled from the provider model memory mirror', () => {
     setProviderModelMemoryCache({
       'pi:cindy-local-ollama': {
@@ -174,16 +188,23 @@ it('does not reuse the selected default route across owners or older snapshots',
 describe('owner-fenced new task and Bot default mirror', () => {
   const owner = { dataOwnerId: 'B', ownerGeneration: 3 };
   const route = { harness: 'codex', model: 'luna', providerId: 'openai', effort: 'medium', fastMode: false } as const;
-  const payload = { ownerStamp: owner, selectedRoute: route, lastByVendor: { codex: { model: 'luna' } }, fastModeByModel: {}, effortByModel: {} };
+  const payload = { ownerStamp: owner, selectedRoute: route, vendor: 'codex' as const,
+    defaultTupleCustomized: true, lastByVendor: { codex: { model: 'luna' } }, fastModeByModel: {}, effortByModel: {} };
   it('uses one accepted snapshot for ordinary task and Bot defaults', () => {
     expect(syncNewMakerDraftCache(payload, owner, 'B:3', false)).toBe(true);
     expect(getSelectedNewMakerRoute('B:3')).toEqual(route);
     expect(getRemoteNewMakerDefaults('codex').model).toBe('luna');
+    expect(getRemoteNewMakerDefaults('codex')).toMatchObject({
+      preferredAgentKind: 'codex', defaultTupleCustomized: true,
+    });
   });
   it.each([undefined, { dataOwnerId: 'A', ownerGeneration: 3 }, { dataOwnerId: 'B', ownerGeneration: 2 }])('rejects unstamped or late account snapshots: %j', (stamp) => {
     syncNewMakerDraftCache(payload, owner, 'B:3', false);
-    expect(syncNewMakerDraftCache({ ...payload, ownerStamp: stamp, selectedRoute: { ...route, model: 'sol' } }, owner, 'B:3', false)).toBe(false);
+    expect(syncNewMakerDraftCache({ ...payload, ownerStamp: stamp, vendor: 'pi', defaultTupleCustomized: false, selectedRoute: { ...route, model: 'sol' } }, owner, 'B:3', false)).toBe(false);
     expect(getSelectedNewMakerRoute('B:3')).toEqual(route);
+    expect(getRemoteNewMakerDefaults('codex')).toMatchObject({
+      preferredAgentKind: 'codex', defaultTupleCustomized: true,
+    });
   });
   it('rejects a snapshot while the account boundary is pending', () => {
     expect(syncNewMakerDraftCache(payload, owner, 'B:3', true)).toBe(false);

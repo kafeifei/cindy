@@ -2709,6 +2709,7 @@ describe('codex proxy host', () => {
           expect.objectContaining({ id: 'responses_item_id_prefix' }),
           expect.objectContaining({ id: 'responses_item_id_length' }),
           expect.objectContaining({ id: 'xai_model_input' }),
+          expect.objectContaining({ id: 'bedrock_unsupported_web_search' }),
         ]),
       }),
     );
@@ -2828,11 +2829,13 @@ describe('codex proxy host', () => {
     expect(proxyOpts.resolveWebSocketUpstream(ctxForThread('thread-encrypted'))).toBeNull();
     expect(proxyOpts.resolveWebSocketUpstream(ctxForThread('thread-id-length'))).toBeNull();
     expect(proxyOpts.resolveWebSocketUpstream(ctxForThread('thread-image'))).toBeNull();
+    expect(proxyOpts.resolveWebSocketUpstream(ctxForThread('thread-search'))).toBeNull();
     expect(proxyOpts.resolveWebSocketUpstream(ctxForThread('thread-safe'))).toBe(
       'https://chatgpt.com/backend-api/codex',
     );
     expect(disconnectWebSocketsForThread).toHaveBeenCalledWith('thread-encrypted');
     expect(disconnectWebSocketsForThread).toHaveBeenCalledWith('thread-image');
+    expect(disconnectWebSocketsForThread).toHaveBeenCalledWith('thread-search');
   });
 
   it.each(['shared', 'custom-context', 'control-plane'] as const)(

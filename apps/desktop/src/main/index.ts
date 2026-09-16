@@ -1,5 +1,6 @@
 // Entry: Electron startup → bootstrap-electron.ts (dynamic import).
 import fixPath from 'fix-path';
+import { resolveCloudPilotDistribution } from './cloudPilotDistribution.js';
 import { ensureMacPackageManagerPath } from './agentToolPath.js';
 import { app } from 'electron';
 import { execFileSync } from 'node:child_process';
@@ -14,6 +15,32 @@ import { resolveRegionUserDataDirName } from './regionUserData.js';
 import { createLogger, initLogger } from './logger.js';
 import { beginDesktopDevInstance, type DesktopDevMode } from './devStartupStatus.js';
 import { ensureSystemBinPathForMachineId } from './deviceId.js';
+import { initializeInstanceConfig } from './instance-runtime/config.js';
+import { initializeProfilePreflight, runProfilePreflight } from './instance-runtime/profile-preflight-stage.js';
+import { initializeProfileMaintenance } from './instance-runtime/profile-maintenance.js';
+
+const cloudPilot = resolveCloudPilotDistribution({ resourcesPath: process.resourcesPath,
+  appData: app.getPath('appData'), packaged: app.isPackaged,
+  region: CURRENT_CINDY_REGION, version: app.getVersion() });
+if (cloudPilot) {
+  app.setPath('userData', cloudPilot.userData);
+  app.setName(cloudPilot.appName);
+  process.env.XDT_USER_DATA_DIR = cloudPilot.userData;
+  process.env.XDT_DEVICE_ID_OVERRIDE = cloudPilot.deviceId;
+  process.env.CLAUDE_CONFIG_DIR = path.join(cloudPilot.managedHome, '.claude');
+  process.env.GH_CONFIG_DIR = path.join(cloudPilot.managedHome, '.config', 'gh');
+  process.env.PI_CODING_AGENT_DIR = path.join(cloudPilot.managedHome, '.pi', 'agent');
+  process.env.XDT_BROWSER_RUNTIME_DIR = path.join(cloudPilot.userData, 'browser-runtime');
+}
+
+const profilePreflight = initializeProfilePreflight();
+const profileMaintenance = profilePreflight ? false : initializeProfileMaintenance();
+const instanceConfig = profilePreflight || profileMaintenance ? null : initializeInstanceConfig();
+if (instanceConfig) {
+  app.setPath('userData', instanceConfig.userDataDir);
+  process.env.XDT_DEVICE_ID_OVERRIDE = instanceConfig.deviceId;
+  app.commandLine.appendSwitch('password-store', 'gnome-libsecret');
+}
 import { configureLinuxPasswordStore } from './linuxPasswordStore.js';
 import { recognizeLinuxUserInstallation, linuxUserDesktopName } from './linuxInstallation.js';
 import { prepareCindyVersionStartup, dispatchCindyVersionStartup } from './cindy-make/versionStartup.js';
@@ -41,7 +68,7 @@ const regionUserDataDirName = resolveRegionUserDataDirName({
   argv: process.argv,
   envUserDataDir: process.env.XDT_USER_DATA_DIR,
 });
-if (regionUserDataDirName) {
+if (regionUserDataDirName && !cloudPilot && !instanceConfig && !profileMaintenance && !profilePreflight) {
   app.setPath('userData', path.join(app.getPath('appData'), regionUserDataDirName));
 }
 // A verified version handoff retains the launching original's profile and keychain identity.
@@ -57,7 +84,7 @@ setDefaultAutoSelectFamilyAttemptTimeout(2500);
 initLogger();
 const log = createLogger('fix-path');
 log.debug(`[fix-path] before PATH=${process.env.PATH ?? ''}`);
-fixPath();
+if (!cloudPilot && !instanceConfig && !profileMaintenance && !profilePreflight) fixPath();
 ensureMacPackageManagerPath();
 log.debug(`[fix-path] after PATH=${process.env.PATH ?? ''}`);
 
@@ -88,6 +115,10 @@ const stripped = stripSensitiveAnthropicEnv();
 if (stripped.length > 0) {
   stderr.write(`[cindy] stripped user-level Anthropic env: ${stripped.join(', ')}\n`);
 }
+
+// The inherited credential redirect is stripped above. Reapply only the signed
+// pilot's own directory after that strip, before any credential consumers load.
+if (cloudPilot) process.env.CLAUDE_CONFIG_DIR = path.join(cloudPilot.managedHome, '.claude');
 
 installInvokeCapture();
 
@@ -287,6 +318,12 @@ if (!process.env.XDT_BROWSER_RUNTIME_DIR) {
 refreshBrowserRuntimeConfigDir();
 
 async function dispatch(): Promise<void> {
+  if (profilePreflight) { await runProfilePreflight(); return; }
+  if (profileMaintenance) {
+    const maintenance = await import('./instance-runtime/profile-maintenance.js');
+    await maintenance.runProfileMaintenance();
+    return;
+  }
   if (await dispatchCindyVersionStartup()) return;
   const cleanupDevInstance = await beginDesktopDevInstance(desktopDevInstanceOptions);
   // Windows updater forceQuit() ends in process.exit(0), which bypasses Electron will-quit.

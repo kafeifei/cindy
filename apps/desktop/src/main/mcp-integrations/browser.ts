@@ -9,8 +9,10 @@ import './browser-runtime-env.js';
 import fs from 'node:fs';
 import nodePath from 'node:path';
 import { app, ipcMain } from 'electron';
+import { configureManagedBrowserText, ownedManagedBrowserEndpoint } from './browser-focused-text.js';
 import {
   createBrowserControlRuntime,
+  insertFocusedBrowserText,
   setBrowserControlRuntimeConfig,
   type BrowserProxyRoute,
   type BrowserControlRuntime,
@@ -317,6 +319,21 @@ const backendController = new BrowserBackendController({
   logger,
 });
 const browserBackendHealthService = new BrowserBackendHealthService(backendController, logger);
+
+configureManagedBrowserText(async (request) => {
+  if (process.platform !== 'linux' || backendController.kind !== 'external' || readBrowserBackendSettings().useRealProfile)
+    throw new Error('Text requires the owned managed browser');
+  const status = await backendController.call({ action: 'status' });
+  const cdpUrl = ownedManagedBrowserEndpoint(status, process.env.XDT_BROWSER_RUNTIME_DIR, MANAGED_PROFILE, request.pid);
+  await insertFocusedBrowserText({
+    ...request, cdpUrl,
+    validate: async () => {
+      if (process.platform !== 'linux' || backendController.kind !== 'external' || readBrowserBackendSettings().useRealProfile)
+        throw new Error('Managed browser changed');
+      await request.validate();
+    },
+  });
+});
 
 /**
  * Main-window webContents accessor — populated by bootstrap-electron via

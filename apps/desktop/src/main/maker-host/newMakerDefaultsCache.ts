@@ -37,6 +37,8 @@ export interface NewMakerDraftSnapshot {
   /** Model picker preferences captured in the same owner-fenced envelope. */
   providerModelMemory?: ProviderModelMemorySnapshot;
   selectedRoute?: BotModelRoute;
+  vendor?: VendorKey;
+  defaultTupleCustomized?: boolean;
   lastByVendor: Partial<Record<VendorKey, VendorPrefsSnapshot>>;
   /** 每个 vendor 是否由用户在 New Maker picker 明确选过模型；旧 renderer 缺省不提供。 */
   modelChosenByVendor?: Partial<Record<VendorKey, boolean>>;
@@ -102,6 +104,9 @@ export function syncNewMakerDraftCache(
   const record = (value: unknown) => !!value && typeof value === 'object' && !Array.isArray(value);
   if (!record(p.lastByVendor) || !record(p.fastModeByModel) || !record(p.effortByModel)) return false;
   setNewMakerDraftCache({
+    ...(['cc', 'codex', 'pi'].includes(p.vendor ?? '') ? { vendor: p.vendor } : {}),
+    ...(typeof p.defaultTupleCustomized === 'boolean'
+      ? { defaultTupleCustomized: p.defaultTupleCustomized } : {}),
     selectedRoute: normalizeBotModelChain([p.selectedRoute])[0],
     ...(record(p.providerModelMemory) ? { providerModelMemory: p.providerModelMemory } : {}),
     lastByVendor: p.lastByVendor!,
@@ -184,6 +189,8 @@ export function getWorkerDefaultsFromNewMaker(
  * 缓存未就绪 / 该 vendor 没草稿 model → 返回空对象,控制端按 capabilities 默认兜底。
  */
 export interface RemoteNewMakerDefaults {
+  preferredAgentKind?: 'claude-code' | 'codex' | 'pi';
+  defaultTupleCustomized?: boolean;
   model?: string;
   /** false = 明确未选过，可应用目录新任务默认；undefined = 旧端未知，保守保留原模型。 */
   modelChosenByUser?: boolean;
@@ -220,6 +227,10 @@ export function getRemoteNewMakerDefaults(
   const providerModelMemory = providerMemoryCache ?? undefined;
   const modelChosenByUser = cache?.modelChosenByVendor?.[vendor];
   const base: RemoteNewMakerDefaults = {
+    ...(cache?.vendor ? { preferredAgentKind:
+      cache.vendor === 'cc' ? 'claude-code' as const : cache.vendor } : {}),
+    ...(typeof cache?.defaultTupleCustomized === 'boolean'
+      ? { defaultTupleCustomized: cache.defaultTupleCustomized } : {}),
     ...(providerModelMemory ? { providerModelMemory } : {}),
     ...(cache ? { worktreeEnabled: cache.worktreeEnabled === true } : {}),
     ...(typeof modelChosenByUser === 'boolean' ? { modelChosenByUser } : {}),

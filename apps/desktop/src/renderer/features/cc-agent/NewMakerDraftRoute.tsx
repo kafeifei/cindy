@@ -275,6 +275,7 @@ import {
 import { isSubscriptionDirectModel } from '../../../shared/subscriptionModels';
 import {
   resolveDeviceLinkDraftDefaults,
+  resolveDeviceLinkDraftAgent,
   shouldReseedDeviceLinkDraftDefaults,
   type DeviceLinkDraftSelection,
   type RemoteDraftDefaults,
@@ -636,7 +637,22 @@ interface DraftTargetRequest {
 export function NewMakerDraftRoute() {
   const { t, i18n } = useTranslation();
   const { dataOwnerId } = useAuth();
-  const draft = useNewMakerDraft();
+  const localDraft = useNewMakerDraft();
+  // 执行端的引擎与本机草稿分开；切回本机时仍保留用户原来的本机选择。
+  const [remoteVendor, setRemoteVendor] = useState<{
+    deviceId: string; ownerId: typeof dataOwnerId; vendor: MakerVendor;
+  } | null>(null);
+  const draft = localDraft.deviceLinkDeviceId &&
+    remoteVendor?.deviceId === localDraft.deviceLinkDeviceId && remoteVendor.ownerId === dataOwnerId
+    ? { ...localDraft, vendor: remoteVendor.vendor }
+    : localDraft;
+  const switchDraftVendor = useCallback((vendor: MakerVendor) => {
+    if (localDraft.deviceLinkDeviceId) {
+      setRemoteVendor({ deviceId: localDraft.deviceLinkDeviceId, ownerId: dataOwnerId, vendor });
+    } else {
+      switchVendor(vendor);
+    }
+  }, [localDraft.deviceLinkDeviceId, dataOwnerId]);
   const location = useLocation();
   const navigate = useNavigate();
   const dialogueTargetRequest = useMemo(
@@ -1465,6 +1481,8 @@ export function NewMakerDraftRoute() {
   const [dlSel, setDlSel] = useState<DeviceLinkDraftSelection | null>(null);
   const dlSeedKeyRef = useRef<string | null>(null);
   const dlSeedCapabilitiesRef = useRef<AgentCapabilities | null>(null);
+  const dlSeedProvidersRef = useRef<typeof deviceProviders | null>(null);
+  const dlAgentSeedRef = useRef<string | null>(null);
   /** 控制端是否编辑过当前设备 / Agent 的远程运行配置；能力刷新不得覆盖这类显式意图。 */
   const dlRuntimeTouchedRef = useRef(false);
   const skipDefaultsRefetchRef = useRef(false);
@@ -1482,7 +1500,7 @@ export function NewMakerDraftRoute() {
       setRemoteDraftState({ status: 'idle', value: null });
       return;
     }
-    const identity = `${effectiveDeviceLinkDeviceId}:${capabilityAgentKind}`;
+    const identity = `${dataOwnerId}:${effectiveDeviceLinkDeviceId}:${capabilityAgentKind}`;
     const sameIdentity = remoteDraftIdentityRef.current === identity;
     remoteDraftIdentityRef.current = identity;
     // handoff 路径已 inline 拉取并 set 了 remoteDraftState,跳过本次 effect 重拉。
@@ -1525,6 +1543,7 @@ export function NewMakerDraftRoute() {
     capabilityAgentKind,
     remoteDraftRefreshEpoch,
     remoteDraftRetryEpoch,
+    dataOwnerId,
   ]);
 
   // seed dlSel:等被控端 capabilities + 草稿值都就绪后播种。切设备 / vendor 必须重种；同一目标
@@ -1533,16 +1552,37 @@ export function NewMakerDraftRoute() {
     if (!isDeviceLinkDraft || !effectiveDeviceLinkDeviceId) {
       dlSeedKeyRef.current = null;
       dlSeedCapabilitiesRef.current = null;
+      dlSeedProvidersRef.current = null;
+      dlAgentSeedRef.current = null;
       dlRuntimeTouchedRef.current = false;
       setDlSel(null);
       return;
     }
     // provider revision 驱逐时 hook 会保留旧快照但标 loading；必须等新代际 ready，不能用 stale
     // capabilities 把 inline handoff 或用户当前选择校准回旧目录。
-    if (!capabilities || capabilitiesLoading || remoteDraftState.status !== 'ready') return;
+    if (!capabilities || capabilitiesLoading || remoteDraftState.status !== 'ready' ||
+      deviceProvidersLoading || (deviceProvidersError && !deviceProvidersUnsupported) ||
+      !availableAgentsLoaded) return;
+    const agentSeedKey = `${dataOwnerId}:${effectiveDeviceLinkDeviceId}`;
+    if (dlAgentSeedRef.current !== agentSeedKey) {
+      dlAgentSeedRef.current = agentSeedKey;
+      if (!dlRuntimeTouchedRef.current || !dlSeedKeyRef.current?.startsWith(`${effectiveDeviceLinkDeviceId}:`)) {
+        const preferredAgent = resolveDeviceLinkDraftAgent({
+          currentAgent: capabilityAgentKind,
+          remoteDraft: remoteDraftState.value,
+          providers: deviceProviders,
+          availableVendors,
+        });
+        if (preferredAgent !== capabilityAgentKind) {
+          switchDraftVendor(preferredAgent === 'claude-code' ? 'cc' : preferredAgent);
+          return;
+        }
+      }
+    }
     const key = `${effectiveDeviceLinkDeviceId}:${capabilityAgentKind}`;
     const newTarget = dlSeedKeyRef.current !== key;
-    const capabilitiesChanged = dlSeedCapabilitiesRef.current !== capabilities;
+    const capabilitiesChanged = dlSeedCapabilitiesRef.current !== capabilities ||
+      dlSeedProvidersRef.current !== deviceProviders;
     if (
       !shouldReseedDeviceLinkDraftDefaults({
         currentSeedKey: dlSeedKeyRef.current,
@@ -1554,6 +1594,7 @@ export function NewMakerDraftRoute() {
     ) {
       if (capabilitiesChanged) {
         dlSeedCapabilitiesRef.current = capabilities;
+        dlSeedProvidersRef.current = deviceProviders;
         // 显式意图只禁止“换成区域默认”，不能把已从新能力清单消失的 model / effort /
         // permission 留在草稿里。用当前控制端选择合成 active draft，只做合法性夹紧。
         setDlSel((current) =>
@@ -1569,6 +1610,8 @@ export function NewMakerDraftRoute() {
                   providerId: current.providerId,
                 },
                 current.model,
+                capabilityAgentKind,
+                deviceProvidersUnsupported ? undefined : deviceProviders,
               )
             : current,
         );
@@ -1577,6 +1620,7 @@ export function NewMakerDraftRoute() {
     }
     dlSeedKeyRef.current = key;
     dlSeedCapabilitiesRef.current = capabilities;
+    dlSeedProvidersRef.current = deviceProviders;
     if (newTarget) dlRuntimeTouchedRef.current = false;
     setDlSel(
       resolveDeviceLinkDraftDefaults(
@@ -1584,6 +1628,7 @@ export function NewMakerDraftRoute() {
         remoteDraftState.value,
         undefined,
         capabilityAgentKind,
+        deviceProvidersUnsupported ? undefined : deviceProviders,
       ),
     );
   }, [
@@ -1593,6 +1638,8 @@ export function NewMakerDraftRoute() {
     capabilities,
     capabilitiesLoading,
     remoteDraftState,
+    deviceProviders, deviceProvidersLoading, deviceProvidersError, deviceProvidersUnsupported,
+    availableAgentsLoaded, availableVendors, dataOwnerId, switchDraftVendor,
   ]);
 
   // 远程草稿展示用:已 seed 用 dlSel;seed 完成前(等隧道 / 能力)先用 capabilities 默认占位,
@@ -1926,6 +1973,7 @@ export function NewMakerDraftRoute() {
         providerId: string | null;
         modelId: string;
         effort?: Effort;
+        markModelChoice?: boolean;
       },
     ) => {
       if (!isDeviceLinkDraft || !effectiveDeviceLinkDeviceId) return;
@@ -1952,7 +2000,8 @@ export function NewMakerDraftRoute() {
               : (dlSel?.providerId ?? deviceLinkInitial?.providerId ?? ''),
             modelId: model,
             active: true,
-            markModelChoice: false,
+            // 显式目标只由选中模型的动作提供；纯 effort / Fast 调整保留原来的选择标记。
+            markModelChoice: target !== undefined && target.markModelChoice !== false,
             ...(activeEffort !== undefined ? { effort: activeEffort } : {}),
             ...(patch.fast !== undefined ? { fast: patch.fast } : {}),
           },
@@ -2518,17 +2567,25 @@ export function NewMakerDraftRoute() {
   // ChatInput 的 initial* 由父级传入,vendor 切换后 ChatInput 重新 mount(key 变化)
   // 自动 pickup 新 vendor 的 lastByVendor 值。
   const handleVendorChange = useCallback((next: MakerVendor) => {
-    markDefaultTupleCustomized();
-    switchVendor(next);
-  }, []);
+    if (isDeviceLinkDraft) dlRuntimeTouchedRef.current = true;
+    else markDefaultTupleCustomized();
+    switchDraftVendor(next);
+  }, [isDeviceLinkDraft, switchDraftVendor]);
 
   // 当前草稿选中的 vendor 变为不可用(如 Pi 未注册 / 被控端无 Pi)时,coerce 到首个可用来源
   // (优先 cc),避免 tablist 卡在被隐藏段、且防止创建出注定 requireAgent 报错的会话。
   // 只在已加载可用性后收敛;fallback 一定可见,收敛一次即稳定(switchVendor 同值早返,不成环)。
   useEffect(() => {
     if (!availableAgentsLoaded) return;
+    if (isDeviceLinkDraft) {
+      if (!availableVendors.has(draft.vendor)) {
+        const fallback = (['cc', 'codex', 'pi'] as const).find((v) => availableVendors.has(v));
+        if (fallback) switchDraftVendor(fallback);
+      }
+      return;
+    }
     fallbackUnavailableVendor(availableVendors);
-  }, [availableAgentsLoaded, availableVendors]);
+  }, [availableAgentsLoaded, availableVendors, isDeviceLinkDraft, draft.vendor, switchDraftVendor]);
 
   // ─── 用户在 ChatInput 改 model/effort/permission 后,落进当前 vendor 的 prefs ──
   // 权限 / 计划模式不是默认模型 tuple：按界面 Harness 的槽写，但不改变 storage 中最新
@@ -2573,6 +2630,12 @@ export function NewMakerDraftRoute() {
           permissionMode: prev?.permissionMode,
           providerId: prev?.providerId ?? null,
         }));
+        pushActiveDraftPref({ effort: resolved.effort, fast: resolved.fastMode }, {
+          agent: capabilityAgentKind,
+          providerId: dlSel?.providerId ?? deviceLinkInitial?.providerId ?? null,
+          modelId: newModelId,
+          effort: resolved.effort,
+        });
         return;
       }
       markDefaultTupleCustomized();
@@ -2586,6 +2649,7 @@ export function NewMakerDraftRoute() {
       remoteDraftState,
       patchActiveTuplePrefs,
       capabilityAgentKind,
+      pushActiveDraftPref, dlSel, deviceLinkInitial,
     ],
   );
   const handleFastModeChange = useCallback(
@@ -2726,7 +2790,7 @@ export function NewMakerDraftRoute() {
       );
       // 必须无条件进入 store 的 rebase：当前 renderer 的 draft.vendor 可能还停在 storage
       // event 到达前的旧 Harness。switchVendor 自身同值早返，不会制造额外写入。
-      switchVendor(selection.vendor);
+      switchDraftVendor(selection.vendor);
       if (isDeviceLinkDraft) {
         dlRuntimeTouchedRef.current = true;
         // ★ 跨引擎选择必须**前置**把 seed key 推到目标引擎(2026-08-17 review 第三轮 G1)。
@@ -2796,6 +2860,7 @@ export function NewMakerDraftRoute() {
             providerId: selection.providerId,
             modelId: selection.modelId,
             ...(selection.effort ? { effort: selection.effort } : {}),
+            markModelChoice: selection.resetToRecommended !== true,
           },
         );
         return;
@@ -2833,6 +2898,7 @@ export function NewMakerDraftRoute() {
       remoteDraftState,
       capabilityAgentKind,
       pushActiveDraftPref,
+      switchDraftVendor,
     ],
   );
 

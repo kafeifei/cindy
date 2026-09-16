@@ -452,6 +452,33 @@ function mockUninstallDropsGhost(failFor?: string): void {
 }
 
 describe('PluginMarketService migration and defaultInstall', () => {
+  it.each(['ledger', 'builtin'])('Agent install preserves an existing %s removal preference', async (source) => {
+    const item = summary();
+    const h = harness([item]);
+    if (source === 'ledger') {
+      h.ledger.upsertInstallation(recordForTest(item));
+      h.ledger.markRemoved(item.ghostId, 'user-1');
+    } else runtime.builtinRemoved.add(item.ghostId);
+    await expect(h.service.install(item.id, {
+      expectedReleaseId: item.currentRelease.id,
+    }, () => {}, { preserveRemovalPreferences: true })).rejects.toThrow('removed by the user');
+    expect(runtime.install).not.toHaveBeenCalled();
+  });
+
+  it('Agent install rechecks removal preferences under the package commit lock', async () => {
+    const item = summary();
+    const h = harness([item]);
+    runtime.install.mockImplementation(async (_file, options) => {
+      h.ledger.upsertInstallation(recordForTest(item));
+      h.ledger.markRemoved(item.ghostId, 'user-1');
+      options.beforeCommitInLock();
+      throw new Error('unreachable');
+    });
+    await expect(h.service.install(item.id, {
+      expectedReleaseId: item.currentRelease.id,
+    }, () => {}, { preserveRemovalPreferences: true })).rejects.toThrow('removed by the user');
+  });
+
   it('backfills the exact raw identity for an unchanged v0.1.61 v2 card record', async () => {
     const rawManifest = {
       schemaVersion: 2 as const,

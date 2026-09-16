@@ -1,19 +1,19 @@
-import os from 'node:os';
+import { cindyManagedHomeDir } from '../../cloudPilotDistribution.js';
 import path from 'node:path';
 import { RegistryError, type SkillScope } from './types.js';
 
 /**
  * 判断 installPath 对应的作用域。
- * 落在 path.join(os.homedir(), '.claude', 'skills', anything) 下 → 'global'
+ * 落在 path.join(cindyManagedHomeDir(), '.claude', 'skills', anything) 下 → 'global'
  * 否则 → 'project'
  * 跨平台:对入参 path.normalize 后再判断;Windows 用 path.sep 比较
  */
 export function deriveScope(installPath: string): SkillScope {
   const norm = path.normalize(installPath);
   const globalBases = [
-    path.join(os.homedir(), '.agents', 'skills'),
-    path.join(os.homedir(), '.claude', 'skills'),
-    path.join(os.homedir(), '.codex', 'skills'),
+    path.join(cindyManagedHomeDir(), '.agents', 'skills'),
+    path.join(cindyManagedHomeDir(), '.claude', 'skills'),
+    path.join(cindyManagedHomeDir(), '.codex', 'skills'),
   ];
   for (const base of globalBases) {
     if (norm.startsWith(base + path.sep) || norm === base) {

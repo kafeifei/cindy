@@ -1,4 +1,4 @@
-import os from 'node:os';
+import { cindyManagedHomeDir } from '../cloudPilotDistribution.js';
 import path from 'node:path';
 import { promises as fsp } from 'node:fs';
 
@@ -91,7 +91,7 @@ async function cleanupLegacyAggregate(codexHome: string): Promise<void> {
   await fsp.rmdir(legacyAggregateDir).catch(() => undefined);
 }
 
-export function codexGlobalSkillsPaths(codexHome: string, homeDir = os.homedir()) {
+export function codexGlobalSkillsPaths(codexHome: string, homeDir = cindyManagedHomeDir()) {
   const skillsDir = path.join(codexHome, 'skills');
   return {
     codexHome,

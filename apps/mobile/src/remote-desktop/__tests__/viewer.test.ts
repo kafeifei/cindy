@@ -464,6 +464,27 @@ describe("remote desktop viewport", () => {
     },
   );
   it.each([
+    '中'.repeat(4095) + '😀tail',
+    '中文Ab😀'.repeat(819) + '\n',
+  ])('commits long IME text once without splitting a surrogate pair', (text) => {
+    const native = viewer();
+    native.send({ type: 'init', epoch: 'unicode', width: 1280, height: 800 });
+    native.send({ type: 'control', enabled: true });
+    native.send({ type: 'keyboard', enabled: true });
+    native.keyboard('compositionstart');
+    native.elements['keyboard-input'].value = '\u200b' + text;
+    native.keyboard('input', { isComposing: true });
+    expect(native.messages.flatMap((message) => message.events ?? []).filter((event) => event.kind === 'text')).toEqual([]);
+    native.keyboard('compositionend');
+    native.keyboard('input', { isComposing: false });
+    native.flush();
+    const chunks = native.messages.flatMap((message) => message.events ?? []).filter((event) => event.kind === 'text').map((event) => event.text!);
+    expect(chunks).toHaveLength(2);
+    expect(chunks.join('')).toBe(text);
+    expect(chunks.every((chunk) => chunk.length <= 4096 && !Array.from(chunk).some((character) => character.length === 1 && /[\ud800-\udfff]/.test(character)))).toBe(true);
+  });
+
+  it.each([
     ["left", 0],
     ["right", 2],
   ] as const)(

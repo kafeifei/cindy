@@ -95,6 +95,8 @@ import { hostCredentialEndpointAllowed } from './pi-provider-transport.js';
 import { hasGrokOAuthLogin } from './grok-oauth-login.js';
 import { isOpenAiSubscriptionProviderId } from './codex-account-auth.js';
 import hostSystemPrompt from './host-system-prompt.md?raw';
+import { getInstanceConfig } from '../instance-runtime/config.js';
+import { appendCloudPluginOauthPrompt } from '../plugin-oauth/prompt.js';
 import piSystemPrompt from './pi-system-prompt.md?raw';
 import { createLogger } from '../logger.js';
 import { readMemorySettings } from './memory-settings-store.js';
@@ -851,7 +853,9 @@ function buildDesktopPiRuntimeConfig(): AgentRuntimeConfig {
   const config: AgentRuntimeConfig = {
     behaviorFlags: (ctx) => ctx.spawnMode === 'remote' ? {} : toolchainThreadCapEnv(),
     // 保留 host 共用身份段,再追加 Pi 专属行为段；maker-core 会整体追加到 Pi 原生 prompt。
-    systemPrompt: composePiSystemPrompt(hostSystemPrompt, piSystemPrompt),
+    get systemPrompt() {
+      return appendCloudPluginOauthPrompt(composePiSystemPrompt(hostSystemPrompt, piSystemPrompt), getInstanceConfig() !== null);
+    },
     // Pi 的 grep 以及 Cindy 覆盖的 find 都固定复用随 Desktop 校验、打包的 rg。
     // 下发绝对路径而非 PATH，避免 Windows 从不受信工作目录优先命中同名 rg.exe。
     managedExecutablePaths: { ripgrep: ripgrepPath },

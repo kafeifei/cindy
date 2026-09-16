@@ -1,5 +1,5 @@
+import { cindyManagedHomeDir } from '../cloudPilotDistribution.js';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { nativeImage } from 'electron';
 
@@ -36,12 +36,12 @@ interface FileEntry {
 export function getLocalThemesDir(): string {
   // 所有消费方（loader / writer / open-dir IPC）都经这里拿路径，先确保一次性搬迁完成。
   migrateLegacyThemesDirOnce();
-  return path.join(os.homedir(), '.cindy', 'themes');
+  return path.join(cindyManagedHomeDir(), '.cindy', 'themes');
 }
 
 /** 品牌迁移前的旧主题目录（2026-07-20 起硬切为 ~/.cindy/themes），仅用于一次性搬迁。 */
 function getLegacyLocalThemesDir(): string {
-  return path.join(os.homedir(), '.xdmaker', 'themes');
+  return path.join(cindyManagedHomeDir(), '.xdmaker', 'themes');
 }
 
 let themesMigrationDone = false;
@@ -72,7 +72,7 @@ function migrateLegacyThemesDirOnce(): void {
   themesMigrationDone = true;
   const oldDir = getLegacyLocalThemesDir();
   // 不走 getLocalThemesDir()（它会回调本函数），直接拼新路径。
-  const newDir = path.join(os.homedir(), '.cindy', 'themes');
+  const newDir = path.join(cindyManagedHomeDir(), '.cindy', 'themes');
   try {
     if (!fs.existsSync(oldDir) || !fs.statSync(oldDir).isDirectory()) return;
     if (fs.existsSync(newDir)) return;

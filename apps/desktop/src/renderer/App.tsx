@@ -44,7 +44,7 @@ import { installSystemNetworkErrorToastListener } from '@/lib/systemNetworkError
 import { installSilentInstallToastListener } from '@/lib/silentInstallToast';
 import { installProviderUpstreamErrorToastListener } from '@/lib/providerUpstreamErrorToast';
 import { installAutoPermissionFallbackToastListener } from '@/lib/autoPermissionFallbackToast';
-import { agentKindToVendor } from '@/components/sidebar/VendorIcon';
+import { applyRemoteDraftPreference } from '@/state/applyRemoteDraftPreference';
 import { installCcMgrUpgradeListener } from '@/state/ccMgrUpgradeStore';
 import {
   preloadLocalCatalogSnapshot,
@@ -56,18 +56,13 @@ import {
   getDraftForOwnerPreferenceSync,
   applyAppDefaultModelSelection,
   subscribeDraft,
-  setEffortForModel,
-  setFastModeForModel,
   setWorktreePreference,
-  patchVendorPrefs,
-  patchVendorPrefsPreservingModelChoice,
 } from '@/state/newMakerDraft';
 import {
   snapshotForSeed,
   setProviderModelChoice,
   setProviderModelEffort,
   setProviderModelFast,
-  setProviderModelThinking,
   subscribeProviderModelMemory,
 } from '@/state/providerModelMemory';
 import {
@@ -126,6 +121,8 @@ function syncNewMakerPrefs(appDefaultModelRequestId?: string) {
   // 不消费这两项,远程草稿镜像才用)。fire-and-forget。
   const selected = draft.lastByVendor[draft.vendor];
   window.electronAPI.syncNewMakerDraft({
+    vendor: draft.vendor === 'orca' ? 'cc' : draft.vendor,
+    defaultTupleCustomized: draft.defaultTupleCustomized,
     ...(appDefaultModelRequestId ? { appDefaultModelRequestId } : {}),
     ownerStamp: { dataOwnerId: owner.dataOwnerId, ownerGeneration: owner.generation },
     selectedRoute: {
@@ -307,38 +304,9 @@ export function App() {
           }
           return;
         }
-        const vendor = agentKindToVendor(agent);
-        if (active) {
-          const patch =
-            markModelChoice === false ? patchVendorPrefsPreservingModelChoice : patchVendorPrefs;
-          const shouldPatchActiveModel = markModelChoice !== false || effort !== undefined;
-          if (shouldPatchActiveModel) {
-            patch(vendor, {
-              // markModelChoice=false 仍要写回当前活动模型:远程新建草稿
-              // pushActiveDraftPref、以及旧控制端换模都走这条 wire。丢掉 model
-              // 会让被控端 lastByVendor 停在旧模型。选模标记由 store 的
-              // preserving 路径单独守住,这里只负责同步当前活动值。
-              model: modelId,
-              providerId: providerId || null,
-              ...(effort !== undefined ? { effort: effort as Effort } : {}),
-            });
-          }
-        }
-        if (effort !== undefined) {
-          if (markModelChoice === true || (active && markModelChoice !== false)) {
-            setProviderModelChoice(agent, providerId, modelId, effort as Effort);
-          } else {
-            setProviderModelEffort(agent, providerId, modelId, effort as Effort);
-          }
-          if (active) setEffortForModel(modelId, effort as Effort); // 旧层兜底保持一致
-        }
-        if (fast !== undefined) {
-          setProviderModelFast(agent, providerId, modelId, fast);
-          if (active) setFastModeForModel(modelId, fast); // 旧层兜底保持一致
-        }
-        if (thinking !== undefined) {
-          setProviderModelThinking(agent, providerId, modelId, thinking);
-        }
+        applyRemoteDraftPreference({
+          agent, providerId, modelId, active, effort, fast, thinking, markModelChoice,
+        });
       },
     );
     const offSession = window.electronAPI.onMakerSessionPrefApply(

@@ -49,3 +49,4 @@ export type {
   BrowserConfig,
   BrowserProfileConfig,
 } from './shim/config-contracts.js';
+export { insertFocusedBrowserText } from './focused-text.js';
