@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createPublicKey, verify } from 'node:crypto';
 import { atomicPrivateWrite } from './store.js';
-import { runtimeEvidenceSchema, sandboxSchema } from './profile-runtime-contract.js';
+import { MAX_RUNTIME_RENDERERS, runtimeEvidenceSchema, sandboxSchema } from './profile-runtime-contract.js';
 export const PROFILE_STATUS='/var/lib/cindy/status/profile-verification.json';
 export function processObservation(pid:number) {
  if(!Number.isSafeInteger(pid)||pid<1)throw new Error('PROFILE_PROCESS_REJECTED');
@@ -35,10 +35,13 @@ export function publishRuntimeEvidence(value:unknown,file=PROFILE_STATUS):void {
  const bytes=Buffer.from(JSON.stringify(parsed));if(bytes.length>16384)throw new Error('PROFILE_EVIDENCE_REJECTED');
  atomicPrivateWrite(file,bytes);
 }
-export async function observeSandbox(invoke:(method:string,params?:Record<string,unknown>,sessionId?:string)=>Promise<any>,expectedPid?:number){
+export async function observeSandbox(invoke:(method:string,params?:Record<string,unknown>,sessionId?:string)=>Promise<any>,expectedPid?:number,observeProcess=processObservation){
  const {processInfo}=await invoke('SystemInfo.getProcessInfo');
+ if(!Array.isArray(processInfo))throw new Error('PROFILE_PROCESS_LIST_REJECTED');
  const browsers=processInfo.filter((p:any)=>p.type==='browser');
  if(browsers.length!==1||(expectedPid!==undefined&&browsers[0].id!==expectedPid))throw new Error('PROFILE_BROWSER_REJECTED');
+ const rendererIds=processInfo.filter((p:any)=>p.type==='renderer').map((p:any)=>p.id);
+ if(rendererIds.length>MAX_RUNTIME_RENDERERS)throw new Error('PROFILE_RENDERER_LIMIT_EXCEEDED');
  const {targetInfos}=await invoke('Target.getTargets');
  const {SANDBOX_PAGE_URL,SANDBOX_PAGE_TEXT}=sandboxPage; // fixed page, never inspect a user's page
  const pages=targetInfos.filter((p:any)=>p.type==='page'&&p.url===SANDBOX_PAGE_URL);
@@ -48,8 +51,8 @@ export async function observeSandbox(invoke:(method:string,params?:Record<string
  const result=await invoke('Runtime.evaluate',{expression:'document.body.textContent',returnByValue:true},sessionId);
  if(result.exceptionDetails||result.result?.value!==SANDBOX_PAGE_TEXT)throw new Error('PROFILE_PAGE_REJECTED');
  } finally {await invoke('Target.detachFromTarget',{sessionId});}
- const renderers=processInfo.filter((p:any)=>p.type==='renderer').map((p:any)=>processObservation(p.id));
- return sandboxSchema.parse({browser:processObservation(browsers[0].id),renderers,rendererDiscovery:'cdp-system-info',pageReadback:'exact'});
+ const renderers=rendererIds.map((pid:number)=>observeProcess(pid));
+ return sandboxSchema.parse({browser:observeProcess(browsers[0].id),renderers,rendererDiscovery:'cdp-system-info',pageReadback:'exact'});
 }
 import * as sandboxPage from './profile-runtime-contract.js';
 export function createResourceClaimVerifier(fetcher:(url:string,init?:RequestInit)=>Promise<Response>=fetch,now=Date.now) {

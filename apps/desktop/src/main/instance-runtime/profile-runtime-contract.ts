@@ -4,17 +4,24 @@ import { createHash } from 'node:crypto';
 const id = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9_.-]*$/u);
 const sha = z.string().regex(/^[a-f0-9]{64}$/u);
 const counter = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+// Plugin logic pages are isolated renderers too. Observe every renderer; do not
+// truncate to the old eight-process preflight budget. 64 entries fit the 16 KiB
+// runtime collector limit. Preflight retains its smaller termination-message cap.
+export const MAX_RUNTIME_RENDERERS = 64;
+export const MAX_PREFLIGHT_RENDERERS = 8;
 export const preflightBindingSchema = z.object({version:z.literal(1),purpose:z.literal('cis-profile-preflight'),
  pilotSha256:sha,layoutSha256:sha,sourcePodUid:id,pvcUid:id,sourceTemplateSha256:sha,
  recoveryScope:z.literal('image-and-cindy-resource'),credentials:z.literal('synthetic-only')}).strict();
 const processSchema = z.object({pid:z.number().int().positive(),startTicks:counter,seccomp:z.literal(2),
  filters:z.number().int().positive(),noNewPrivs:z.literal(1),capEff:z.literal('0000000000000000')}).strict();
-export const sandboxSchema = z.object({browser:processSchema,renderers:z.array(processSchema).min(1).max(8),
+const sandboxFor = (maximum: number) => z.object({browser:processSchema,renderers:z.array(processSchema).min(1).max(maximum),
  rendererDiscovery:z.literal('cdp-system-info'),pageReadback:z.literal('exact')}).strict().superRefine((v,c)=>{
  const pids=[v.browser.pid,...v.renderers.map(p=>p.pid)];
  if(new Set(pids).size!==pids.length||v.renderers.some(p=>p.filters<=v.browser.filters))
  c.addIssue({code:z.ZodIssueCode.custom,message:'additional renderer sandbox required'});
 });
+export const sandboxSchema = sandboxFor(MAX_RUNTIME_RENDERERS);
+export const preflightSandboxSchema = sandboxFor(MAX_PREFLIGHT_RENDERERS);
 export const canonicalObservationSchema = z.object({source:z.enum(['canonical','legacy-cindy-four-keys']),
  backend:z.literal('gnome-libsecret'),sessionId:id,durableRefreshSequence:counter,durableAtMs:counter,
  typ:z.literal('access'),aud:z.literal('cindy'),sub:id,deviceId:id,accountControl:z.literal(false),expiresAtMs:counter}).strict();
@@ -26,7 +33,7 @@ export const telemetrySchema = z.object({version:z.literal(1),deviceId:id,member
  readiness:readinessSchema}).strict();
 export const runtimeEvidenceSchema = telemetrySchema.extend({sandbox:sandboxSchema}).strict();
 const preflightBase = z.object({version:z.literal(1),bindingSha256:sha,podUid:id,observedAtMs:counter,
- architecture:z.enum(['amd64','arm64']),sandbox:sandboxSchema}).strict();
+ architecture:z.enum(['amd64','arm64']),sandbox:preflightSandboxSchema}).strict();
 export const preflightEvidenceSchema = z.discriminatedUnion('role',[
  preflightBase.extend({role:z.literal('candidate'),checks:z.object({canonicalWithoutB:z.literal(true),missingCanonicalRejected:z.literal(true),
  wrongKeyRejected:z.literal(true),sharedKeyringAcrossHomes:z.literal(true)}).strict()}).strict(),
