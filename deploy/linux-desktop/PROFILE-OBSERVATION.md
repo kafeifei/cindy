@@ -5,6 +5,13 @@
 `apps/desktop/src/main/instance-runtime/profile-runtime-wire.ts` 构建的 wire bundle。
 只更新 ASAR 不会替换镜像继承的 supervisor。
 
+云运行、维护和预检入口显式设置 `disable-dev-shm-usage`；supervisor 也给候选与
+旧兼容恢复应用传入该参数。Chromium 共享图像使用既有临时卷中的私有、已取消目录链接的
+文件，避免多个软件渲染窗口耗尽容器默认的 64 MiB `/dev/shm` 后退出。普通 Desktop
+不受影响；不增加内存配额、不改变 Keyring/PVC、不改变 seccomp、NNP 或能力集。
+临时卷磁盘仍可能耗尽，应按实际临时存储容量监测；此参数不宣称解决所有内存不足。
+发布验收须包含原安全上下文中的菜单反复开关、共享内存压力和完整运行观测。
+
 运行观测接受最多 64 个 CDP SystemInfo 发现的 renderer，逐一测量 /proc 的 PID、启动时间、
 Seccomp/filter 数、NoNewPrivs 与 capabilities；不得截取前几个进程。独立的 preflight
 仍最多 8 个，保证 Kubernetes 4 KiB termination receipt 有界。运行证据保留 16 KiB、

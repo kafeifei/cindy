@@ -26,8 +26,8 @@ try{
    }
  }
  child=spawn(candidate?'/opt/cindy/Cindy':'/opt/cindy-rollback/Cindy',
- candidate?['--cloud-instance','--password-store=gnome-libsecret','--remote-debugging-pipe']:
- ['--headless','--cloud-ui','--password-store=gnome-libsecret','--remote-debugging-pipe'],
+ candidate?['--cloud-instance','--password-store=gnome-libsecret','--disable-dev-shm-usage','--remote-debugging-pipe']:
+ ['--headless','--cloud-ui','--password-store=gnome-libsecret','--disable-dev-shm-usage','--remote-debugging-pipe'],
  {env:candidate?process.env:{...process.env,
  CINDY_POD_RESOURCE_REFRESH_TOKEN_FILE:'/run/cindy-profile/bootstrap-disabled',
  XDT_USER_DATA_DIR:'/var/lib/cindy/user-data',CINDY_CLOUD_STATUS_FILE:'/var/lib/cindy/status/status.json',

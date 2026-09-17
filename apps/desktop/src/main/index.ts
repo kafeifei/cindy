@@ -36,6 +36,13 @@ if (cloudPilot) {
 const profilePreflight = initializeProfilePreflight();
 const profileMaintenance = profilePreflight ? false : initializeProfileMaintenance();
 const instanceConfig = profilePreflight || profileMaintenance ? null : initializeInstanceConfig();
+if (instanceConfig || profilePreflight || profileMaintenance) {
+  // Container /dev/shm is only 64 MiB. Software-composited windows and plugins
+  // share it; a failed 256 KiB image allocation terminates the renderer. Use
+  // Chromium's private, unlinked files in the existing ephemeral /tmp instead.
+  // Ordinary Desktop profiles and all sandbox/storage controls stay unchanged.
+  app.commandLine.appendSwitch('disable-dev-shm-usage');
+}
 if (instanceConfig) {
   app.setPath('userData', instanceConfig.userDataDir);
   process.env.XDT_DEVICE_ID_OVERRIDE = instanceConfig.deviceId;
