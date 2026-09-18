@@ -8,7 +8,7 @@ export function initializeCloudDeviceLinkDefaults(userData: string): void {
   try { fd = fs.openSync(file, 'wx', 0o600); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'EEXIST') return; throw error; }
   try {
-    fs.writeFileSync(fd, JSON.stringify({remoteControlEnabled:true,remoteDesktopEnabled:false,
+    fs.writeFileSync(fd, JSON.stringify({remoteControlEnabled:true,remoteDesktopEnabled:true,
       keepAwake:false,revokedControllers:[],disabledControlDeviceIds:[],lastKnownDeviceNames:{}}) + '\n');
     fs.fsyncSync(fd);
   } finally { fs.closeSync(fd); }

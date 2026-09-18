@@ -1,5 +1,13 @@
 # Remote desktop
 
+## Cloud instance defaults
+
+A validated cloud runtime enables both conversation control and remote desktop
+when creating a new profile. Existing settings, including an explicitly disabled
+desktop or a revoked controller, are preserved on subsequent starts. Ordinary
+local Desktop installations keep their existing opt-in defaults. Same-account
+authentication, controller revocation and the single-viewer lease still apply.
+
 ## Desktop viewer
 
 The desktop interaction hierarchy follows a canvas-first approach: device and
