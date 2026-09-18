@@ -1,5 +1,8 @@
 # 运行健康观测
 
+镜像最终打包须遵守 [IMAGE-PACKAGING.md](IMAGE-PACKAGING.md)：保留运行依赖和安全
+入口，压平历史层，每次发布只保留一份应用；瘦身后仍须通过本页的运行验收。
+
 镜像将本目录的 `profile-supervisor.mjs` 放到
 `/usr/local/lib/cindy/profile-supervisor.mjs`，并同批更新由
 `apps/desktop/src/main/instance-runtime/profile-runtime-wire.ts` 构建的 wire bundle。
