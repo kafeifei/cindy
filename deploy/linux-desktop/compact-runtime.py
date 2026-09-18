@@ -2,7 +2,8 @@
 """Repackage a validated image locally without retaining overwritten layers.
 
 No containers are started, no user directories mounted, and nothing is pushed.
-The source must already be present locally under an immutable registry digest.
+The source must already be present locally under an immutable registry digest
+or a Docker image ID. Mutable tags are never accepted as source identities.
 """
 
 import argparse
@@ -73,12 +74,19 @@ def metadata(config):
     return "\n".join(lines)
 
 
-def recipe(source, config):
+def source_reference(source):
+    if re.fullmatch(r"sha256:[a-f0-9]{64}", source):
+        return "cindy-compact-source:" + source.removeprefix("sha256:")
     if not re.fullmatch(r"[A-Za-z0-9._:/-]+@sha256:[a-f0-9]{64}", source):
         raise ValueError("An immutable registry digest is required")
+    return source
+
+
+def recipe(source, config):
+    reference = source_reference(source)
     return f"""# Requires BuildKit Dockerfile frontend >= 1.19 (COPY --exclude).
 # The validated stage is an input only: its old layers never enter the output.
-FROM {source} AS validated
+FROM {reference} AS validated
 FROM scratch AS runtime-base
 COPY --from=validated --exclude=opt/cindy / /
 FROM runtime-base AS runtime
@@ -194,13 +202,30 @@ def main():
     (context / "Dockerfile").write_text(dockerfile)
     (context / ".dockerignore").write_text("*\n!Dockerfile\n")
     save(args.output / "source-image.json", source)
-    for target, tag in [("runtime-base", args.base_tag), ("runtime", args.tag)]:
-        with (args.output / f"build-{target}.log").open("x") as log:
-            subprocess.run([
-                "docker", "build", "--platform", "linux/" + source["Architecture"],
-                "--network", "none", "--target", target, "--tag", tag,
-                "--progress", "plain", str(context),
-            ], stdout=log, stderr=subprocess.STDOUT, check=True)
+    reference = source_reference(args.source)
+    local_alias = reference != args.source
+    if local_alias:
+        # BuildKit resolves a local name, not a bare config ID. Never reuse or
+        # overwrite an occupied alias; the final filesystem proof uses the ID.
+        if subprocess.run(["docker", "image", "inspect", reference],
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+            raise ValueError("Local source alias already exists")
+        docker("image", "tag", source["Id"], reference)
+    try:
+        for target, tag in [("runtime-base", args.base_tag), ("runtime", args.tag)]:
+            if inspect(reference)["Id"] != source["Id"]:
+                raise ValueError("Source identity changed")
+            with (args.output / f"build-{target}.log").open("x") as log:
+                subprocess.run([
+                    "docker", "build", "--platform", "linux/" + source["Architecture"],
+                    "--network", "none", "--target", target, "--tag", tag,
+                    "--progress", "plain", str(context),
+                ], stdout=log, stderr=subprocess.STDOUT, check=True)
+        if inspect(reference)["Id"] != source["Id"]:
+            raise ValueError("Source identity changed")
+    finally:
+        if local_alias and inspect(reference)["Id"] == source["Id"]:
+            docker("image", "rm", reference)
     candidate, base = inspect(args.tag), inspect(args.base_tag)
     save(args.output / "candidate-image.json", candidate)
     save(args.output / "base-image.json", base)

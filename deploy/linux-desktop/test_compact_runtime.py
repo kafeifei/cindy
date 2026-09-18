@@ -23,6 +23,14 @@ class CompactRuntimeTests(unittest.TestCase):
                 compact.recipe(ref, self.config)
         compact.recipe("example.test/runtime@sha256:" + "a" * 64, self.config)
 
+    def test_local_image_id_uses_a_dedicated_alias_without_accepting_mutable_tags(self):
+        source = "sha256:" + "b" * 64
+        self.assertEqual(compact.source_reference(source), "cindy-compact-source:" + "b" * 64)
+        self.assertIn("FROM cindy-compact-source:" + "b" * 64 + " AS validated",
+                      compact.recipe(source, self.config))
+        with self.assertRaises(ValueError):
+            compact.recipe("cindy-compact-source:" + "b" * 64, self.config)
+
     def test_config_that_could_execute_or_hide_files_is_not_silently_dropped(self):
         for field, value in [("OnBuild", ["RUN evil"]), ("Volumes", {"/opt/cindy": {}}),
                              ("Healthcheck", {"Test": ["CMD", "true"]}), ("Shell", ["sh"])]:

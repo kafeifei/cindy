@@ -38,6 +38,12 @@ Temporary containers are created only to export filesystems; they are never
 started and are removed by container ID. The tool does not push images, restart
 clients or update Kubernetes.
 
+For an unpublished local build, `--source sha256:<full-image-ID>` is also accepted.
+The tool reserves a temporary local build alias, checks its identity before and
+after building, and removes only that alias. Filesystem comparison still reads
+the immutable source image ID. Mutable source tags remain rejected; a local
+candidate does not need to be published before it can pass packaging validation.
+
 The verification must pass before publication:
 
 - Every image file has identical bytes, type, owner, group, mode, link target,
