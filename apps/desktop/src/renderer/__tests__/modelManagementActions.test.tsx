@@ -10,6 +10,10 @@ import {
   setModelVisibilityOwner,
 } from '../state/modelVisibilityPrefs';
 
+import { createModelPresentationTestHost } from './modelPresentationTestHost';
+import { __testing as ownerTesting } from '../contexts/dataOwnerGeneration';
+
+let host: ReturnType<typeof createModelPresentationTestHost>;
 const writeFailure = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/toast', () => ({ toast: { error: writeFailure } }));
 
@@ -63,26 +67,20 @@ async function command(key: string) {
 
 beforeEach(async () => {
   writeFailure.mockClear();
-  Object.defineProperty(window, 'electronAPI', {
-    configurable: true,
-    value: {
-      maker: {
-        claimLegacyModelVisibilityOwner: () => ({
-          dataOwnerId: 'management',
-          ownerGeneration: 1,
-          canWriteOwnerScoped: true,
-          canInitialize: true,
-        }),
-        syncModelVisibility: vi.fn(async () => undefined),
-      },
-    },
-  });
   __resetForTest();
+  window.localStorage.clear();
+  host = createModelPresentationTestHost(window.localStorage);
+  host.select('management', 1);
+  host.install();
   await setModelVisibilityOwner('management', 1, 'cloud');
+  expect(host.snapshot().status).toBe('ready');
 });
 afterEach(() => {
   cleanup();
   __resetForTest();
+  ownerTesting.reset();
+  window.localStorage.clear();
+  Reflect.deleteProperty(window, 'electronAPI');
   vi.restoreAllMocks();
 });
 
@@ -124,20 +122,24 @@ it('search and arrangement never write preferences; bulk selection preserves adv
   expect(enabled('pi', 1)).toBe(false);
 });
 
-it('waits for the shared lock and reports asynchronous write failures', async () => {
+it('waits for the Host lock receipt and reports asynchronous write failures', async () => {
   let release!: () => void;
   const held = new Promise<void>((resolve) => { release = resolve; });
-  const request = vi.fn((_key: string, run: () => boolean) => held.then(run));
-  vi.stubGlobal('navigator', { locks: { request } });
-  try {
-    render(<UnifiedModelList provider={provider} />);
-    await command('showAll');
-    expect(enabled('pi')).toBe(false);
-    await act(async () => release());
-    await waitFor(() => expect(enabled('pi')).toBe(true));
-    request.mockRejectedValueOnce(new Error('lock unavailable'));
-    await command('hideAll');
-    await waitFor(() => expect(writeFailure).toHaveBeenCalledWith('settings.providers.models.visibilityWriteFailed'));
-    expect(enabled('pi')).toBe(true);
-  } finally { vi.unstubAllGlobals(); }
+  // 锁已迁入Host；挂起回执而非模拟不再被使用的浏览器锁。
+  const acquire = vi.fn(async () => held);
+  host.options.beforeWrite = acquire;
+  render(<UnifiedModelList provider={provider} />);
+  await command('showAll');
+  expect(acquire).toHaveBeenCalledOnce();
+  expect(host.api.mutate).toHaveBeenCalledOnce();
+  expect(enabled('pi')).toBe(false);
+  expect(host.files.get('management')!.value.visibility.overrides).toEqual({});
+  await act(async () => release());
+  await waitFor(() => expect(enabled('pi')).toBe(true));
+  const beforeFailure = host.snapshot();
+  acquire.mockRejectedValueOnce(new Error('lock unavailable'));
+  await command('hideAll');
+  await waitFor(() => expect(writeFailure).toHaveBeenCalledWith('settings.providers.models.visibilityWriteFailed'));
+  expect(enabled('pi')).toBe(true);
+  expect(host.snapshot()).toEqual(beforeFailure);
 });

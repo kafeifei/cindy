@@ -2,14 +2,13 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useReducer,
 import { createElement, type ReactNode } from 'react';
 
 import {
-  DEFAULT_FAMILY_ID,
-  findFamilyByThemeId,
   resolveFamilyVariant,
   tryGetFamily,
 } from '../themes/families';
 import { onLocalThemesChange } from '../themes/local-themes';
 import { themeService } from '../themes/theme-service';
 import type { ThemeType } from '../themes/types';
+import { getDesktopPreference, setDesktopPreference, useDesktopPreference } from '../state/hostDesktopPreferences';
 
 export type Theme = 'system' | 'light' | 'dark';
 
@@ -25,13 +24,7 @@ interface ThemeContextValue {
   fallbackFromType: ThemeType | null;
 }
 
-const STORAGE_KEY = 'theme';
-const FAMILY_KEY = 'theme.familyId';
 const LOGIN_FIRST_LAUNCH_KEY = 'login.firstLaunchLightShown';
-// Legacy keys (旧版本两个独立 theme id): 读到后迁移到 FAMILY_KEY, 保留旧 key
-// 不清理 —— 避免用户回滚老版本时状态丢失。
-const LEGACY_LIGHT_ID_KEY = 'theme.lightId';
-const LEGACY_DARK_ID_KEY = 'theme.darkId';
 const PREFERS_DARK_QUERY = '(prefers-color-scheme: dark)';
 
 export function resolveIsDark(theme: Theme): boolean {
@@ -44,55 +37,9 @@ export function resolveIsDark(theme: Theme): boolean {
 
 const ThemeContext = createContext<ThemeContextValue | undefined>(undefined);
 
-export function getStoredTheme(): Theme {
-  try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored === 'light' || stored === 'dark' || stored === 'system') {
-      return stored;
-    }
-  } catch {
-    // localStorage may be unavailable
-  }
-  return 'system';
-}
-
-/**
- * 从老的 theme.lightId / theme.darkId 推断 family id。优先级: dark 旧值
- * 的家族 → light 旧值的家族 → null (调用方落到 DEFAULT_FAMILY_ID)。
- * 大部分用户主用深色, 所以 dark 优先。
- */
-function migrateLegacyThemeIds(): string | null {
-  try {
-    const darkLegacy = localStorage.getItem(LEGACY_DARK_ID_KEY);
-    const darkFamily = findFamilyByThemeId(darkLegacy);
-    if (darkFamily) return darkFamily.id;
-    const lightLegacy = localStorage.getItem(LEGACY_LIGHT_ID_KEY);
-    const lightFamily = findFamilyByThemeId(lightLegacy);
-    if (lightFamily) return lightFamily.id;
-  } catch {
-    // localStorage may be unavailable
-  }
-  return null;
-}
-
-export function getStoredFamilyId(): string {
-  try {
-    const stored = localStorage.getItem(FAMILY_KEY);
-    if (stored && tryGetFamily(stored)) return stored;
-  } catch {
-    // localStorage may be unavailable
-  }
-  const migrated = migrateLegacyThemeIds();
-  if (migrated) {
-    try {
-      localStorage.setItem(FAMILY_KEY, migrated);
-    } catch {
-      // localStorage may be unavailable
-    }
-    return migrated;
-  }
-  return DEFAULT_FAMILY_ID;
-}
+/** 首次同步读取 Host；仅在迁移未完成时保留旧偏好作为启动缓存。 */
+export function getStoredTheme(): Theme { return getDesktopPreference('theme'); }
+export function getStoredFamilyId(): string { return getDesktopPreference('themeFamilyId'); }
 
 function resolveActiveTheme(mode: Theme) {
   const isDark = resolveIsDark(mode);
@@ -250,60 +197,36 @@ export function ThemeProvider({
   children: ReactNode;
   syncWindowVibrancy?: boolean;
 }) {
-  const [theme, setThemeState] = useState<Theme>(getStoredTheme);
-  const [familyId, setFamilyIdState] = useState<string>(getStoredFamilyId);
+  const theme = useDesktopPreference('theme');
+  const familyId = useDesktopPreference('themeFamilyId');
   // 跟踪系统色偏好, 让 fallbackFromType 在 OS theme 变化时也能正确刷新。
   const [systemPrefersDark, setSystemPrefersDark] = useState<boolean>(() =>
     typeof window === 'undefined' || typeof window.matchMedia !== 'function'
       ? false
       : window.matchMedia(PREFERS_DARK_QUERY).matches,
   );
-  // Invalidate memos that depend on family membership when local themes change.
-  // Read latest values from storage to avoid closure staleness races.
+  // 本地主题内容变化时刷新家族缓存；读取最新 Host 确认值，避免闭包保留旧偏好。
   const [localThemeRev, bumpLocalThemeRev] = useReducer((n: number) => n + 1, 0);
   useEffect(() => onLocalThemesChange(() => {
-    let rawFamily: string | null = null;
-    try { rawFamily = localStorage.getItem(FAMILY_KEY); } catch { /* ok */ }
-    if (rawFamily && !tryGetFamily(rawFamily)) {
-      const fallback = DEFAULT_FAMILY_ID;
-      setFamilyIdState(fallback);
-      try { localStorage.setItem(FAMILY_KEY, fallback); } catch { /* ok */ }
-    }
+    // 保留暂不可用的本地家族选择；加载或删除主题文件不得改写已保存的 ID。
     bumpLocalThemeRev();
     applyThemeClass(getStoredTheme(), true);
   }), []);
 
   const setTheme = useCallback((next: Theme) => {
-    setThemeState(next);
-    try {
-      localStorage.setItem(STORAGE_KEY, next);
-    } catch {
-      // localStorage may be unavailable
-    }
-    applyThemeClass(next);
+    void setDesktopPreference('theme', next);
+  }, []);
+  const setFamily = useCallback((next: string) => {
+    if (tryGetFamily(next)) void setDesktopPreference('themeFamilyId', next).then(saved => {
+      // 同 ID 的本地主题内容可能已刷新；只有 Host 成功回执后才重新应用。
+      if (saved) applyThemeClass(getStoredTheme(), true);
+    });
   }, []);
 
-  const setFamily = useCallback(
-    (next: string) => {
-      if (!tryGetFamily(next)) return;
-      setFamilyIdState(next);
-      try {
-        localStorage.setItem(FAMILY_KEY, next);
-      } catch {
-        // localStorage may be unavailable
-      }
-      // 本地主题可在 ID 不变时刷新配置，必须重新 apply 才会更新 CSS 与品牌素材订阅者。
-      applyThemeClass(theme, true);
-    },
-    [theme],
-  );
-
-  // setFamily / setTheme 各自已经调过 applyThemeClass; 这个 effect 只处理
-  // 初始挂载和 mode 变化 (setTheme 内部 set state 之后这里再跑一次也无害, 因为
-  // applyThemeClass 内部对相同结果做了 dataset 对比短路)。
+  // 初次挂载或 Host 确认的 mode/family 变化统一应用主题；跨窗口回执也走这里。
   useEffect(() => {
     applyThemeClass(theme);
-  }, [theme]);
+  }, [theme, familyId]);
 
   useEffect(() => {
     window.electronAPI?.setUpdateRelaunchTheme?.(
@@ -328,32 +251,9 @@ export function ThemeProvider({
     };
   }, [theme]);
 
-  // 跨窗口主题同步:其他窗口切 theme/familyId 时(localStorage storage 事件,
-  // 本窗口 setItem 不触发 storage)刷新本窗口 state + 重应用主题,否则已打开的
-  // sidebar-window/副窗在主窗切 CINDY/亮暗时不跟随(B 实证 bug,计划 D2-3)。
-  useEffect(() => {
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === STORAGE_KEY) {
-        const next = e.newValue;
-        if (next === 'light' || next === 'dark' || next === 'system') {
-          setThemeState(next);
-          applyThemeClass(next);
-        }
-      } else if (e.key === FAMILY_KEY) {
-        const next = e.newValue;
-        if (next && tryGetFamily(next)) {
-          setFamilyIdState(next);
-          applyThemeClass(getStoredTheme());
-        }
-      }
-    };
-    window.addEventListener('storage', onStorage);
-    return () => window.removeEventListener('storage', onStorage);
-  }, []);
-
   // E4D 毛玻璃(R1 audit,用户裁决透壁纸 2026-07-17):family/theme 变化或 mount 时
   // 通知 main 开关 macOS vibrancy(仅 CINDY family 启用,其他恢复不透明)。覆盖
-  // setFamily/storage 跨窗口同步/mount 三个场景(任一变化都重应用)。
+  // 本窗口提交、Host 跨窗口回执、挂载三个场景(任一变化都重应用)。
   useEffect(() => {
     if (!syncWindowVibrancy) return;
     window.electronAPI?.theme?.applyVibrancy?.(

@@ -3,12 +3,11 @@ import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createModelVisibilityMirror } from '../../../desktop/src/shared/modelVisibilityMirror';
 import {
-  clearModelVisibilityMirror,
-  getModelVisibilityMirrorSnapshot,
-  setModelVisibilityMirror,
-  waitForModelVisibilityMirror,
-} from '../../../desktop/src/main/maker-host/model-visibility-mirror';
+  emptyModelPresentationPreferences,
+  type ModelPresentationPreferencesSnapshot,
+} from '../../../desktop/src/shared/modelPresentationPreferences';
 import {
   clearAllDeviceProviders,
   evictDeviceProviders,
@@ -18,6 +17,24 @@ import {
 import { useDeviceProviders, type UseDeviceProvidersResult } from '@/device-link/useDeviceProviders';
 import { canUseFlatModelFallback } from '@/session/modelPickerSheetModel';
 import { resolveNewSessionAutoDefault } from '@/session/newSession';
+
+const ownerStamp = { dataOwnerId: 'owner-a', ownerGeneration: 1 };
+let hostSnapshot: ModelPresentationPreferencesSnapshot = {
+  status: 'unavailable', ownerStamp: null, revision: null,
+};
+const hostListeners = new Set<() => void>();
+// 运行与 Desktop 薄适配器完全相同的 mirror；只注入 Host 正本读取与通知，不引入 Main 类型图。
+const {
+  clearModelVisibilityMirror,
+  getModelVisibilityMirrorSnapshot,
+  waitForModelVisibilityMirror,
+} = createModelVisibilityMirror({
+  inspectModelPresentationPreferences: () => hostSnapshot,
+  onModelPresentationPreferencesChanged: (listener) => {
+    hostListeners.add(listener);
+    return () => { hostListeners.delete(listener); };
+  },
+});
 
 const transport = vi.hoisted(() => ({ listProviders: vi.fn(), epoch: 0 }));
 vi.mock('@/device-link/DeviceLinkContext', () => ({ useDeviceLink: () => ({
@@ -45,7 +62,19 @@ function allowsFlatFallback(): boolean {
     browsingOtherAgent: false,
   });
 }
+/** Host 初始化完成后发布新正本；不通过旧 Renderer setter 制造就绪状态。 */
+function seedHostVisibility(overrides: Record<string, boolean>): void {
+  const value = emptyModelPresentationPreferences();
+  value.visibility.overrides = { ...overrides };
+  hostSnapshot = { status: 'ready', initialized: true, ownerStamp, revision: 'ready', value };
+  for (const listener of hostListeners) listener();
+}
 beforeEach(() => {
+  // 对应已提交 owner 但 Host 文件尚未初始化的状态。
+  hostSnapshot = {
+    status: 'pending-migration', initialized: false, ownerStamp, revision: 'pending',
+    value: emptyModelPresentationPreferences(),
+  };
   clearAllDeviceProviders();
   clearModelVisibilityMirror();
   vi.useFakeTimers();
@@ -112,7 +141,7 @@ describe('mobile provider visibility readiness', () => {
         effortDisplayNames: {}, defaultEffort: 'medium', supportsFastMode: false,
         newSessionDefault: ['codex'] }],
     })).toBeNull();
-    setModelVisibilityMirror({ 'codex:xd:hidden': false }, { fallback: false });
+    seedHostVisibility({ 'codex:xd:hidden': false });
     await act(async () => { await vi.advanceTimersByTimeAsync(900); });
     expect(state).toMatchObject({ ready: true, error: null, modelVisibilityOverrides: { 'codex:xd:hidden': false } });
     expect(allowsFlatFallback()).toBe(false);
@@ -128,7 +157,7 @@ describe('mobile provider visibility readiness', () => {
     expect(state.loading).toBe(true);
     expect(state.error).toBeNull();
     expect(allowsFlatFallback()).toBe(false);
-    setModelVisibilityMirror({ 'codex:xd:hidden': false }, { fallback: false });
+    seedHostVisibility({ 'codex:xd:hidden': false });
     await act(async () => { await vi.runAllTimersAsync(); });
     expect(transport.listProviders).toHaveBeenCalledTimes(2);
     expect(state).toMatchObject({ ready: true, error: null, modelVisibilityOverrides: { 'codex:xd:hidden': false } });

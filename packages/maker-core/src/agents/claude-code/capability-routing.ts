@@ -62,6 +62,41 @@ export function buildClaudeAskUserQuestionCallerProvenanceHooks(): Partial<Recor
   return { PreToolUse: [{ matcher: CLAUDE_ASK_USER_QUESTION_TOOL_NAME, hooks: [guardTool] }] };
 }
 
+const HOST_SETTINGS_TOOLS = new Set([
+  'list_settings', 'get_settings', 'update_settings', 'get_settings_operation',
+]);
+export const CLAUDE_SUBAGENT_HOST_SETTINGS_DENIAL_REASON =
+  'NATIVE_SUBAGENT_HOST_SETTINGS_NOT_ALLOWED: Host 设置及其目录只能由根任务访问；请向父代理报告需求。其它 helper 类目可按明确 category 查询。';
+
+/** SDK 的 agent_id 是逐调用来源；继承的 MCP 闭包仍绑定父任务，不能据此认定根调用。 */
+export function buildClaudeHostSettingsCallerProvenanceHooks(): Partial<Record<HookEvent, HookCallbackMatcher[]>> {
+  const guardTool: HookCallback = async (input) => {
+    if (input.hook_event_name !== 'PreToolUse') return { continue: true };
+    const pre = input as PreToolUseHookInput;
+    if (pre.agent_id === undefined || pre.agent_id === '') return { continue: true };
+    const args = pre.tool_input && typeof pre.tool_input === 'object' && !Array.isArray(pre.tool_input)
+      ? pre.tool_input as Record<string, unknown>
+      : {};
+    // 无 category 的总览也会暴露 settings；保留其它明确类目的发现与分派。
+    const isDiscovery = pre.tool_name === 'mcp__cindy_helper__list_tools'
+      && (!args.category || args.category === 'settings');
+    const isSettingsCall = pre.tool_name === 'mcp__cindy_helper__call_tool'
+      && typeof args.name === 'string' && HOST_SETTINGS_TOOLS.has(args.name);
+    if (!isDiscovery && !isSettingsCall) return { continue: true };
+    return {
+      continue: true,
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: CLAUDE_SUBAGENT_HOST_SETTINGS_DENIAL_REASON,
+      },
+    };
+  };
+  return {
+    PreToolUse: [{ matcher: '^mcp__cindy_helper__(list_tools|call_tool)$', hooks: [guardTool] }],
+  };
+}
+
 function isClaudeSkillDirective(directive: CapabilityRouteOverride): boolean {
   return (
     directive.source.surface === 'skill' &&

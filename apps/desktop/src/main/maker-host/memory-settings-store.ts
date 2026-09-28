@@ -1,3 +1,4 @@
+import { validateAdditionalSettingsOverrides } from '../../shared/settingsEditableCatalog.js';
 /**
  * memory-settings-store —— memory 开关的 main 端持久化 source of truth。
  *
@@ -29,7 +30,18 @@ import {
 } from './override-settings-file.js';
 import { getActiveAppSession, ownerScopedUserDataPath } from '../appSessionState.js';
 
+import { inspectSettingsFile, isSettingBoolean, validateOptionalSettingsFields } from './settings-inspection.js';
+
 const log = desktopMakerLogger.child('memory-settings-store');
+
+/** 调用方传入已捕获的 owner 目录；此入口不得加载或修复会话意图。 */
+export function inspectMemorySettings(ownerRoot: string) {
+  return inspectSettingsFile({ filePath: () => settingsFilePath(ownerRoot), defaults: DEFAULTS, normalize,
+    validate: (raw) => validateOptionalSettingsFields(raw, {
+      maker: isSettingBoolean, claudeCode: isSettingBoolean, codex: isSettingBoolean, pi: isSettingBoolean,
+    }),
+  });
+}
 
 export interface MemorySettings {
   maker: boolean;
@@ -68,6 +80,7 @@ function currentStore(rootPath?: string) {
   let current = stores.get(key);
   if (!current) {
     current = createOverrideSettingsFile<MemorySettings>({
+  validateOverrides: raw => validateAdditionalSettingsOverrides('memory', raw),
       filePath: () => settingsFilePath(ownerRoot ?? undefined),
       defaults: DEFAULTS,
       normalize,
@@ -134,3 +147,6 @@ export function preserveLegacyMakerMemoryDisabled(
 export function resetMemorySettings(): MemorySettings {
   return currentStore().reset();
 }
+
+/** Internal Host settings adapter; no new IPC or persistence location. */
+export function getMemorySettingsStore() { return currentStore(); }

@@ -399,6 +399,11 @@ export async function setActiveBrowserBackendKind(kind: BackendKind): Promise<vo
   await backendController.setKind(kind);
 }
 
+/** Internal settings transaction: keep CAS persistence inside the native switch queue. */
+export function commitHostBrowserBackendKind(kind: BackendKind, persist: () => Promise<void>): Promise<boolean> {
+  return backendController.setKind(kind, persist);
+}
+
 async function stopExternalRuntimeIfUsed(): Promise<void> {
   const useRealProfile = readBrowserBackendSettings().useRealProfile;
   const patch = managedConfigPatchBeforeStop({

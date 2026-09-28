@@ -16,6 +16,7 @@ import {
 import { __resetGhostPanelWindowsStateForTest } from '../../lib/ghostPanelWindowState';
 import { GhostPanelRestoreEntry } from '../GhostPanelRestoreEntry';
 import { __resetInstalledGhostsStoreForTest } from '../useInstalledGhosts';
+import { installDesktopPreferencesHarness, settleDesktopPreferences } from '../../__tests__/desktopPreferencesHarness';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -43,13 +44,14 @@ function ghost(id: string): InstalledGhost {
   };
 }
 
-function stubGhostsBridge(ghosts: InstalledGhost[]): void {
+function stubGhostsBridge(ghosts: InstalledGhost[]) {
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     ghosts: {
       listSync: () => ({ ghosts }),
       onChanged: () => () => undefined,
     },
   };
+  return installDesktopPreferencesHarness({});
 }
 
 afterEach(() => {
@@ -63,13 +65,14 @@ afterEach(() => {
 });
 
 describe('GhostPanelRestoreEntry', () => {
-  it('气泡模式或没有最小化面板时不占侧栏位置', () => {
-    stubGhostsBridge([ghost('a')]);
+  it('气泡模式或没有最小化面板时不占侧栏位置', async () => {
+    const host = stubGhostsBridge([ghost('a')]);
     minimizeGhostPanel('a');
     const view = render(<GhostPanelRestoreEntry variant="row" />);
     expect(screen.queryByTestId('ghost-panel-restore-entry')).toBeNull();
 
-    act(() => setGhostPanelRestoreMode('sidebar'));
+    await act(async () => { setGhostPanelRestoreMode('sidebar'); await settleDesktopPreferences(); });
+    expect(host.snapshot()).toMatchObject({ value: { ghostPanelRestoreMode: 'sidebar' } });
     const trigger = screen.getByTestId('ghost-panel-restore-entry');
     expect(screen.getByTestId('ghost-panel-restore-label').textContent).toBe('a 面板');
     expect(trigger.getAttribute('title')).toBe('a 面板');
@@ -83,11 +86,12 @@ describe('GhostPanelRestoreEntry', () => {
     view.unmount();
   });
 
-  it('多个面板显示聚合入口并从菜单恢复指定面板', () => {
-    stubGhostsBridge([ghost('a'), ghost('b')]);
+  it('多个面板显示聚合入口并从菜单恢复指定面板', async () => {
+    const host = stubGhostsBridge([ghost('a'), ghost('b')]);
     minimizeGhostPanel('a');
     minimizeGhostPanel('b');
-    setGhostPanelRestoreMode('sidebar');
+    await act(async () => { setGhostPanelRestoreMode('sidebar'); await settleDesktopPreferences(); });
+    expect(host.snapshot()).toMatchObject({ value: { ghostPanelRestoreMode: 'sidebar' } });
     render(<GhostPanelRestoreEntry variant="row" />);
 
     const trigger = screen.getByTestId('ghost-panel-restore-entry');

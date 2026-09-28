@@ -105,6 +105,11 @@ function ensureLoaded(): ActiveAppSession {
   return active;
 }
 
+/** Pure inspection for settings projection; never loads or repairs persisted session intent. */
+export function peekCommittedAppSession(): ActiveAppSession | null {
+  return active ? { ...active } : null;
+}
+
 /** Read the last committed stable session. */
 export function getActiveAppSession(): ActiveAppSession {
   return { ...ensureLoaded() };

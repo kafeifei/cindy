@@ -34,6 +34,15 @@ import { getManagedWorktreeBasePath } from '../../shared/managedWorktreePaths';
 
 const STORAGE_KEY = 'xdt:newMakerDraft:v1';
 let activeDataOwnerId: string | null = null;
+let hostPreferenceWriter: (() => void) | null = null;
+export function configureHostDraftPersistence(writer: (() => void) | null): void { hostPreferenceWriter = writer; }
+/** Host 接线启用后，目录变化只能由执行端重算，Renderer 不再偷偷选择替代型号。 */
+export function hasHostDraftPreferences(): boolean { return typeof window !== 'undefined' && !!window.electronAPI?.hostSettings; }
+export function applyHostDraftPreferences(preferences: Partial<NewMakerDraft>): void {
+  currentDraft = { ...currentDraft, ...preferences, lastByVendor: { ...currentDraft.lastByVendor, ...preferences.lastByVendor } };
+  preferenceSyncFallback = null;
+  emit();
+}
 
 function storageKey(): string {
   return activeDataOwnerId ? `${STORAGE_KEY}:${encodeURIComponent(activeDataOwnerId)}` : STORAGE_KEY;
@@ -178,6 +187,8 @@ export interface NewMakerDraft {
  * 在目录里都是默认隐藏的模型 —— 种子默认模型压根不在用户看到的清单里。
  */
 function defaultVendorPrefs(vendor: MakerVendor): VendorPrefs {
+  // 新 Host 的加载前/未使用槽位保持空值，不能把 Renderer 冷启动型号作为历史偏好迁移。
+  if (hasHostDraftPreferences()) return { model: '', effort: '' as Effort, permissionMode: 'auto', planMode: false, providerId: null };
   if (vendor === 'pi') {
     return {
       // pi 走 XD 网关(anthropic-messages 可达面),默认给网关中档模型;
@@ -377,7 +388,7 @@ function sanitize(raw: unknown): NewMakerDraft {
   const legacyCcPrefs = lastByVendorRaw.cc;
   // 已经随旧版完整草稿自然落盘过的 cc seed。它们不是用户选择，不能因为新版目录换了
   // seed 就反过来把系统快照认成自定义；这里只服务一次性迁移，不参与新会话默认决策。
-  const legacyCcSeedModels = new Set([def.lastByVendor.cc.model, 'claude-sonnet-4-6']);
+  const legacyCcSeedModels = new Set([getDefaultModelForVendor('cc').id, 'claude-sonnet-4-6']);
   const isKnownProductTuple = (slotVendor: MakerVendor, prefs: Partial<VendorPrefs>): boolean =>
     typeof prefs.providerId === 'string' &&
     prefs.providerId.length > 0 &&
@@ -472,8 +483,8 @@ function loadFromStorage(): NewMakerDraft {
   if (typeof window === 'undefined') return makeDefault();
   try {
     const raw = window.localStorage.getItem(storageKey());
-    if (!raw) return makeDefault();
-    return sanitize(JSON.parse(raw));
+    const workspace = window.localStorage.getItem(`${storageKey()}:workspace`);
+    return sanitize({ ...(raw ? JSON.parse(raw) : {}), ...(workspace ? JSON.parse(workspace) : {}) });
   } catch {
     return makeDefault();
   }
@@ -553,6 +564,7 @@ function parseStoredDefaultTuplePreference(
 }
 
 function readStoredDraftRecord(): StoredDraftRecord | undefined {
+  if (hostPreferenceWriter || hasHostDraftPreferences()) return currentDraft as unknown as StoredDraftRecord;
   if (typeof window === 'undefined') return undefined;
   try {
     return parseStoredDraftRecord(window.localStorage.getItem(storageKey()));
@@ -562,6 +574,7 @@ function readStoredDraftRecord(): StoredDraftRecord | undefined {
 }
 
 function readStoredWorktreePreference(): StoredWorktreePreference | undefined {
+  if (hostPreferenceWriter || hasHostDraftPreferences()) return { worktreeEnabled: currentDraft.worktreeEnabled, worktreePreferenceCustomized: currentDraft.worktreePreferenceCustomized };
   if (typeof window === 'undefined') return undefined;
   try {
     return parseStoredWorktreePreference(window.localStorage.getItem(storageKey()));
@@ -571,6 +584,7 @@ function readStoredWorktreePreference(): StoredWorktreePreference | undefined {
 }
 
 function readStoredDefaultTuplePreference(): StoredDefaultTuplePreference | undefined {
+  if (hostPreferenceWriter || hasHostDraftPreferences()) return defaultTuplePreferenceOf(currentDraft);
   if (typeof window === 'undefined') return undefined;
   try {
     return parseStoredDefaultTuplePreference(window.localStorage.getItem(storageKey()));
@@ -620,6 +634,15 @@ function scheduleWrite(
     preserveStoredDefaultTuplePreference?: boolean;
   } = {},
 ): void {
+  if (hasHostDraftPreferences() || hostPreferenceWriter) {
+    // 工作区与协同草稿仍留本机；不能为了迁默认值顺手搬走这些单次任务状态。
+    try {
+      window.localStorage.setItem(`${storageKey()}:workspace`, JSON.stringify({
+        workingDir: currentDraft.workingDir, remoteHostId: currentDraft.remoteHostId, collab: currentDraft.collab,
+      }));
+    } catch { /* 草稿写盘失败不污染 Host 偏好。 */ }
+    hostPreferenceWriter?.(); return;
+  }
   if (typeof window === 'undefined') return;
   const storedWorktreePreference = options.preserveStoredWorktreePreference !== false
     ? readStoredWorktreePreference()
@@ -669,6 +692,7 @@ function emit() {
 const removeStorageListener = (() => {
   if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return null;
   const onStorage = (event: StorageEvent) => {
+    if (hostPreferenceWriter || hasHostDraftPreferences()) return;
     if (event.key !== storageKey()) return;
     if (event.storageArea && event.storageArea !== window.localStorage) return;
     // A queued storage event can arrive after this window has already written a newer value.
@@ -737,6 +761,7 @@ export function getDraft(): NewMakerDraft {
  * 只覆盖该布尔，避免失败路径重新带回其它旧字段。
  */
 export function getDraftForPreferenceSync(): NewMakerDraft {
+  if (hostPreferenceWriter || hasHostDraftPreferences()) return currentDraft;
   const stored = readStoredDraftRecord();
   if (!stored || preferenceSyncFallback === 'full-draft') return currentDraft;
   const persistedDraft = sanitize(stored);
@@ -772,6 +797,10 @@ export function setNewMakerDraftOwner(ownerId: string | null): void {
  * 当前窗口内存也只更新该字段，保留 device-link / extraDirs 等窗口内临时草稿。
  */
 export function setWorktreePreference(enabled: boolean): void {
+  if (hostPreferenceWriter || hasHostDraftPreferences()) {
+    currentDraft = { ...currentDraft, worktreeEnabled: enabled === true, worktreePreferenceCustomized: true };
+    hostPreferenceWriter?.(); emit(); return;
+  }
   const worktreeEnabled = enabled === true;
   const worktreePreferenceCustomized = true;
   if (typeof window !== 'undefined') {
@@ -902,6 +931,7 @@ export function switchVendor(next: MakerVendor): void {
   currentDraft = {
     ...currentDraft,
     vendor: next,
+    ...(hasHostDraftPreferences() ? { defaultTupleCustomized: true, defaultTupleSelectionCustomized: true } : {}),
   };
   scheduleWrite({ preserveStoredDefaultTuplePreference: false });
   emit();
@@ -909,6 +939,7 @@ export function switchVendor(next: MakerVendor): void {
 
 /** Explicit Bot-requested default uses the same persisted tuple, with owner/CAS and no partial writes. */
 export function applyAppDefaultModelSelection(selection: AppDefaultModelSelection): boolean {
+  if (hostPreferenceWriter || hasHostDraftPreferences()) return false;
   if (!isDataOwnerPushStampCurrent(selection.ownerStamp)
     || activeDataOwnerId !== selection.ownerStamp.dataOwnerId
     || Date.now() > selection.expiresAt) return false;
@@ -949,6 +980,7 @@ export function applyAppDefaultModelSelection(selection: AppDefaultModelSelectio
  * defaultTupleCustomized,因为它不是用户选择。
  */
 export function fallbackUnavailableVendor(availableVendors: ReadonlySet<MakerVendor>): boolean {
+  if (hasHostDraftPreferences()) return false;
   rebaseStoredDefaultTuplePreference();
   const currentVendor = currentDraft.vendor;
   if (availableVendors.has(currentVendor)) return false;
@@ -969,6 +1001,7 @@ export interface SuggestedDefaultTuple {
 
 /** 原子应用产品默认；只改未自定义草稿，不把默认伪装成用户显式选模。 */
 export function applySuggestedDefaultTuple(tuple: SuggestedDefaultTuple): boolean {
+  if (hasHostDraftPreferences()) return false;
   rebaseStoredDefaultTuplePreference();
   if (currentDraft.defaultTupleCustomized) return false;
   const previous = currentDraft.lastByVendor[tuple.vendor];
@@ -1081,7 +1114,7 @@ function patchVendorPrefsInternal(
     // markModelChoice=false 仍可写回当前活动模型(远程草稿 / 旧控制端 wire
     // 会带 modelId),但不得打标,也不得清掉已有标记。
   }
-  if (!opts.markModelChoice && modelChosen[vendor] === true) {
+  if (!opts.markModelChoice && (modelChosen[vendor] === true || hasHostDraftPreferences())) {
     const savedModel = currentDraft.lastByVendor[vendor].model;
     const incomingModel =
       typeof nextPatch.model === 'string' && nextPatch.model.length > 0
@@ -1214,6 +1247,7 @@ export function getCurrentVendorPrefs(): VendorPrefs {
  * 对话侧的 Opus 种子默认顶掉。读 raw localStorage 而非 getDraft(),解析失败 → ''。
  */
 export function getPersistedVendorModel(vendor: MakerVendor): string {
+  if (hostPreferenceWriter || hasHostDraftPreferences()) return currentDraft.modelChosenByVendor[vendor] ? currentDraft.lastByVendor[vendor].model : '';
   if (typeof window === 'undefined') return '';
   try {
     const raw = window.localStorage.getItem(storageKey());

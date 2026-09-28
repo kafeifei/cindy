@@ -14,11 +14,13 @@
 
 import type { MakerVendor } from './ccAgent.types';
 
-export const SELECTABLE_VENDORS = ['cc', 'codex', 'pi'] as const satisfies readonly MakerVendor[];
+import { MODEL_PRESENTATION_ENGINES, isModelPresentationEngine } from '../../shared/modelPresentationPreferences';
+
+export const SELECTABLE_VENDORS = MODEL_PRESENTATION_ENGINES satisfies readonly MakerVendor[];
 
 export type SelectableVendor = (typeof SELECTABLE_VENDORS)[number];
 
 /** localStorage / IPC 等外部输入的引擎值校验(不认识的一律交给调用方回退默认)。 */
 export function isSelectableVendor(value: unknown): value is SelectableVendor {
-  return typeof value === 'string' && (SELECTABLE_VENDORS as readonly string[]).includes(value);
+  return isModelPresentationEngine(value);
 }

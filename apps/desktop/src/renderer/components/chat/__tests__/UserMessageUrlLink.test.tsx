@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { installDesktopPreferencesHarness, settleDesktopPreferences } from '../../../__tests__/desktopPreferencesHarness';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -38,6 +39,7 @@ import {
 } from '@/hooks/useLinkOpenPreference';
 import { UserMessageUrlLink } from '../UserMessageUrlLink';
 
+let host: ReturnType<typeof installDesktopPreferencesHarness>;
 const URL = 'https://example.com/path';
 const LOCAL_URL = 'http://localhost:3000/app';
 const openExternal = vi.fn(async (url: string) => {
@@ -63,6 +65,7 @@ describe('UserMessageUrlLink', () => {
       configurable: true,
       value: { openExternal },
     });
+    host = installDesktopPreferencesHarness({});
   });
 
   it('opens public web URLs in the system browser by default', async () => {
@@ -84,7 +87,7 @@ describe('UserMessageUrlLink', () => {
   });
 
   it('opens the URL in the current session sidebar when sidebar is preferred', async () => {
-    localStorage.setItem('chat.webLinkOpenPreference', 'sidebar');
+    host.external({ webLinkOpenPreference: 'sidebar' });
     render(<UserMessageUrlLink url={URL} sessionId="session-a" />);
 
     fireEvent.click(screen.getByRole('link'));
@@ -94,7 +97,7 @@ describe('UserMessageUrlLink', () => {
   });
 
   it('uses a newly selected external preference without remounting', async () => {
-    localStorage.setItem('chat.webLinkOpenPreference', 'sidebar');
+    host.external({ webLinkOpenPreference: 'sidebar' });
     render(
       <>
         <WebPreferenceButton value="external" />
@@ -102,8 +105,14 @@ describe('UserMessageUrlLink', () => {
       </>,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'use external' }));
-    fireEvent.click(screen.getByRole('link'));
+    const existingLink = screen.getByRole('link');
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'use external' }));
+      await settleDesktopPreferences();
+    });
+    expect(host.snapshot()).toMatchObject({ value: { webLinkOpenPreference: 'external' }, customizedKeys: ['webLinkOpenPreference'] });
+    expect(screen.getByRole('link')).toBe(existingLink);
+    fireEvent.click(existingLink);
 
     await waitFor(() => expect(openExternal).toHaveBeenCalledWith(URL));
     expect(openUrlInSidebarBrowser).not.toHaveBeenCalled();
@@ -119,7 +128,7 @@ describe('UserMessageUrlLink', () => {
   });
 
   it('uses the visible session bucket for sidebar-embedded messages', async () => {
-    localStorage.setItem('chat.webLinkOpenPreference', 'sidebar');
+    host.external({ webLinkOpenPreference: 'sidebar' });
     render(
       <SessionNavigationModeProvider mode="sidebar-embedded" sidebarTargetSessionId="lead-a">
         <UserMessageUrlLink url={URL} sessionId="worker-a" />
@@ -142,7 +151,7 @@ describe('UserMessageUrlLink', () => {
   });
 
   it('keeps Ctrl-click as a temporary external-browser override', async () => {
-    localStorage.setItem('chat.webLinkOpenPreference', 'sidebar');
+    host.external({ webLinkOpenPreference: 'sidebar' });
     render(<UserMessageUrlLink url={URL} sessionId="session-a" />);
 
     fireEvent.click(screen.getByRole('link'), { ctrlKey: true });

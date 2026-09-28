@@ -27,6 +27,8 @@ import {
   readCindyMakeSettings,
   writeCindyMakeSyncLatestBeforeBuild,
 } from './cindy-make/settingsStore.js';
+import { cloudManagementProviderRegistry, isCloudManagementInvocation } from './host-settings/managementCalls.js';
+import { configureAdditionalSettingsRuntime } from './host-settings/additionalRuntime.js';
 import { initializeCloudDeviceLinkDefaults } from './instance-runtime/device-link-defaults.js';
 import { cindyManagedHomeDir } from './cloudPilotDistribution.js';
 import { retainProviderPresentationAfterAuthChange } from './maker-host/provider-presentation-store.js';
@@ -65,6 +67,7 @@ import {
   shell,
   Tray,
   type WebContents,
+  webContents,
 } from 'electron';
 import { resolveVibrancyConfig } from './vibrancyConfig';
 import { getSessionThinkingSnapshots, getHistoryToolName, drainPersistQueue } from './messagePersistBroadcaster';
@@ -470,6 +473,11 @@ import {
   getDatabaseSizeWarningSettingsFilePath,
 } from './database-size-warning-settings';
 import { createDatabaseSizeWarningSettingsWatcher } from './database-size-warning-settings-watcher.js';
+import { registerHostSettingsIpc } from './host-settings/ipc.js';
+import { registerDesktopPreferencesIpc } from './host-settings/desktopPreferencesIpc.js';
+import { isResourceUsageWebContentsId } from './resource-usage-window/registry.js';
+import { isTrustedAppearanceSettingsReadWindow } from './appearance-settings-reader.js';
+import { registerModelPresentationPreferencesIpc } from './host-settings/model-presentation-preferences-ipc.js';
 import { createLocalDbMaintenanceIpcHandlers } from './localDb/ipc/maintenance';
 import {
   createDialogueWorkspaceHandlers,
@@ -594,6 +602,8 @@ import { startProfileTelemetry } from './instance-runtime/profile-telemetry.js';
 import { instanceAuthReady, instanceDurableObservation, instanceAuthRealm } from './instance-runtime/host.js';
 import { startInstanceStatus } from './instance-runtime/status.js';
 import { publishedPluginOauthIdentity } from './plugin-oauth/runtime.js';
+import { startCloudSettingsSnapshotPublisher } from './host-settings/snapshotRuntime.js';
+import { startCloudSettingsWebTransport } from './host-settings/webRuntime.js';
 
 let instanceBinariesReady = false;
 import { registerRemoteDesktopIpc } from './remote-desktop';
@@ -1519,6 +1529,7 @@ function scheduleChatEmbeddingRuntimeReconcile(): Promise<void> {
   return chatEmbeddingRuntimeReconcile;
 }
 
+configureAdditionalSettingsRuntime({ chatEmbedding: { context: chatEmbeddingDefaultContext, available: isChatEmbeddingAvailable, reconcile: scheduleChatEmbeddingRuntimeReconcile } });
 setProviderAccessRuntimeRefreshListener(scheduleChatEmbeddingRuntimeReconcile);
 
 function broadcastChatEmbeddingSettingsChanged(): void {
@@ -4412,6 +4423,25 @@ function parseOptionalDeviceLinkDeviceId(value: unknown): string | null | undefi
 }
 
 const registerIpcHandlers = () => {
+  registerHostSettingsIpc(broadcastDatabaseSizeWarningChanged);
+  const localPreferencesAccess = {
+    isLocalWindow(id: number, access: 'read' | 'write') {
+      const sender = webContents.fromId(id);
+      if (!sender || sender.isDestroyed()) return false;
+      const win = BrowserWindow.fromWebContents(sender);
+      if (!win || !isTrustedCindyRendererWindow(win)) return false;
+      const isWriter = win === mainWindowRef || isSecondaryAppWindow(win);
+      if (access === 'write') return isWriter;
+      if (isWriter) return true;
+      const isContent: boolean = isAppContentWindow(win);
+      return sender === rsbWindowController.getSidebarWebContents()
+        || ghostPanelWindowsController.slotForSender(sender) !== null
+        || isResourceUsageWebContentsId(id)
+        || (!isContent && isTrustedAppearanceSettingsReadWindow(win));
+    },
+  };
+  registerDesktopPreferencesIpc(localPreferencesAccess);
+  registerModelPresentationPreferencesIpc(localPreferencesAccess);
   ipcMain.handle('database-size-warning:get-settings', (event) => {
     assertTrustedAppRendererEvent(event);
     const state = readDatabaseSizeWarningSettingsState();
@@ -5215,10 +5245,9 @@ const registerIpcHandlers = () => {
     syncClaudeSubscriptionUsageForAuthChange();
     return { ok: true, authorized: hasClaudeNativeLogin() };
   });
-  ipcMain.handle(
-    MAKER_IPC_INVOKE.CLAUDE_OAUTH_LOGOUT,
-    async (event, ownerScope?: { dataOwnerId: string | null; ownerGeneration: number }) => {
-      assertTrustedAppRendererEvent(event);
+  cloudManagementProviderRegistry({ handle: (channel, handler) => ipcMain.handle(channel, handler) }).handle(MAKER_IPC_INVOKE.CLAUDE_OAUTH_LOGOUT, async (event, ownerScopeInput?: unknown) => {
+      if (!isCloudManagementInvocation(event)) assertTrustedAppRendererEvent(event as Electron.IpcMainInvokeEvent);
+      const ownerScope = ownerScopeInput as { dataOwnerId: string | null; ownerGeneration: number } | undefined;
       const active = getActiveAppSession();
       const owner = activeOwnerScopeKey();
       if (
@@ -5355,10 +5384,9 @@ const registerIpcHandlers = () => {
       authorized: hasGrokOAuthLogin(),
     };
   });
-  ipcMain.handle(
-    MAKER_IPC_INVOKE.XAI_OAUTH_LOGOUT,
-    async (event, ownerScope?: { dataOwnerId: string | null; ownerGeneration: number }) => {
-      assertTrustedAppRendererEvent(event);
+  cloudManagementProviderRegistry({ handle: (channel, handler) => ipcMain.handle(channel, handler) }).handle(MAKER_IPC_INVOKE.XAI_OAUTH_LOGOUT, async (event, ownerScopeInput?: unknown) => {
+      if (!isCloudManagementInvocation(event)) assertTrustedAppRendererEvent(event as Electron.IpcMainInvokeEvent);
+      const ownerScope = ownerScopeInput as { dataOwnerId: string | null; ownerGeneration: number } | undefined;
       const active = getActiveAppSession();
       const owner = activeOwnerScopeKey();
       if (
@@ -5898,22 +5926,22 @@ const registerIpcHandlers = () => {
     logError: (message, err) => builtinApiKeyLog.error(message, err),
   };
 
-  ipcMain.handle(
+  cloudManagementProviderRegistry({ handle: (channel, handler) => ipcMain.handle(channel, handler) }).handle(
     'builtin-api-key-has',
-    async (event: Electron.IpcMainInvokeEvent, providerId: unknown): Promise<boolean> => {
-      assertTrustedAppRendererEvent(event);
+    async (event: unknown, providerId: unknown): Promise<boolean> => {
+      if (!isCloudManagementInvocation(event)) assertTrustedAppRendererEvent(event as Electron.IpcMainInvokeEvent);
       return builtinApiKeyHas(builtinApiKeyDeps, providerId);
     },
   );
 
-  ipcMain.handle(
+  cloudManagementProviderRegistry({ handle: (channel, handler) => ipcMain.handle(channel, handler) }).handle(
     'builtin-api-key-store',
     async (
-      event: Electron.IpcMainInvokeEvent,
+      event: unknown,
       providerId: unknown,
       value: unknown,
     ): Promise<void> => {
-      assertTrustedAppRendererEvent(event);
+      if (!isCloudManagementInvocation(event)) assertTrustedAppRendererEvent(event as Electron.IpcMainInvokeEvent);
       builtinApiKeyStore(builtinApiKeyDeps, providerId, value);
       await retainProviderPresentationAfterAuthChange(
         builtinApiKeyPresentationId(providerId as string),
@@ -5921,14 +5949,15 @@ const registerIpcHandlers = () => {
     },
   );
 
-  ipcMain.handle(
+  cloudManagementProviderRegistry({ handle: (channel, handler) => ipcMain.handle(channel, handler) }).handle(
     'builtin-api-key-remove',
     async (
-      event: Electron.IpcMainInvokeEvent,
+      event: unknown,
       providerId: unknown,
-      ownerScope?: { dataOwnerId: string | null; ownerGeneration: number },
+      ownerScopeInput?: unknown,
     ): Promise<void> => {
-      assertTrustedAppRendererEvent(event);
+      if (!isCloudManagementInvocation(event)) assertTrustedAppRendererEvent(event as Electron.IpcMainInvokeEvent);
+      const ownerScope = ownerScopeInput as { dataOwnerId: string | null; ownerGeneration: number } | undefined;
       const active = getActiveAppSession();
       if (
         isAppSessionBoundaryPending() ||
@@ -9701,6 +9730,10 @@ app.on('ready', async () => {
     });
     const stopStatus = startInstanceStatus(instance, readInstanceReadiness, () => createLogger('instance-runtime').warn('runtime status unavailable'), publishedPluginOauthIdentity);
     const stopProfileTelemetry = startProfileTelemetry({ deviceId: instance.deviceId, membershipId: instance.membershipId, realm: instanceAuthRealm, read: readInstanceReadiness, readAuth: instanceDurableObservation, onFailure: () => createLogger('instance-runtime').warn('profile observation unavailable') });
+    const stopSettingsSnapshot = startCloudSettingsSnapshotPublisher();
+    const stopSettingsWeb = startCloudSettingsWebTransport();
+    app.once('will-quit', stopSettingsWeb);
+    app.once('will-quit', stopSettingsSnapshot);
     app.once('will-quit', stopProfileTelemetry);
     app.once('will-quit', stopStatus);
   }

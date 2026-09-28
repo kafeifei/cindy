@@ -419,30 +419,17 @@ describe('refreshLocalCatalogSnapshot', () => {
     ['storage', true], ['lock', true], ['storage', false], ['lock', false],
   ] as const)('propagates real %s initialization failures through preload (recovers: %s)', async (failure, recovers) => {
     vi.useFakeTimers();
-    const saved = new Map<string, string>();
-    let rejectWrite = false;
-    const storage = {
-      getItem: (key: string) => saved.get(key) ?? null,
-      removeItem: (key: string) => { saved.delete(key); },
-      setItem: (key: string, value: string) => {
-        if (rejectWrite) throw new Error('storage full');
-        saved.set(key, value);
-      },
-    };
-    const sync = vi.fn(async () => undefined);
-    let rejectLock = false;
-    vi.stubGlobal('navigator', { locks: { request: async (_key: string, run: () => boolean) => {
-      if (rejectLock) throw new Error('lock unavailable');
-      return run();
-    } } });
+    const storage = new PreferenceMemoryStorage();
     vi.stubGlobal('localStorage', storage);
-    vi.stubGlobal('window', { localStorage: storage, electronAPI: { maker: {
-      syncModelVisibility: sync,
-      claimLegacyModelVisibilityOwner: () => ({
-        dataOwnerId: 'owner-a', ownerGeneration: 1, canWriteOwnerScoped: true,
-        claimed: true, claimedByOtherOwner: false, canInitialize: true, profileOrigin: 'new',
-      }),
-    } } });
+    vi.stubGlobal('window', { localStorage: storage });
+    const host = createModelPresentationTestHost(storage);
+    host.install();
+    // 权威已移到Host：导入的持久写/锁失败必须经真实Renderer回执路径传至preload重试。
+    host.options.failWrite = failure === 'storage';
+    let rejectLock = failure === 'lock';
+    host.options.beforeWrite = async () => {
+      if (rejectLock) throw new Error('lock unavailable');
+    };
     const prefs = await vi.importActual<typeof import('@/state/modelVisibilityPrefs')>('@/state/modelVisibilityPrefs');
     prefs.__resetForTest();
     try {
@@ -466,9 +453,13 @@ describe('refreshLocalCatalogSnapshot', () => {
       expect(mocks.loadProviders).toHaveBeenCalledTimes(1);
       expect(mocks.commitProviders).not.toHaveBeenCalled();
       expect(mocks.commitCapabilities).not.toHaveBeenCalled();
-      expect(sync).toHaveBeenLastCalledWith('owner-a', 1, {}, expect.objectContaining({ pending: true }));
+      expect(host.api.importLegacy).toHaveBeenCalledOnce();
+      await expect(vi.mocked(host.api.importLegacy).mock.results[0]!.value).rejects.toThrow(failure === 'storage' ? 'write failed' : 'lock unavailable');
+      expect(getHostModelPresentationSnapshot()).toMatchObject({ status: 'pending-migration', initialized: false });
+      expect(host.api.mutate).not.toHaveBeenCalled();
+      expect(storage.length).toBe(0);
 
-      if (recovers) { rejectWrite = false; rejectLock = false; }
+      if (recovers) { host.options.failWrite = false; rejectLock = false; }
       await vi.advanceTimersByTimeAsync(1000);
       await preload;
       expect(mocks.loadProviders).toHaveBeenCalledTimes(recovers ? 2 : 3);
@@ -476,15 +467,21 @@ describe('refreshLocalCatalogSnapshot', () => {
       expect(mocks.commitCapabilities).toHaveBeenCalledTimes(recovers ? 1 : 0);
       if (recovers) {
         expect(mocks.commitProviders).toHaveBeenLastCalledWith(2, providers);
-        expect(sync).toHaveBeenLastCalledWith('owner-a', 1, {},
-          expect.not.objectContaining({ pending: true }));
+        expect(getHostModelPresentationSnapshot()).toMatchObject({ status: 'ready', initialized: true });
+        expect(host.api.mutate).toHaveBeenCalledWith(expect.objectContaining({ operation: expect.objectContaining({ kind: 'visibility-catalog' }) }));
+        expect(host.snapshot().status).toBe('ready');
         expect(prefs.isModelEnabled('pi', 'xd', { id: 'recommended' })).toBe(true);
       } else {
         expect(mocks.warn).toHaveBeenCalledWith('local catalog snapshot preload failed after 3 attempts');
-        expect(sync).toHaveBeenLastCalledWith('owner-a', 1, {}, expect.objectContaining({ pending: true }));
+        expect(getHostModelPresentationSnapshot()).toMatchObject({ status: 'pending-migration', initialized: false });
+        expect(host.api.mutate).not.toHaveBeenCalled();
+        expect(prefs.isModelEnabled('pi', 'xd', { id: 'recommended' })).toBe(false);
       }
+      expect(host.api.importLegacy).toHaveBeenCalledTimes(recovers ? 2 : 3);
+      expect(storage.length).toBe(0);
     } finally {
       prefs.__resetForTest();
+      ownerTesting.reset();
     }
   });
 });

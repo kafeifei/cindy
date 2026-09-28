@@ -40,6 +40,7 @@ import { XdtHelperToolRegistry } from './lizi_xdtHelperToolRegistry.js';
 import { registerCreateProjectTool, type CreateProjectCallback } from './xdt-helper/create_project.js';
 import { registerMoveSessionTool, type MoveSessionCallback } from './xdt-helper/move_session.js';
 import { registerProjectManagementTools, type ProjectManagementCallbacks } from './xdt-helper/project_management.js';
+import { registerHostSettingsTools, type HostSettingsCallbacks } from './xdt-helper/settings.js';
 import {
   registerGetCapabilitiesTool,
   registerAppUpdateTools,
@@ -129,7 +130,7 @@ const CALL_TOOL_INPUT = {
 
 // list_tools 入口类目: cindy(自省) / control(会话控制面) / history(聊天历史) / feedback(官方反馈提交) / handoff(session 间 handoff)。
 // 协同 team 工具已拆到独立 cindy_orca server(插件开关 gate)。
-const CATEGORY_ENUM = ['cindy', 'auth', 'control', 'history', 'feedback', 'handoff', 'skills', 'app_update', 'bots'] as const;
+const CATEGORY_ENUM = ['cindy', 'auth', 'control', 'history', 'feedback', 'handoff', 'skills', 'app_update', 'bots', 'settings'] as const;
 
 interface SessionTaskCallbacks {
   startSessionTask(params: {
@@ -705,6 +706,7 @@ export type ControlDispatchOutcome =
 
 export interface XdtHelperMcpDeps {
   logger?: LiziMcpLogger;
+  settings?: HostSettingsCallbacks;
   appUpdate?: AppUpdateCallbacks;
   grokLogin?: GrokLoginCallbacks;
   /**
@@ -820,7 +822,8 @@ export function createXdtHelperMcpServer(
     const context = resolveLiziMcpSessionContext(sessionCtx);
     const sessionId = context.sessionId;
     const remoteBotOnly = !!context.remoteHostId && context.agentKind !== 'pi';
-    const defaultCategories = new Set(CATEGORY_ENUM.filter((category) => category !== 'bots'));
+    const defaultCategories = new Set<string>(CATEGORY_ENUM.filter((category) => category !== 'bots' && category !== 'settings'));
+    if (deps.settings && await deps.settings.allowed(context).catch(() => false)) defaultCategories.add('settings');
     // Remote Pi retains the regular helper surface, but a remote task cannot
     // check the local desktop updater; keep that unavailable tool undiscoverable.
     if (context.remoteHostId) defaultCategories.delete('app_update');
@@ -838,6 +841,8 @@ export function createXdtHelperMcpServer(
     if (surface === 'restricted') return none;
     return allow(remoteBotOnly ? new Set(['auth', 'cindy']) : defaultCategories);
   };
+
+  if (deps.settings) registerHostSettingsTools(registry, deps.settings, () => resolveLiziMcpSessionContext(sessionCtx));
 
   // 'cindy' 类: 自省 (无 host 依赖, 始终注册)。
   registerGetCapabilitiesTool(registry, deps.runtimeCapabilities

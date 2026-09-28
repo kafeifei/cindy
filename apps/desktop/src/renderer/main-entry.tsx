@@ -1,4 +1,5 @@
 import { createRoot } from 'react-dom/client';
+import { connectHostDesktopPreferences } from './state/hostDesktopPreferences';
 
 import '@fontsource-variable/inter';
 import '@fontsource-variable/jetbrains-mono';
@@ -137,6 +138,9 @@ if (import.meta.env.DEV) {
 
 bootstrapLocalThemesSync();
 themeService.applyTheme(getInitialThemeVariant().theme);
+// 首启亮色门已经定型；仅本机主应用导入旧偏好，辅助窗口不执行迁移。
+const disposeDesktopPreferences = connectHostDesktopPreferences({ readOnly: isAppearanceUtilityView });
+import.meta.hot?.dispose(disposeDesktopPreferences);
 applyFontSettings(getInitialFontSettings());
 const disposeUtilityAppearanceSettingsSync = isAppearanceUtilityView
   ? (window.electronAPI.appearanceSettings?.onChanged?.(applyFontSettings) ?? (() => {}))

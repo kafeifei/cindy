@@ -1,4 +1,5 @@
 import { collectModelDiscoveryPages } from './model-discovery-pages.js';
+import { openManagementAuthorization, presentManagementDeviceCode, attachManagementAuthorization, assertManagementAuthorizationCurrent } from '../host-settings/managementAuthorization.js';
 import { providerOAuthContract } from '@cindy/model-providers';
 import { isOpenRouterModelsUrl, type DiscoveredModel } from '@cindy/model-providers';
 /**
@@ -629,6 +630,7 @@ async function runDeviceCodeGrant(
   // Device Authorization Grant 的有效期由 IdP 的 expires_in 决定；不能用授权码登录的
   // 五分钟回调超时截断，否则合法的 10–15 分钟设备码会在服务端仍有效时被本地提前判过期。
   const expiresAt = io.now() + expiresInMs;
+  presentManagementDeviceCode({ verificationUrl, userCode, expiresAt });
   try {
     options?.onProgress?.({
       phase: 'device-code',
@@ -699,6 +701,7 @@ export async function runGenericOAuthLogin(
 
   const listener = oauth.flow === 'device-code' ? null : new CallbackListener(provider.name);
   const abort = new AbortController();
+  attachManagementAuthorization(() => { abort.abort(); listener?.close(); });
   activeLogins.set(provider.id, {
     abort,
     close: () => listener?.close(),
@@ -757,7 +760,7 @@ export async function runGenericOAuthLogin(
         providerId: provider.id,
         port: listener!.port,
       });
-      await io.openExternal(authUrl.toString());
+      await openManagementAuthorization(authUrl.toString(), io.openExternal);
       const code = await codePromise;
 
       const response = await io.fetchImpl(oauth.tokenUrl, {
@@ -780,6 +783,7 @@ export async function runGenericOAuthLogin(
 
     // 落盘前最后检查：已取消的登录绝不写凭证（同 grok）。
     if (abort.signal.aborted) throw new Error('login_cancelled');
+    assertManagementAuthorizationCurrent();
     const persistedBlob = blobFromTokenResponse(tok);
     if (!writeBlob(provider.id, persistedBlob)) {
       // 落盘失败必须硬失败并回滚内存态:否则 UI 显示已连接、路由能用,重启/刷新后

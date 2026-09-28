@@ -75,6 +75,7 @@ export const CLIENT_ENDPOINT_KEYS = [
   // (同 review / cdnBaseUrl 先例,理由见上方版本注释)。
   'authDesktopCallbackUrl',
   'deviceLinkApiBaseUrl',
+  'cloudInstanceApiBaseUrl',
   'oauthBrokerApiBaseUrl',
   // oss-server(公开资产直传预签名,当前场景:头像上传)。
   'ossApiBaseUrl',
@@ -152,6 +153,7 @@ const FIELD_PROTOCOLS: Record<ClientEndpointKey, readonly string[]> = {
   authApiBaseUrl: ['https:'],
   authDesktopCallbackUrl: ['https:'],
   deviceLinkApiBaseUrl: ['https:'],
+  cloudInstanceApiBaseUrl: ['https:'],
   oauthBrokerApiBaseUrl: ['https:'],
   ossApiBaseUrl: ['https:'],
   heartbeatUrl: ['https:'],
@@ -189,7 +191,7 @@ function allowedProtocols(
   allowHttp: boolean,
 ): readonly string[] {
   const base = FIELD_PROTOCOLS[key];
-  if (!allowHttp) return base;
+  if (!allowHttp || key === 'cloudInstanceApiBaseUrl') return base;
   const relaxed = [...base];
   if (base.includes('https:') && !base.includes('http:')) relaxed.push('http:');
   if (base.includes('wss:') && !base.includes('ws:')) relaxed.push('ws:');
@@ -264,6 +266,7 @@ export function parseClientEndpointManifest(
     if (url.username || url.password) {
       return { ok: false, reason: `credentials-in-url:${key}` };
     }
+    if (key === 'cloudInstanceApiBaseUrl' && (normalized.includes('?') || normalized.includes('#'))) return { ok: false, reason: `invalid-field:${key}` };
     endpoints[key] = normalized;
   }
 

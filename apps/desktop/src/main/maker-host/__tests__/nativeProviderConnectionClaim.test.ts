@@ -42,7 +42,7 @@ vi.mock('electron', () => ({
 
 vi.mock('../../appSessionState.js', () => ({
   getActiveAppSession: () => ({
-    mode: h.dataOwnerId ? ('local' as const) : ('signed-out' as const),
+    mode: h.dataOwnerId ? h.mode : ('signed-out' as const),
     dataOwnerId: h.dataOwnerId,
     generation: h.generation,
   }),

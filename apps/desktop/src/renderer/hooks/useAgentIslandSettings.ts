@@ -1,20 +1,6 @@
-/**
- * useAgentIslandSettings — macOS Agent Island 的全局开关。
- *
- * 与通知设置同源存储在 localStorage,默认关闭;用户显式开启后才持久化。renderer 是
- * 用户偏好的持久化位置;main 进程通过轻量 IPC 接收当前开关,负责真正隐藏 native
- * island。
- */
-
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import {
-  DEFAULT_AGENT_ISLAND_DISPLAY_TARGET,
-  DEFAULT_AGENT_ISLAND_MASCOT_SKIN,
-  DEFAULT_AGENT_ISLAND_SOUND_SETTINGS,
-  cloneAgentIslandDisplayTarget,
-  cloneAgentIslandSoundSettings,
-  isAgentIslandMascotSkin,
   normalizeAgentIslandDisplayTarget,
   normalizeAgentIslandSoundSettings,
   isAgentIslandSupportedPlatform,
@@ -26,100 +12,20 @@ import {
   type AgentIslandSoundSettings,
 } from '../../shared/agentIsland';
 import { createLogger } from '@/lib/logger';
-
-const STORAGE_KEY = 'notifications.agentIslandEnabled';
-const SOUND_STORAGE_KEY = 'notifications.agentIslandSoundSettings';
-const MASCOT_SKIN_STORAGE_KEY = 'notifications.agentIslandMascotSkin';
-const DISPLAY_TARGET_STORAGE_KEY = 'notifications.agentIslandDisplayTarget';
-const DEFAULT_ENABLED = false;
+import { getDesktopPreference, setDesktopPreference, updateDesktopPreference, clearDesktopPreference, isDesktopPreferenceCustomized, useDesktopPreference, useDesktopPreferenceCustomized } from '../state/hostDesktopPreferences';
 
 const log = createLogger('AgentIslandSettings');
-const subscribers = new Set<() => void>();
-
-function notifySubscribers(): void {
-  for (const cb of subscribers) cb();
-}
-
-function persistAgentIslandDisplayTargetLocally(target: AgentIslandDisplayTarget): void {
-  if (sameAgentIslandDisplayTarget(getAgentIslandDisplayTarget(), target)) return;
-  try {
-    localStorage.setItem(DISPLAY_TARGET_STORAGE_KEY, JSON.stringify(target));
-  } catch {
-    // localStorage 不可用时忽略，主进程仍使用本次解析出的目标。
-    return;
-  }
-  notifySubscribers();
-}
-
-function sameAgentIslandDisplayTarget(
-  a: AgentIslandDisplayTarget,
-  b: AgentIslandDisplayTarget,
-): boolean {
-  if (a.mode !== b.mode) return false;
-  if (a.mode === 'all') return true;
-  if (b.mode !== 'display' || a.displayId !== b.displayId) return false;
-  return a.displayName === b.displayName
-    && a.displayIndex === b.displayIndex
-    && a.displayInternal === b.displayInternal
-    && a.displayBounds?.x === b.displayBounds?.x
-    && a.displayBounds?.y === b.displayBounds?.y
-    && a.displayBounds?.width === b.displayBounds?.width
-    && a.displayBounds?.height === b.displayBounds?.height;
-}
 
 export function isAgentIslandSupported(): boolean {
   return isAgentIslandSupportedPlatform(window.electronAPI?.platform, window.electronAPI?.osRelease);
 }
 
-/** 同步读 localStorage。坏数据按默认关闭处理。 */
-export function getAgentIslandEnabled(): boolean {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw === 'true') return true;
-    if (raw === 'false') return false;
-  } catch {
-    // localStorage 不可用——退回默认。
-  }
-  return DEFAULT_ENABLED;
-}
-
-export function getAgentIslandSoundSettings(): AgentIslandSoundSettings {
-  try {
-    const raw = localStorage.getItem(SOUND_STORAGE_KEY);
-    if (!raw) return normalizeAgentIslandSoundSettings(null);
-    return normalizeAgentIslandSoundSettings(JSON.parse(raw) as unknown);
-  } catch {
-    return normalizeAgentIslandSoundSettings(null);
-  }
-}
-
-export function isAgentIslandSoundSettingsCustomized(): boolean {
-  try {
-    return localStorage.getItem(SOUND_STORAGE_KEY) !== null;
-  } catch {
-    return false;
-  }
-}
-
-export function getAgentIslandMascotSkin(): AgentIslandMascotSkin {
-  try {
-    const raw = localStorage.getItem(MASCOT_SKIN_STORAGE_KEY);
-    if (isAgentIslandMascotSkin(raw)) return raw;
-  } catch {
-    // ignore
-  }
-  return DEFAULT_AGENT_ISLAND_MASCOT_SKIN;
-}
-
-export function getAgentIslandDisplayTarget(): AgentIslandDisplayTarget {
-  try {
-    const raw = localStorage.getItem(DISPLAY_TARGET_STORAGE_KEY);
-    if (!raw) return cloneAgentIslandDisplayTarget(DEFAULT_AGENT_ISLAND_DISPLAY_TARGET);
-    return normalizeAgentIslandDisplayTarget(JSON.parse(raw) as unknown);
-  } catch {
-    return cloneAgentIslandDisplayTarget(DEFAULT_AGENT_ISLAND_DISPLAY_TARGET);
-  }
-}
+/** Host profile 是持久化正本；自定义路径和显示器身份不可直接进入 wire 快照。 */
+export function getAgentIslandEnabled(): boolean { return getDesktopPreference('agentIslandEnabled'); }
+export function getAgentIslandSoundSettings(): AgentIslandSoundSettings { return getDesktopPreference('agentIslandSoundSettings'); }
+export function isAgentIslandSoundSettingsCustomized(): boolean { return isDesktopPreferenceCustomized('agentIslandSoundSettings'); }
+export function getAgentIslandMascotSkin(): AgentIslandMascotSkin { return getDesktopPreference('agentIslandMascotSkin'); }
+export function getAgentIslandDisplayTarget(): AgentIslandDisplayTarget { return getDesktopPreference('agentIslandDisplayTarget'); }
 
 function getAgentIslandSetEnabledApi():
   | ((enabled: boolean) => Promise<{ ok: true }>)
@@ -233,12 +139,7 @@ export async function loadAgentIslandDisplayOptions(): Promise<AgentIslandDispla
   }
   try {
     const result = await getDisplayOptions();
-    const resolvedTarget = result.target
-      ? normalizeAgentIslandDisplayTarget(result.target)
-      : null;
-    if (resolvedTarget) {
-      persistAgentIslandDisplayTargetLocally(resolvedTarget);
-    }
+    // OS 显示器解析只是运行态解释，不是用户 override，也不能充当迁移输入。
     return normalizeAgentIslandDisplayOptions(result.options);
   } catch (err) {
     log.warn('agent island getDisplayOptions failed', err);
@@ -271,81 +172,39 @@ export function useResyncAgentIslandSettingsAfterLogin(isAuthenticated: boolean)
 }
 
 export async function setAgentIslandEnabled(next: boolean): Promise<boolean> {
-  const applied = await applyAgentIslandEnabledToMain(next);
-  if (!applied) {
-    notifySubscribers();
-    return false;
-  }
-  try {
-    localStorage.setItem(STORAGE_KEY, String(next));
-  } catch {
-    // localStorage 不可用——忽略,UI 仍以内存值为准。
-  }
-  notifySubscribers();
+  if (!await setDesktopPreference('agentIslandEnabled', next)) return false;
+  await applyAgentIslandEnabledToMain(next);
   return true;
 }
-
 export async function setAgentIslandSoundSettings(next: AgentIslandSoundSettings): Promise<boolean> {
-  const settings = cloneAgentIslandSoundSettings(next);
-  const applied = await applyAgentIslandSoundSettingsToMain(settings);
-  if (!applied) {
-    notifySubscribers();
-    return false;
-  }
-  try {
-    localStorage.setItem(SOUND_STORAGE_KEY, JSON.stringify(settings));
-  } catch {
-    // ignore
-  }
-  notifySubscribers();
+  const settings = normalizeAgentIslandSoundSettings(next);
+  if (!await setDesktopPreference('agentIslandSoundSettings', settings)) return false;
+  await applyAgentIslandSoundSettingsToMain(settings);
   return true;
 }
-
 export async function resetAgentIslandSoundSettings(): Promise<boolean> {
-  const settings = cloneAgentIslandSoundSettings(DEFAULT_AGENT_ISLAND_SOUND_SETTINGS);
-  const applied = await applyAgentIslandSoundSettingsToMain(settings);
-  if (!applied) {
-    notifySubscribers();
-    return false;
-  }
-  try {
-    localStorage.removeItem(SOUND_STORAGE_KEY);
-  } catch {
-    // ignore
-  }
-  notifySubscribers();
+  if (!await clearDesktopPreference('agentIslandSoundSettings')) return false;
+  await applyAgentIslandSoundSettingsToMain(getAgentIslandSoundSettings());
   return true;
 }
-
 export async function setAgentIslandMascotSkin(next: AgentIslandMascotSkin): Promise<boolean> {
-  const applied = await applyAgentIslandMascotSkinToMain(next);
-  if (!applied) {
-    notifySubscribers();
-    return false;
-  }
-  try {
-    localStorage.setItem(MASCOT_SKIN_STORAGE_KEY, next);
-  } catch {
-    // ignore
-  }
-  notifySubscribers();
+  if (!await setDesktopPreference('agentIslandMascotSkin', next)) return false;
+  await applyAgentIslandMascotSkinToMain(next);
+  return true;
+}
+export async function setAgentIslandDisplayTarget(next: AgentIslandDisplayTarget): Promise<boolean> {
+  const target = normalizeAgentIslandDisplayTarget(next);
+  if (!await setDesktopPreference('agentIslandDisplayTarget', target)) return false;
+  await applyAgentIslandDisplayTargetToMain(target);
   return true;
 }
 
-export async function setAgentIslandDisplayTarget(next: AgentIslandDisplayTarget): Promise<boolean> {
-  const target = cloneAgentIslandDisplayTarget(normalizeAgentIslandDisplayTarget(next));
-  const applied = await applyAgentIslandDisplayTargetToMain(target);
-  if (!applied) {
-    notifySubscribers();
-    return false;
-  }
-  persistAgentIslandDisplayTargetLocally(target);
-  return true;
+async function updateAgentIslandSounds(update: (current: AgentIslandSoundSettings) => AgentIslandSoundSettings): Promise<void> {
+  if (await updateDesktopPreference('agentIslandSoundSettings', update)) await applyAgentIslandSoundSettingsToMain(getAgentIslandSoundSettings());
 }
 
 export function toggleAgentIslandSoundEnabled(): void {
-  const current = getAgentIslandSoundSettings();
-  void setAgentIslandSoundSettings({ ...current, enabled: !current.enabled });
+  void updateAgentIslandSounds(current => ({ ...current, enabled: !current.enabled }));
 }
 
 export function previewAgentIslandSound(sound: AgentIslandSoundChoice): void {
@@ -372,11 +231,11 @@ export function useAgentIslandSettings(): {
   selectSoundFile: () => Promise<AgentIslandSoundChoice | null>;
   supported: boolean;
 } {
-  const [enabled, setEnabledState] = useState<boolean>(getAgentIslandEnabled);
-  const [soundSettings, setSoundSettingsState] = useState<AgentIslandSoundSettings>(getAgentIslandSoundSettings);
-  const [soundCustomized, setSoundCustomizedState] = useState<boolean>(isAgentIslandSoundSettingsCustomized);
-  const [mascotSkin, setMascotSkinState] = useState<AgentIslandMascotSkin>(getAgentIslandMascotSkin);
-  const [displayTarget, setDisplayTargetState] = useState<AgentIslandDisplayTarget>(getAgentIslandDisplayTarget);
+  const enabled = useDesktopPreference('agentIslandEnabled');
+  const soundSettings = useDesktopPreference('agentIslandSoundSettings');
+  const soundCustomized = useDesktopPreferenceCustomized('agentIslandSoundSettings');
+  const mascotSkin = useDesktopPreference('agentIslandMascotSkin');
+  const displayTarget = useDesktopPreference('agentIslandDisplayTarget');
   const [displayOptions, setDisplayOptionsState] = useState<AgentIslandDisplayOption[]>([]);
   const supported = isAgentIslandSupported();
 
@@ -385,19 +244,17 @@ export function useAgentIslandSettings(): {
   }, []);
 
   const setSoundEnabled = useCallback((next: boolean) => {
-    const current = getAgentIslandSoundSettings();
-    void setAgentIslandSoundSettings({ ...current, enabled: next });
+    void updateAgentIslandSounds(current => ({ ...current, enabled: next }));
   }, []);
 
   const setSound = useCallback((event: AgentIslandSoundEvent, sound: AgentIslandSoundChoice) => {
-    const current = getAgentIslandSoundSettings();
-    void setAgentIslandSoundSettings({
+    void updateAgentIslandSounds(current => ({
       ...current,
       sounds: {
         ...current.sounds,
         [event]: sound,
       },
-    });
+    }));
   }, []);
 
   const resetSoundSettings = useCallback(async () => {
@@ -442,7 +299,7 @@ export function useAgentIslandSettings(): {
 
   useEffect(() => {
     syncAgentIslandEnabledToMain();
-  }, []);
+  }, [enabled, soundSettings, mascotSkin, displayTarget]);
 
   useEffect(() => {
     if (!supported) return;
@@ -459,22 +316,6 @@ export function useAgentIslandSettings(): {
       window.removeEventListener('focus', refreshOptions);
     };
   }, [supported]);
-
-  useEffect(() => {
-    const onChange = () => {
-      setEnabledState(getAgentIslandEnabled());
-      setSoundSettingsState(getAgentIslandSoundSettings());
-      setSoundCustomizedState(isAgentIslandSoundSettingsCustomized());
-      setMascotSkinState(getAgentIslandMascotSkin());
-      setDisplayTargetState(getAgentIslandDisplayTarget());
-    };
-    subscribers.add(onChange);
-    window.addEventListener('storage', onChange);
-    return () => {
-      subscribers.delete(onChange);
-      window.removeEventListener('storage', onChange);
-    };
-  }, []);
 
   return {
     enabled,

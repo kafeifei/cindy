@@ -16,9 +16,9 @@
  *   - dev 下 electron.exe 启动没有 NSIS 装的快捷方式，原生 toast 可能不弹——
  *     把 dev 环境当成"通知功能要在 packaged 构建里测"即可，不再额外兜底。
  *
- * 通知偏好仍由 renderer 的 localStorage 持久化。普通会话在 renderer gate 后通过
- * payload.channels 分发；scheduler 从 main 直接发桌面通知，因此 renderer 会把
- * `notifications.enabled` 的当前值轻量同步到 main。飞书仍只按调用方 channels 分发，
+ * 桌面通知偏好以 Host profile 正本为准；未迁移时保留 Renderer 的临时运行态同步。
+ * 普通会话的 channels 与 scheduler 都必须再经过同一 Main 桌面总开关。
+ * 飞书仍只按调用方 channels 分发，
  * 且额外要求 ownerOpenId 存在（TOFU 绑定前不发，只 warn）。
  */
 
@@ -43,13 +43,22 @@ import {
   type SessionEventKind,
 } from './sessionNotificationCopy';
 
+import { inspectDesktopPreferences } from './host-settings/desktop-preferences.js';
+
 export type { SessionEventKind } from './sessionNotificationCopy';
 
 const log = createLogger('notificationService');
 let desktopNotificationsEnabled = true;
 
-/** Renderer owns persistence; main keeps the current value for scheduler-originated toasts. */
+function inspectDesktopNotificationPreference() {
+  try { return inspectDesktopPreferences(); }
+  catch { return null; }
+}
+
+/** 无 Renderer 时也消费已提交的 Host 值；暂不可读只保留运行态，不初始化偏好。 */
 export function getDesktopNotificationsEnabled(): boolean {
+  const state = inspectDesktopNotificationPreference();
+  if (state?.status === 'ready') desktopNotificationsEnabled = state.value.notificationsEnabled;
   return desktopNotificationsEnabled;
 }
 
@@ -167,6 +176,7 @@ export function showDesktopSessionEvent(
 ): boolean {
   const { sessionId, title, kind } = payload;
   if (sessionId) markSessionNeedsAttention(sessionId);
+  if (!getDesktopNotificationsEnabled()) return;
   const safeTitle = title?.trim() || sessionId.slice(0, 8) || getSessionNotificationUntitled();
   return showDesktopToast(safeTitle, kind, () => focusWindow(getWindow, sessionId), payload.body, payload.teammate);
 }
@@ -187,7 +197,10 @@ export function initNotificationService(deps: NotificationServiceDeps): void {
     if (typeof enabled !== 'boolean') {
       throw new TypeError('notification desktop enabled must be a boolean');
     }
-    desktopNotificationsEnabled = enabled;
+    const state = inspectDesktopNotificationPreference();
+    if (state?.status === 'ready') desktopNotificationsEnabled = state.value.notificationsEnabled;
+    else if (state?.status === 'migrationPending') desktopNotificationsEnabled = enabled;
+    // 不可读时不接受可能迟到的默认 payload，也不创建任何偏好文件。
     return { ok: true as const };
   });
 

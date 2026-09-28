@@ -12,6 +12,7 @@ import { cindyLight } from './builtin/cindy-light';
 import { LOCAL_THEME_SUFFIX } from '../../shared/local-themes';
 import { getLocalThemes } from './local-themes';
 import type { Theme, ThemeType } from './types';
+import { BUILTIN_THEME_FAMILIES } from '../../shared/themeFamilies';
 
 /**
  * 一个家族下面最多两个变体 (light + dark)。设置 UI 让用户选家族,然后按
@@ -87,7 +88,7 @@ function buildLocalFamilies(): ThemeFamily[] {
 }
 
 export function getThemeFamilies(): ThemeFamily[] {
-  return [...BUILTIN_FAMILIES, ...buildLocalFamilies()];
+  return [...BUILTIN_FAMILIES.map(family => ({ ...family, name: BUILTIN_THEME_FAMILIES.find(entry => entry.id === family.id)!.name })), ...buildLocalFamilies()];
 }
 
 export function getFamily(id: string): ThemeFamily {

@@ -1,4 +1,6 @@
 import { ipcMain, net } from 'electron';
+import { createHmac, randomBytes } from 'node:crypto';
+import { OverrideSettingsError, type OverrideSettingsCommitOptions } from './maker-host/override-settings-file.js';
 
 import {
   captureImAccountGeneration,
@@ -6,7 +8,7 @@ import {
   isImAccountGenerationCurrent,
   runInImAccountGeneration,
 } from './im/accountBoundary';
-import { ownerScopedImSecrets } from './im/ownerScopedStorage';
+import { ownerScopedImSecrets, removeOwnerScopedImSecretStrict } from './im/ownerScopedStorage';
 import { createLogger } from './logger';
 import { assertTrustedAppRendererEvent } from './security/trustedAppRenderer';
 
@@ -19,6 +21,7 @@ const REQUEST_TIMEOUT_MS = 10_000;
 const MAX_RESPONSE_BYTES = 16 * 1024;
 const MAX_MARKDOWN_BYTES = 4_000;
 const TEST_MESSAGE_INVALID = 'WECOM_GROUP_TEST_MESSAGE_INVALID';
+const preferenceRevisionKey = randomBytes(32);
 
 export interface WecomGroupNotificationState {
   configured: boolean;
@@ -31,7 +34,7 @@ export interface WecomGroupNotificationPublisher {
 }
 
 type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
-type SecretStore = Pick<typeof ownerScopedImSecrets, 'read' | 'write' | 'remove'>;
+type SecretStore = Pick<typeof ownerScopedImSecrets, 'read' | 'write' | 'remove'> & Partial<Pick<typeof ownerScopedImSecrets, 'readResult'>>;
 
 function parseWebhookUrl(raw: string): URL {
   const trimmed = raw.trim();
@@ -130,6 +133,47 @@ export class WecomGroupNotificationService implements WecomGroupNotificationPubl
     private readonly fetchImpl: FetchLike = (input, init) => net.fetch(input, init),
     private readonly secrets: SecretStore = ownerScopedImSecrets,
   ) {}
+
+  private readPreferenceSecret(name: string): string | null {
+    if (!this.secrets.readResult) return this.secrets.read(name);
+    const result = this.secrets.readResult(name);
+    if (result.kind === 'error') throw new OverrideSettingsError('UNREADABLE');
+    return result.kind === 'value' ? result.value : null;
+  }
+
+  private enabledSnapshot(webhook: string | null, override: string | null) {
+    if (!webhook) return { status: 'unavailable' as const, revision: null };
+    try { parseWebhookUrl(webhook); } catch { return { status: 'unreadable' as const, revision: null }; }
+    if (override !== null && override !== 'true' && override !== 'false') return { status: 'unreadable' as const, revision: null };
+    return { status: 'ready' as const,
+      revision: createHmac('sha256', preferenceRevisionKey).update(JSON.stringify([this.configGeneration, webhook, override])).digest('base64url'),
+      value: { enabled: override !== 'false' }, defaults: { enabled: true }, customizedKeys: override === null ? [] : ['enabled'], isCustomized: override !== null };
+  }
+
+  /** Owner-scoped boolean only; webhook and masked credential never leave this service. */
+  inspectEnabledPreference() {
+    if (captureImAccountGeneration() === null) return { status: 'unavailable' as const, revision: null };
+    try { return this.enabledSnapshot(this.readPreferenceSecret(WEBHOOK_SECRET_NAME), this.readPreferenceSecret(ENABLED_SETTING_NAME)); }
+    catch { return { status: 'unreadable' as const, revision: null }; }
+  }
+
+  commitEnabledPreference(value: boolean | null, options: OverrideSettingsCommitOptions) {
+    const owner = captureImAccountGeneration();
+    if (owner === null) throw new ImAccountScopeClosedError();
+    options.assertCurrent?.();
+    const webhook = this.readPreferenceSecret(WEBHOOK_SECRET_NAME);
+    const before = this.enabledSnapshot(webhook, this.readPreferenceSecret(ENABLED_SETTING_NAME));
+    if (before.status !== 'ready') throw new OverrideSettingsError('UNREADABLE');
+    if (before.revision !== options.expectedRevision) throw new OverrideSettingsError('CONFLICT');
+    options.assertCurrent?.();
+    if (!isImAccountGenerationCurrent(owner)) throw new ImAccountScopeClosedError();
+    if (value === null) { this.configGeneration += 1;
+      if (this.secrets === ownerScopedImSecrets) removeOwnerScopedImSecretStrict(ENABLED_SETTING_NAME);
+      else this.secrets.remove(ENABLED_SETTING_NAME);
+    }
+    else this.setEnabled(value);
+    return this.enabledSnapshot(webhook, value === null ? null : String(value)) as ReturnType<typeof this.enabledSnapshot> & { status: 'ready' };
+  }
 
   getState(): WecomGroupNotificationState {
     const stored = this.secrets.read(WEBHOOK_SECRET_NAME);

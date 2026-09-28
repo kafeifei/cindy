@@ -27,6 +27,8 @@ export const TEST_CLIENT_ENDPOINTS: ClientEndpointMap = {
   // 既有 loopback 登录测试整体改道。要测 hosted 路径的用例自己覆盖这一个 key。
   authDesktopCallbackUrl: '',
   deviceLinkApiBaseUrl: 'https://device.test.invalid',
+  // 未配置的旧实例不应因统一测试 fixture 而自动启用设置上报。
+  cloudInstanceApiBaseUrl: '',
   oauthBrokerApiBaseUrl: 'https://oauth.test.invalid',
   ossApiBaseUrl: 'https://oss.test.invalid',
   heartbeatUrl: 'https://heartbeat.test.invalid',

@@ -1,3 +1,4 @@
+import { validateAdditionalSettingsOverrides } from '../shared/settingsEditableCatalog.js';
 /**
  * window-behavior-settings-store —— main 进程对窗口交互行为开关的持久化。
  *
@@ -10,9 +11,9 @@
  *  - windowsCloseBehavior: null (Windows 首次关闭时弹窗询问,选择后持久化)
  *  - linuxCloseBehavior: null (Linux 首次关闭时弹窗询问,选择后持久化)
  *
- * swallowActivationClick 仍由 renderer localStorage 承担运行时事实标准,main
- * 侧文件只供下次创建 BrowserWindow 时读取。平台关闭行为则完全由 main 侧
- * 持久化与执行,renderer 通过 IPC 读写同一份状态。
+ * swallowActivationClick 迁移后由 Host profile 正本解释；本文件的旧值只作
+ * 尚未迁移或暂不可读时的兼容缓存。平台关闭行为仍完全由本 store 持久化与执行。
+ * inspect 只检查本文件，不读取或应用桌面运行态。
  */
 
 import { app } from 'electron';
@@ -27,7 +28,20 @@ import {
   type WindowsCloseBehavior,
 } from '../shared/windowBehavior.js';
 
+import { inspectSettingsFile, isSettingBoolean, validateOptionalSettingsFields } from './maker-host/settings-inspection.js';
+import { inspectDesktopPreferences } from './host-settings/desktop-preferences.js';
+
 const log = desktopMakerLogger.child('window-behavior-settings-store');
+
+export function inspectWindowBehaviorSettings() {
+  return inspectSettingsFile({ filePath: settingsFilePath, defaults: DEFAULTS, normalize,
+    validate: (raw) => validateOptionalSettingsFields(raw, {
+      swallowActivationClick: isSettingBoolean,
+      windowsCloseBehavior: (value) => value === null || isWindowsCloseBehavior(value),
+      linuxCloseBehavior: (value) => value === null || isLinuxCloseBehavior(value),
+    }),
+  });
+}
 
 export interface WindowBehaviorSettings {
   swallowActivationClick: boolean;
@@ -63,6 +77,7 @@ function normalize(raw: unknown): WindowBehaviorSettings {
 }
 
 const store = createOverrideSettingsFile<WindowBehaviorSettings>({
+  validateOverrides: raw => validateAdditionalSettingsOverrides('linuxWindow', raw),
   filePath: settingsFilePath,
   defaults: DEFAULTS,
   normalize,
@@ -71,7 +86,15 @@ const store = createOverrideSettingsFile<WindowBehaviorSettings>({
 });
 
 export function readWindowBehaviorSettings(): WindowBehaviorSettings {
-  return store.read();
+  const legacy = store.read();
+  try {
+    const desktop = inspectDesktopPreferences();
+    if (desktop.status === 'ready') {
+      // 创建期原生窗口只消费 Host 正本；迟到的旧缓存写入不能改变生效值。
+      return { ...legacy, swallowActivationClick: desktop.value.swallowActivationClick };
+    }
+  } catch { /* 不可读时保留既有缓存，不迁移、不写默认。 */ }
+  return legacy;
 }
 
 export function writeSwallowActivationClick(swallowActivationClick: boolean): void {
@@ -90,3 +113,6 @@ export function writeLinuxCloseBehavior(linuxCloseBehavior: LinuxCloseBehavior):
 }
 
 export const __testing = { normalize };
+
+/** Internal Host settings adapter; no new IPC or persistence location. */
+export function getWindowBehaviorSettingsStore() { return store; }

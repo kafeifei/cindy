@@ -49,6 +49,14 @@ const LEGACY_STORAGE_KEY_V1 = 'xdt:providerModelMemory:v1';
 export const MODEL_PRESET_SLOT_ID = '*';
 
 let activeDataOwnerId: string | null = null;
+let hostPreferenceWriter: (() => void) | null = null;
+const hasHostPreferences = () => typeof window !== 'undefined' && !!window.electronAPI?.hostSettings;
+export function configureHostProviderMemoryPersistence(writer: (() => void) | null): void { hostPreferenceWriter = writer; }
+/** Host 迁移使用完整快照，lastModel 不能从 snapshotForSeed 推断或丢弃。 */
+export function snapshotForHost(expectedOwner: string | null): Record<string, ProviderMemory> | null {
+  return expectedOwner === activeDataOwnerId ? structuredClone(load()) : null;
+}
+export function applyHostProviderMemory(snapshot: Record<string, ProviderMemory>): void { cache = sanitize(snapshot); emit(); }
 
 function ownerStorageKey(ownerId: string): string {
   return `${STORAGE_KEY}:${encodeURIComponent(ownerId)}`;
@@ -466,6 +474,7 @@ function load(): Record<string, ProviderMemory> {
  * localStorage 不可读时保留本窗口内存态，不能用空表抹掉尚未成功持久化的用户选择。
  */
 function freshMap(): Record<string, ProviderMemory> {
+  if (hostPreferenceWriter || hasHostPreferences()) return load();
   if (typeof window === 'undefined') return load();
   const key = storageKey();
   let raw: string | null;
@@ -524,6 +533,7 @@ export function subscribeProviderModelMemory(listener: () => void): () => void {
 const removeStorageListener = (() => {
   if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return null;
   const onStorage = (event: StorageEvent): void => {
+    if (hostPreferenceWriter || hasHostPreferences()) return;
     if (event.storageArea && event.storageArea !== window.localStorage) return;
     if (event.key !== null && event.key !== storageKey()) return;
     // storage 事件可能迟到，event.newValue 不是当前真相；始终重读当前 owner 分区。
@@ -570,6 +580,7 @@ function persist(
   const key = storageKey();
   cache = map;
   emit();
+  if (hostPreferenceWriter || hasHostPreferences()) { hostPreferenceWriter?.(); return; }
   if (typeof window === 'undefined') return;
   try {
     window.localStorage.setItem(key, JSON.stringify(map));

@@ -6,7 +6,7 @@
  *   - 内部网页:本地硬盘 HTML 与本机地址(localhost)。默认内置侧边栏浏览器。
  * 右键菜单里始终两种都可临时选,本设置只决定左键直开走哪个。
  *
- * 存储走 useLinkOpenPreference(localStorage 只存 override,选回默认即清除,
+ * 存储走 useLinkOpenPreference(Host profile 只存 override,恢复默认删除 override,
  * 规则 20);每个开关各自「恢复默认」,复用 DefaultOverrideControls。
  *
  * 版式跟 AgentResourceSection 同一套多行卡:一张卡、两行、控件贴右,
@@ -21,7 +21,6 @@ import { SegmentedControl } from '@/components/ui/segmented-control';
 import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
 import {
-  LINK_OPEN_DEFAULTS,
   useLinkOpenPreference,
   type LinkOpenKind,
   type LinkOpenPreference,
@@ -46,12 +45,12 @@ const DIVIDER_CLASS = 'mx-4 h-px bg-[var(--settings-theme-card-border)]';
 
 function LinkOpenPreferenceRow({ kind }: { kind: LinkOpenKind }) {
   const { t } = useTranslation();
-  const { preference, isCustomized, setPreference } = useLinkOpenPreference(kind);
+  const { preference, isCustomized, setPreference, resetPreference } = useLinkOpenPreference(kind);
 
-  const onReset = useCallback(() => {
-    setPreference(LINK_OPEN_DEFAULTS[kind]);
-    toast.success(t('settings.defaults.restored'));
-  }, [kind, setPreference, t]);
+  const onReset = useCallback(async () => {
+    if (await resetPreference()) toast.success(t('settings.defaults.restored'));
+    else toast.error(t('hostSettings.saveFailed'));
+  }, [resetPreference, t]);
 
   return (
     <div className={ROW_CLASS}>

@@ -16,6 +16,9 @@ import * as fs from 'node:fs';
 import path from 'node:path';
 import type { PluginId, XdtMakerSettings } from './types.js';
 
+import { inspectSettingsJson, isSettingsRecord } from '../inspect-settings-json.js';
+import { createOverrideSettingsFile, type OverrideSettingsCommitOptions } from '../override-settings-file.js';
+
 export interface SettingsReaderDeps {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   logger: { warn: (...args: any[]) => void };
@@ -36,9 +39,104 @@ export class SettingsReader {
   private projectCache = new Map<string, ProjectCacheEntry>();
   private globalCache: ProjectCacheEntry | null = null;
 
+  /** The same file and lock are used by native toggles and remote settings. */
+  private globalStore = createOverrideSettingsFile<Record<string, unknown>>({
+    filePath: () => this.getGlobalSettingsPath(), defaults: {},
+    normalize: raw => ({ ...raw as Record<string, unknown> }),
+    preserveUnreadableFile: true, maxBytes: 64 * 1024,
+    validateOverrides: raw => {
+      for (const key of ['builtinTools', 'plugins']) {
+        if (raw[key] === undefined) continue;
+        if (!isSettingsRecord(raw[key])) throw new Error('Invalid tool settings');
+        for (const value of Object.values(raw[key])) {
+          if (!isSettingsRecord(value) || typeof value.enabled !== 'boolean') throw new Error('Invalid tool preference');
+        }
+      }
+    },
+    log: { info: () => {}, warn: () => {} }, label: 'builtin-tools',
+  });
+
+  inspectUserDefaults() { return this.globalStore.inspect(); }
+
+  private projectStore(workingDir: string) {
+    return createOverrideSettingsFile<Record<string, unknown>>({
+      filePath: () => path.join(workingDir, '.claude', 'settings.json'), defaults: {}, normalize: raw => ({ ...raw as Record<string, unknown> }),
+      preserveUnreadableFile: true, maxBytes: 1024 * 1024,
+      validateOverrides: raw => {
+        if (raw.xdtMaker === undefined) return;
+        if (!isSettingsRecord(raw.xdtMaker)) throw new Error('Invalid project settings');
+        for (const key of ['builtinTools', 'plugins']) {
+          const tools = raw.xdtMaker[key]; if (tools === undefined) continue;
+          if (!isSettingsRecord(tools) || Object.values(tools).some(value => !isSettingsRecord(value) || typeof value.enabled !== 'boolean')) throw new Error('Invalid tool settings');
+        }
+      }, log: { info() {}, warn() {} }, label: 'project-builtin-tools',
+    });
+  }
+  inspectProjectSettings(workingDir: string) { return this.projectStore(workingDir).inspect(); }
+  async commitProjectSettings(workingDir: string, change: { set?: Record<string, boolean>; clear?: string[] }, options?: OverrideSettingsCommitOptions) {
+    const state = await this.projectStore(workingDir).commitAtomic(current => {
+      const maker = { ...((current.value.xdtMaker ?? {}) as Record<string, unknown>) };
+      const values = { ...(maker.builtinTools ?? maker.plugins ?? {}) as Record<string, unknown> };
+      for (const key of change.clear ?? []) delete values[key];
+      for (const [key, enabled] of Object.entries(change.set ?? {})) values[key] = { ...(isSettingsRecord(values[key]) ? values[key] : {}), enabled };
+      delete maker.plugins;
+      if (Object.keys(values).length) maker.builtinTools = values; else delete maker.builtinTools;
+      return Object.keys(maker).length ? { set: { xdtMaker: maker } } : { clear: ['xdtMaker'] };
+    }, options);
+    this.projectCache.delete(workingDir);
+    return state;
+  }
+
+  async commitUserDefaults(change: { set?: Record<string, boolean>; clear?: string[] }, options?: OverrideSettingsCommitOptions) {
+    const result = await this.globalStore.commitAtomic(state => {
+      const root = state.value;
+      const values = { ...(root.builtinTools ?? root.plugins ?? {}) as Record<string, unknown> };
+      for (const key of change.clear ?? []) delete values[key];
+      for (const [key, enabled] of Object.entries(change.set ?? {})) {
+        values[key] = { ...(isSettingsRecord(values[key]) ? values[key] : {}), enabled };
+      }
+      // Copy all legacy entries before retiring the legacy alias; preserve unrelated root keys.
+      return { set: Object.keys(values).length ? { builtinTools: values } : {},
+        clear: Object.keys(values).length ? ['plugins'] : ['builtinTools', 'plugins'] };
+    }, options);
+    this.globalCache = null;
+    return result;
+  }
+
   constructor(deps: SettingsReaderDeps) {
     this.log = deps.logger;
     this.userDataPath = deps.userDataPath;
+  }
+
+  /** Fresh, non-caching inspection of only explicitly admitted built-in ids. */
+  inspectGlobal(knownIds: readonly string[]) {
+    if (!this.userDataPath) return { status: 'unavailable' as const };
+    return this.inspectKnownFile(path.join(this.userDataPath, 'builtin-tools-settings.json'), knownIds, false);
+  }
+
+  /** Caller supplies already-known workspaces; this method never discovers directories. */
+  inspectProject(workingDir: string, knownIds: readonly string[]) {
+    if (!path.isAbsolute(workingDir)) return { status: 'unavailable' as const };
+    return this.inspectKnownFile(path.join(workingDir, '.claude', 'settings.json'), knownIds, true);
+  }
+
+  private inspectKnownFile(filePath: string, knownIds: readonly string[], project: boolean) {
+    return inspectSettingsJson(filePath, (raw) => {
+      const section = project ? raw.xdtMaker : raw;
+      if (section === undefined) return new Map<string, boolean>();
+      if (!isSettingsRecord(section)) throw new Error('invalid section');
+      const tools = section.builtinTools ?? section.plugins;
+      if (tools === undefined) return new Map<string, boolean>();
+      if (!isSettingsRecord(tools)) throw new Error('invalid builtin tools');
+      const result = new Map<string, boolean>();
+      for (const id of knownIds) {
+        if (!Object.prototype.hasOwnProperty.call(tools, id)) continue;
+        const item = tools[id];
+        if (!isSettingsRecord(item) || typeof item.enabled !== 'boolean') throw new Error('invalid builtin setting');
+        result.set(id, item.enabled);
+      }
+      return result;
+    });
   }
 
   // ── Global settings ───────────────────────────────────────────────────────
@@ -51,26 +149,11 @@ export class SettingsReader {
   }
 
   async writeGlobalPluginSetting(pluginId: PluginId, enabled: boolean): Promise<void> {
-    const settingsPath = this.getGlobalSettingsPath();
-    const root = await this.readJsonFile(settingsPath);
-    const builtinTools = (root.builtinTools as Record<string, { enabled?: boolean }> | undefined) ?? {};
-    builtinTools[pluginId] = { ...builtinTools[pluginId], enabled };
-    root.builtinTools = builtinTools;
-    await fs.promises.mkdir(path.dirname(settingsPath), { recursive: true });
-    await fs.promises.writeFile(settingsPath, JSON.stringify(root, null, 2), 'utf-8');
-    this.globalCache = null;
+    await this.commitUserDefaults({ set: { [pluginId]: enabled } });
   }
 
   async clearGlobalPluginSetting(pluginId: PluginId): Promise<void> {
-    const settingsPath = this.getGlobalSettingsPath();
-    const root = await this.readJsonFile(settingsPath);
-    const builtinTools = (root.builtinTools as Record<string, unknown> | undefined) ?? {};
-    if (!(pluginId in builtinTools)) return;
-    delete builtinTools[pluginId];
-    root.builtinTools = builtinTools;
-    await fs.promises.mkdir(path.dirname(settingsPath), { recursive: true });
-    await fs.promises.writeFile(settingsPath, JSON.stringify(root, null, 2), 'utf-8');
-    this.globalCache = null;
+    await this.commitUserDefaults({ clear: [pluginId] });
   }
 
   // ── Project settings ──────────────────────────────────────────────────────
@@ -99,55 +182,12 @@ export class SettingsReader {
 
   /** Write a project-level plugin override to .claude/settings.json. */
   async writeProjectPluginSetting(workingDir: string, pluginId: PluginId, enabled: boolean): Promise<void> {
-    const settingsPath = path.join(workingDir, '.claude', 'settings.json');
-
-    // Read existing file, preserving all other keys
-    const root = await this.readJsonFile(settingsPath);
-
-    const xdtMaker = (root.xdtMaker as Record<string, unknown> | undefined) ?? {};
-    const builtinTools = (xdtMaker.builtinTools as Record<string, { enabled?: boolean }> | undefined) ?? {};
-    builtinTools[pluginId] = { ...builtinTools[pluginId], enabled };
-
-    root.xdtMaker = { ...xdtMaker, builtinTools };
-    await fs.promises.mkdir(path.dirname(settingsPath), { recursive: true });
-    await fs.promises.writeFile(settingsPath, JSON.stringify(root, null, 2), 'utf-8');
-
-    // Invalidate cache for this workingDir
-    this.projectCache.delete(workingDir);
+    await this.commitProjectSettings(workingDir, { set: { [pluginId]: enabled } });
   }
 
-  /** Remove a project-level override so the plugin follows the user/product default again. */
+  /** Remove only the selected override and follow the current user default. */
   async clearProjectPluginSetting(workingDir: string, pluginId: PluginId): Promise<void> {
-    const settingsPath = path.join(workingDir, '.claude', 'settings.json');
-
-    let root: Record<string, unknown> = {};
-    try {
-      const raw = await fs.promises.readFile(settingsPath, 'utf-8');
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        root = parsed as Record<string, unknown>;
-      }
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
-      throw err;
-    }
-
-    const xdtMaker = (root.xdtMaker as Record<string, unknown> | undefined) ?? {};
-    const builtinTools = (xdtMaker.builtinTools as Record<string, unknown> | undefined) ?? {};
-    const legacyPlugins = (xdtMaker.plugins as Record<string, unknown> | undefined) ?? {};
-    const hadBuiltinOverride = pluginId in builtinTools;
-    const hadLegacyOverride = pluginId in legacyPlugins;
-    if (!hadBuiltinOverride && !hadLegacyOverride) return;
-
-    if (hadBuiltinOverride) delete builtinTools[pluginId];
-    if (hadLegacyOverride) delete legacyPlugins[pluginId];
-    root.xdtMaker = {
-      ...xdtMaker,
-      ...(xdtMaker.builtinTools ? { builtinTools } : {}),
-      ...(xdtMaker.plugins ? { plugins: legacyPlugins } : {}),
-    };
-    await fs.promises.writeFile(settingsPath, JSON.stringify(root, null, 2), 'utf-8');
-    this.projectCache.delete(workingDir);
+    await this.commitProjectSettings(workingDir, { clear: [pluginId] });
   }
 
   private getGlobalSettingsPath(): string {

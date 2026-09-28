@@ -7,10 +7,10 @@ import {
 } from '../../shared/orca-worker-permission-mode.js';
 
 /**
- * newMakerDefaultsCache —— renderer "New Maker" 面板用户当前选择的 main 端缓存。
+ * newMakerDefaultsCache —— Host 新任务默认值的兼容投影。
  *
- * Source of truth 仍是 renderer 的 newMakerDraft / workerCreationPrefs (localStorage)；
- * renderer 启动时全量 push 一次，此后每次偏好变化都增量 push，main 端只保存内存镜像。
+ * 生产环境的模型/调档真源是 owner-scoped Host settings；Renderer 整包推送不再能覆盖。
+ * Worker 权限仍保留原有独立 UI 偏好，不属于 helper 可修改的新任务默认值。
  *
  * 用途: collab mode spawn worker 时 (enableOrcaInternal / orca-bridge.create_worker)
  * 不再用 hardcode 默认值,优先读这份缓存 —— worker 实际启动参数 = "用户在 New Maker
@@ -30,6 +30,7 @@ interface VendorPrefsSnapshot {
    * 老版本 renderer 不推这两项 → undefined,消费方按自己的兜底处理。
    */
   permissionMode?: string;
+  planMode?: boolean;
   providerId?: string | null;
 }
 
@@ -54,6 +55,21 @@ export interface NewMakerDraftSnapshot {
 
 let cache: NewMakerDraftSnapshot | null = null;
 let selectedRouteOwner: string | undefined;
+let hostSource: (() => { snapshot: NewMakerDraftSnapshot; ownerScope: string } | null) | null = null;
+/** 生产环境注入 Host 真源；本模块只负责保持已有 Worker/远端解析优先级。 */
+export function configureNewMakerDefaultsSource(source: typeof hostSource): void { hostSource = source; }
+/** Host 提交后通知兼容消费者；不需要 Renderer ACK。 */
+export function notifyNewMakerDefaultsChanged(): void {
+  refreshHostSource();
+  for (const listener of defaultListeners) listener();
+}
+function refreshHostSource(): void {
+  if (!hostSource) return;
+  const current = hostSource();
+  cache = current?.snapshot ?? null;
+  selectedRouteOwner = current?.ownerScope;
+  providerMemoryCache = current?.snapshot.providerModelMemory ?? null;
+}
 const defaultListeners = new Set<(confirmedRequestId?: string) => void>();
 export function subscribeNewMakerDefaults(listener: (confirmedRequestId?: string) => void): () => void {
   defaultListeners.add(listener);
@@ -84,6 +100,7 @@ let providerMemoryCache: ProviderModelMemorySnapshot | null = null;
 
 /** Renderer push handler 调; 整体替换缓存 (而不是合并), 跟 source of truth 对齐。 */
 export function setNewMakerDraftCache(snapshot: NewMakerDraftSnapshot, ownerScope?: string, confirmedRequestId?: string): void {
+  if (hostSource) return;
   cache = snapshot;
   selectedRouteOwner = ownerScope;
   for (const listener of defaultListeners) listener(confirmedRequestId);
@@ -96,7 +113,7 @@ export function syncNewMakerDraftCache(
   ownerScope: string,
   boundaryPending: boolean,
 ): boolean {
-  if (boundaryPending || !raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+  if (hostSource || boundaryPending || !raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
   const p = raw as Partial<NewMakerDraftSnapshot> & { ownerStamp?: unknown; appDefaultModelRequestId?: unknown };
   if (!isDataOwnerPushStamp(p.ownerStamp)
     || p.ownerStamp.dataOwnerId !== activeOwner.dataOwnerId
@@ -133,6 +150,7 @@ export function getWorkerPermissionModeFromCreationPrefs(): OrcaWorkerPermission
 
 /** Renderer push handler 调; 整体替换 providerModelMemory 镜像。 */
 export function setProviderModelMemoryCache(snapshot: ProviderModelMemorySnapshot): void {
+  if (hostSource) return;
   providerMemoryCache = snapshot;
 }
 
@@ -152,6 +170,7 @@ export function getThinkingEnabledFromMemory(
   providerId: string | null | undefined,
   model: string | undefined,
 ): boolean | undefined {
+  refreshHostSource();
   if (!providerMemoryCache || !providerId || !model) return undefined;
   return providerMemoryCache[`${agentKind}:${providerId}`]?.thinkingByModel?.[model];
 }
@@ -163,6 +182,7 @@ export function getThinkingEnabledFromMemory(
 export function getWorkerDefaultsFromNewMaker(
   workerAgent: 'claude-code' | 'codex' | 'pi',
 ): WorkerDefaultsFromNewMaker {
+  refreshHostSource();
   if (!cache) return {};
   const vendor: VendorKey = workerAgent === 'claude-code' ? 'cc' : workerAgent === 'pi' ? 'pi' : 'codex';
   const prefs = cache.lastByVendor[vendor];
@@ -189,6 +209,9 @@ export function getWorkerDefaultsFromNewMaker(
  * 缓存未就绪 / 该 vendor 没草稿 model → 返回空对象,控制端按 capabilities 默认兜底。
  */
 export interface RemoteNewMakerDefaults {
+  /** 新 Host 已解析推荐与显式选择，控制端不再自动换模；旧端缺省保持兼容校准。 */
+  hostAuthoritative?: boolean;
+  planMode?: boolean;
   preferredAgentKind?: 'claude-code' | 'codex' | 'pi';
   defaultTupleCustomized?: boolean;
   model?: string;
@@ -217,6 +240,7 @@ export interface RemoteNewMakerDefaults {
 export function getRemoteNewMakerDefaults(
   agentKind: 'claude-code' | 'codex' | 'pi',
 ): RemoteNewMakerDefaults {
+  refreshHostSource();
   const vendor: VendorKey =
     agentKind === 'claude-code' ? 'cc' : agentKind === 'pi' ? 'pi' : 'codex';
   // providerModelMemory(草稿列表行真实读源)与「该 vendor 是否选过模型」无关:即便 cache 未就绪 /
@@ -227,6 +251,7 @@ export function getRemoteNewMakerDefaults(
   const providerModelMemory = providerMemoryCache ?? undefined;
   const modelChosenByUser = cache?.modelChosenByVendor?.[vendor];
   const base: RemoteNewMakerDefaults = {
+    ...(hostSource ? { hostAuthoritative: true, planMode: cache?.lastByVendor[vendor]?.planMode === true } : {}),
     ...(cache?.vendor ? { preferredAgentKind:
       cache.vendor === 'cc' ? 'claude-code' as const : cache.vendor } : {}),
     ...(typeof cache?.defaultTupleCustomized === 'boolean'
@@ -266,12 +291,14 @@ export function getRemoteNewMakerDefaultsByVendor(): {
 
 /** Read only the active owner’s current selection; never reuse another account’s mirror. */
 export function getSelectedNewMakerRoute(ownerScope: string): BotModelRoute | undefined {
+  refreshHostSource();
   return selectedRouteOwner === ownerScope ? cache?.selectedRoute : undefined;
 }
 
 /** Same snapshot as the selected route; never consume the unfenced legacy preference cache. */
 export function getNewMakerModelTuning(ownerScope: string, agent: 'claude-code' | 'codex' | 'pi',
   providerId: string, model: string): { effort?: string; fastMode?: boolean } {
+  refreshHostSource();
   if (selectedRouteOwner !== ownerScope || !cache) return {};
   const memory = cache.providerModelMemory;
   const provider = memory?.[`${agent}:${providerId}`];

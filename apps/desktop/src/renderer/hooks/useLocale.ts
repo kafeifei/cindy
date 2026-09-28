@@ -2,7 +2,7 @@
  * useLocale —— 显示语言偏好 + 实际生效语言。
  *
  * 设计上和 useTheme 镜像：
- *   - 偏好持久化在 localStorage (key='language')，不经 server。
+ *   - Host profile 保存偏好；Renderer 只消费已提交快照与启动缓存。
  *   - 'system' = 运行时跟 OS 走，由 main 进程读取 OS 首选语言列表并解析。
  *   - 切换语言时同步 i18next.changeLanguage 触发 react-i18next 重渲染，
  *     同步 <html lang="...">，并通知 main 刷新 macOS 原生菜单文案。
@@ -16,28 +16,44 @@ import {
   useContext,
   useEffect,
   useMemo,
-  useState,
   type ReactNode,
 } from 'react';
 import { createElement } from 'react';
+import { getDesktopPreference, setDesktopPreference, useDesktopPreference } from '../state/hostDesktopPreferences';
 
 import {
   i18n,
+  DEFAULT_LOCALE,
+  SUPPORTED_LOCALES,
   type LocalePreference,
   type SupportedLocale,
 } from '@/i18n';
-import { readStoredLocale, writeStoredLocale, effectiveOf, getEffectiveLocale } from '@/lib/localePreference';
 
 interface LocaleContextValue {
   /** 用户的偏好选择 (含 'system')。 */
   locale: LocalePreference;
   /** 实际生效的语言 ('system' 已解析为 OS 语言)。 */
   effectiveLocale: SupportedLocale;
-  /** 设置偏好 —— 持久化到 localStorage、刷 i18next、刷 <html lang>。 */
+  /** 设置偏好 —— 等待 Host 提交后刷 i18next、刷 <html lang>。 */
   setLocale: (next: LocalePreference) => void;
 }
 
 const LocaleContext = createContext<LocaleContextValue | undefined>(undefined);
+
+function readStoredLocale(): LocalePreference { return getDesktopPreference('locale'); }
+
+function detectSystemLocale(): SupportedLocale {
+  if (typeof window === 'undefined') return DEFAULT_LOCALE;
+  const locale = window.electronAPI?.preferredSystemLocale;
+  return typeof locale === 'string' && (SUPPORTED_LOCALES as readonly string[]).includes(locale)
+    ? (locale as SupportedLocale)
+    : DEFAULT_LOCALE;
+}
+
+function effectiveOf(pref: LocalePreference): SupportedLocale {
+  if (pref === 'system') return detectSystemLocale();
+  return pref;
+}
 
 function syncApplicationMenuLocale(loc: SupportedLocale): void {
   if (typeof window === 'undefined') return;
@@ -63,26 +79,19 @@ function applyLocale(loc: SupportedLocale): void {
  * in the user's selected language.
  */
 export function bootstrapInitialLocale(): SupportedLocale {
-  const effectiveLocale = getEffectiveLocale();
+  const effectiveLocale = effectiveOf(readStoredLocale());
   applyLocale(effectiveLocale);
   return effectiveLocale;
 }
 
 export function LocaleProvider({ children }: { children: ReactNode }) {
-  const [locale, setLocaleState] = useState<LocalePreference>(readStoredLocale);
-  const [effectiveLocale, setEffectiveLocale] = useState<SupportedLocale>(getEffectiveLocale);
-
+  const locale = useDesktopPreference('locale');
+  const effectiveLocale = effectiveOf(locale);
   const setLocale = useCallback((next: LocalePreference) => {
-    setLocaleState(next);
-    writeStoredLocale(next);
-    const eff = effectiveOf(next);
-    setEffectiveLocale(eff);
-    applyLocale(eff);
+    void setDesktopPreference('locale', next);
   }, []);
 
-  // 首次 mount 时确保 i18next + <html lang> 与 state 一致 (state 来自 localStorage,
-  // 而 i18n.init 默认用的是 DEFAULT_LOCALE，两者可能不同)。
-  // 仅 mount 一次：locale 后续变化都走 setLocale 路径。
+  // 初次挂载与跨窗口 Host 回执都同步 i18next 和 <html lang>，不让旧启动缓存覆盖正本。
   useEffect(() => {
     applyLocale(effectiveLocale);
   }, [effectiveLocale]);

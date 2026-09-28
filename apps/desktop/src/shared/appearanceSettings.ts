@@ -84,6 +84,20 @@ export function clampAppearanceWallpaperOverlay(
   );
 }
 
+const MAX_APPEARANCE_FONT_FAMILY_LENGTH = 256;
+
+/** 持久 override 与 Host 工具共用严格边界；旧 UI 的夹取与取整仍由 normalize 负责。 */
+export function isValidAppearanceSetting(key: string, value: unknown): value is string | number {
+  if (key === 'uiFamily' || key === 'codeFamily') {
+    return typeof value === 'string' && value.length <= MAX_APPEARANCE_FONT_FAMILY_LENGTH
+      && !/[\x00-\x1f]/.test(value);
+  }
+  if (key !== 'uiSize' && key !== 'codeSize' && key !== 'windowZoom') return false;
+  const limits = APPEARANCE_LIMITS[key];
+  return typeof value === 'number' && Number.isFinite(value) && value >= limits.min && value <= limits.max
+    && (key === 'windowZoom' || Number.isInteger(value));
+}
+
 export function clampAppearanceUiSize(
   value: number,
   fallback = DEFAULT_APPEARANCE_SETTINGS.uiSize,
@@ -153,7 +167,7 @@ function normalizeWallpaperId(value: unknown): WallpaperId {
 }
 
 function normalizeFamily(value: unknown): string {
-  return typeof value === 'string' ? value.trim().slice(0, 256) : '';
+  return typeof value === 'string' ? value.trim().slice(0, MAX_APPEARANCE_FONT_FAMILY_LENGTH) : '';
 }
 
 function clampInteger(value: number, min: number, max: number, fallback: number): number {

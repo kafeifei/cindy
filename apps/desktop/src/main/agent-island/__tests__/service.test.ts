@@ -1,7 +1,9 @@
 import { homedir } from 'node:os';
 import path from 'node:path';
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { desktopPreferenceDefaults, type DesktopPreferences, type DesktopPreferencesSnapshot } from '../../../shared/desktopPreferences.js';
+import type { ActiveAppSession } from '../../appSessionState.js';
 import type { BrowserWindow } from 'electron';
 import { SESSION_ACTIVITY_CHANNEL } from '@cindy/device-link';
 import type { AgentEvent, InteractionRequest } from '@cindy/maker-core';
@@ -12,6 +14,7 @@ import {
   AGENT_ISLAND_GET_DISPLAY_OPTIONS_CHANNEL,
   AGENT_ISLAND_PREVIEW_SOUND_CHANNEL,
   AGENT_ISLAND_SET_DISPLAY_TARGET_CHANNEL,
+  AGENT_ISLAND_SET_ENABLED_CHANNEL,
   AGENT_ISLAND_SET_MASCOT_SKIN_CHANNEL,
   AGENT_ISLAND_SET_SOUND_SETTINGS_CHANNEL,
   AGENT_ISLAND_SET_VISIBLE_SESSION_CHANNEL,
@@ -31,6 +34,25 @@ const REMOTE_DAEMON_CLOSED_REASON = 'remote_daemon_closed';
 
 vi.mock('../../appSessionState', () => ({
   getActiveAppSession: () => ({ dataOwnerId: 'test-owner', generation: 1, mode: 'local' }),
+  peekCommittedAppSession: () => mocks.committedSession,
+  isAppSessionBoundaryPending: () => mocks.boundaryPending,
+}));
+vi.mock('../../host-settings/startup.js', () => { throw new Error('Host Skill preparation forbidden'); });
+vi.mock('../../host-settings/desktop-preferences.js', () => ({
+  inspectDesktopPreferences: () => mocks.inspectDesktop(),
+  updateDesktopPreferences: () => { throw new Error('Runtime may not persist preferences'); },
+  onDesktopPreferencesChanged: (listener: () => void) => {
+    mocks.preferenceListeners.add(listener);
+    return () => { mocks.preferenceListeners.delete(listener); };
+  },
+}));
+vi.mock('../../../shared/agentIsland.js', async original => ({
+  ...await original<typeof import('../../../shared/agentIsland.js')>(),
+  isAgentIslandSupportedPlatform: () => mocks.nativeSupported,
+}));
+vi.mock('node:os', async original => ({
+  ...await original<typeof import('node:os')>(),
+  release: () => '24.0.0',
 }));
 
 // 受保护目录检测按 path.join(homedir(), ...) 的字面量匹配;测试消息必须用同一
@@ -51,6 +73,12 @@ function handleInteractionRequestForTest(
 }
 
 const mocks = vi.hoisted(() => ({
+  committedSession: { dataOwnerId: 'test-owner', generation: 1, mode: 'local' } as ActiveAppSession | null,
+  boundaryPending: false,
+  nativeSupported: true,
+  inspectDesktop: vi.fn<() => DesktopPreferencesSnapshot>(),
+  preferenceListeners: new Set<() => void>(),
+  appOnce: vi.fn(),
   getSessionRowSnapshot: vi.fn<() => Promise<{
     status: string;
     title: string | null;
@@ -105,6 +133,7 @@ vi.mock('electron', () => {
   return {
     app: {
       focus: vi.fn(),
+      once: mocks.appOnce,
       getPreferredSystemLanguages: mocks.getPreferredSystemLanguages,
       getLocale: mocks.getLocale,
     },
@@ -142,6 +171,13 @@ vi.mock('../../device-link/broadcast-tap.js', () => ({
 import { resetEpermGuidanceForTest } from '../../file-access/permissions.js';
 
 beforeEach(() => {
+  mocks.committedSession = { dataOwnerId: 'test-owner', generation: 1, mode: 'local' };
+  mocks.boundaryPending = false;
+  mocks.nativeSupported = true;
+  mocks.inspectDesktop.mockReset();
+  mocks.inspectDesktop.mockReturnValue({ status: 'migrationPending', profileStamp: 'fixture-profile', revision: 'fixture-revision' });
+  mocks.preferenceListeners.clear();
+  mocks.appOnce.mockReset();
   setDeepLinkMainWindow(null);
   takePendingDeepLink();
   mocks.getSessionRowSnapshot.mockReset();
@@ -6045,5 +6081,139 @@ describe('会话关闭原因决定条目去留', () => {
       clearAllSessionAttention();
       vi.useRealTimers();
     }
+  });
+});
+
+// 独立重载单例的用例放在最后，不改变前面几何/窗口 WeakMap 的模块身份。
+describe('Agent Island 消费已提交 profile 偏好', () => {
+  let service: AgentIslandService | null = null;
+  const publish = vi.fn(() => true);
+  const suspend = vi.fn();
+  const ready = (patch: Partial<DesktopPreferences> = {}): DesktopPreferencesSnapshot => {
+    const defaults = desktopPreferenceDefaults();
+    return { status: 'ready', profileStamp: 'fixture-profile', revision: 'fixture-revision', defaults,
+      value: { ...defaults, agentIslandEnabled: true, ...patch }, customizedKeys: ['agentIslandEnabled'], isCustomized: true };
+  };
+  const notify = () => mocks.preferenceListeners.forEach(listener => listener());
+  const runtime = () => service as unknown as {
+    soundSettings: DesktopPreferences['agentIslandSoundSettings'];
+    mascotSkin: DesktopPreferences['agentIslandMascotSkin'];
+    displayTarget: DesktopPreferences['agentIslandDisplayTarget'];
+  };
+  const start = async (headless = false) => {
+    const { initAgentIslandService } = await import('../service.js');
+    service = initAgentIslandService({ getMainWindow: () => null, nativeHost: { failed: false, headless, publish, suspend } });
+    return service!;
+  };
+  beforeEach(() => { vi.resetModules(); publish.mockClear(); suspend.mockClear(); service = null; });
+  afterEach(() => {
+    for (const [event, listener] of mocks.appOnce.mock.calls) if (event === 'will-quit') listener();
+    service?.resetRuntimeState();
+  });
+
+  it('已提交本机会话在无 Renderer 时初始化四组偏好，后续提交按组应用', async () => {
+    const soundSettings = { ...desktopPreferenceDefaults().agentIslandSoundSettings, enabled: false };
+    mocks.inspectDesktop.mockReturnValue(ready({ agentIslandSoundSettings: soundSettings, agentIslandMascotSkin: 'blackcat', agentIslandDisplayTarget: { mode: 'display', displayId: 42 } }));
+    await start();
+    expect(service!.isEnabled()).toBe(true);
+    expect(runtime()).toMatchObject({ soundSettings, mascotSkin: 'blackcat', displayTarget: { mode: 'display', displayId: 42 } });
+    expect(mocks.preferenceListeners.size).toBe(1);
+    publish.mockClear();
+    mocks.inspectDesktop.mockReturnValue(ready({ agentIslandMascotSkin: 'cindy' }));
+    notify();
+    expect(runtime().mascotSkin).toBe('cindy');
+    expect(publish).toHaveBeenCalledOnce();
+    publish.mockClear();
+    mocks.inspectDesktop.mockReturnValue(ready({ agentIslandMascotSkin: 'cindy', notificationsEnabled: false }));
+    notify();
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it.each(['signed-out', 'not-loaded', 'boundary'] as const)('ready profile 不能越过 %s 会话闸门', async state => {
+    mocks.inspectDesktop.mockReturnValue(ready());
+    if (state === 'signed-out') mocks.committedSession = { mode: 'signed-out', dataOwnerId: null, generation: 1 };
+    if (state === 'not-loaded') mocks.committedSession = null;
+    if (state === 'boundary') mocks.boundaryPending = true;
+    await start();
+    notify();
+    await registeredIpcHandler(AGENT_ISLAND_SET_ENABLED_CHANNEL)({}, true);
+    expect(service!.isEnabled()).toBe(false);
+    expect(mocks.inspectDesktop).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+    expect(mocks.getAllDisplays).not.toHaveBeenCalled();
+  });
+
+  it.each(['migrationPending', 'unreadable'] as const)('%s 不初始化或写默认，ready 提交后才应用', async status => {
+    mocks.inspectDesktop.mockReturnValue(status === 'unreadable'
+      ? { status, profileStamp: 'fixture-profile', revision: null }
+      : { status, profileStamp: 'fixture-profile', revision: 'fixture-revision' });
+    await start(); notify();
+    expect(service!.isEnabled()).toBe(false);
+    expect(publish).not.toHaveBeenCalled();
+    mocks.inspectDesktop.mockReturnValue(ready()); notify();
+    expect(service!.isEnabled()).toBe(true);
+  });
+
+  it('迟到的四组旧 IPC payload 不能盖过 ready Host 值', async () => {
+    const soundSettings = { ...desktopPreferenceDefaults().agentIslandSoundSettings, enabled: false };
+    mocks.inspectDesktop.mockReturnValue(ready({ agentIslandSoundSettings: soundSettings, agentIslandMascotSkin: 'blackcat', agentIslandDisplayTarget: { mode: 'display', displayId: 42 } }));
+    await start(); publish.mockClear();
+    await registeredIpcHandler(AGENT_ISLAND_SET_SOUND_SETTINGS_CHANNEL)({}, desktopPreferenceDefaults().agentIslandSoundSettings);
+    await registeredIpcHandler(AGENT_ISLAND_SET_MASCOT_SKIN_CHANNEL)({}, 'cindy');
+    await registeredIpcHandler(AGENT_ISLAND_SET_DISPLAY_TARGET_CHANNEL)({}, { mode: 'all' });
+    await registeredIpcHandler(AGENT_ISLAND_SET_ENABLED_CHANNEL)({}, false);
+    expect(service!.isEnabled()).toBe(true);
+    expect(runtime()).toMatchObject({ soundSettings, mascotSkin: 'blackcat', displayTarget: { mode: 'display', displayId: 42 } });
+    expect(publish).not.toHaveBeenCalled();
+    mocks.inspectDesktop.mockReturnValue({ status: 'unreadable', profileStamp: 'fixture-profile', revision: null });
+    await registeredIpcHandler(AGENT_ISLAND_SET_ENABLED_CHANNEL)({}, false);
+    await registeredIpcHandler(AGENT_ISLAND_SET_SOUND_SETTINGS_CHANNEL)({}, desktopPreferenceDefaults().agentIslandSoundSettings);
+    expect(service!.isEnabled()).toBe(true);
+    expect(runtime().soundSettings).toEqual(soundSettings);
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it('reset 后其它 profile 变化不重新开启，只有合法会话的既有 enabled 信号可恢复', async () => {
+    mocks.inspectDesktop.mockReturnValue(ready()); await start();
+    service!.resetRuntimeState(); publish.mockClear(); mocks.inspectDesktop.mockClear();
+    mocks.inspectDesktop.mockReturnValue(ready({ locale: 'ja', agentIslandMascotSkin: 'blackcat' }));
+    notify();
+    expect(mocks.inspectDesktop).not.toHaveBeenCalled();
+    await registeredIpcHandler(AGENT_ISLAND_SET_MASCOT_SKIN_CHANNEL)({}, 'cindy');
+    expect(runtime().mascotSkin).toBe('blackcat');
+    expect(service!.isEnabled()).toBe(false);
+    mocks.boundaryPending = true;
+    await registeredIpcHandler(AGENT_ISLAND_SET_ENABLED_CHANNEL)({}, true);
+    expect(service!.isEnabled()).toBe(false);
+    mocks.boundaryPending = false;
+    mocks.committedSession = { mode: 'signed-out', dataOwnerId: null, generation: 2 };
+    await registeredIpcHandler(AGENT_ISLAND_SET_ENABLED_CHANNEL)({}, true);
+    expect(service!.isEnabled()).toBe(false);
+    mocks.committedSession = { mode: 'cloud', dataOwnerId: 'fixture-new-owner', generation: 3 };
+    await registeredIpcHandler(AGENT_ISLAND_SET_ENABLED_CHANNEL)({}, false);
+    expect(service!.isEnabled()).toBe(true);
+    expect(runtime().mascotSkin).toBe('blackcat');
+  });
+
+  it('退出解绑订阅，迟到通知和旧 enabled IPC 均不能继续应用', async () => {
+    mocks.inspectDesktop.mockReturnValue(ready()); await start();
+    const late = [...mocks.preferenceListeners][0]!;
+    const stop = mocks.appOnce.mock.calls.find(([event]) => event === 'will-quit')![1] as () => void;
+    stop(); stop();
+    expect(mocks.preferenceListeners.size).toBe(0);
+    mocks.inspectDesktop.mockClear(); publish.mockClear();
+    mocks.inspectDesktop.mockReturnValue(ready({ agentIslandEnabled: false }));
+    late(); await registeredIpcHandler(AGENT_ISLAND_SET_ENABLED_CHANNEL)({}, false);
+    expect(mocks.inspectDesktop).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it.each(['unsupported', 'headless'] as const)('%s 不读取/订阅 profile，也不启用原生岛', async mode => {
+    mocks.nativeSupported = mode !== 'unsupported';
+    mocks.inspectDesktop.mockReturnValue(ready());
+    await start(true);
+    expect(mocks.inspectDesktop).not.toHaveBeenCalled();
+    expect(mocks.preferenceListeners.size).toBe(0);
+    expect(service!.isEnabled()).toBe(false);
   });
 });

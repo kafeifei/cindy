@@ -1,4 +1,4 @@
-import { dialog, ipcMain, screen, BrowserWindow, type Display, type OpenDialogOptions } from 'electron';
+import { app, dialog, ipcMain, screen, BrowserWindow, type Display, type OpenDialogOptions } from 'electron';
 import path from 'node:path';
 import { release as getOsRelease } from 'node:os';
 import { SESSION_ACTIVITY_CHANNEL, type SessionActivityPayload } from '@cindy/device-link';
@@ -136,6 +136,16 @@ import {
   type ProtectedFolderKind,
 } from '../file-access/permissions.js';
 import { SessionActivityRelay } from './sessionActivityRelay.js';
+import { inspectDesktopPreferences, onDesktopPreferencesChanged } from '../host-settings/desktop-preferences.js';
+import { peekCommittedAppSession, isAppSessionBoundaryPending } from '../appSessionState.js';
+import type { DesktopPreferencesSnapshot } from '../../shared/desktopPreferences.js';
+
+/** 只使用进程内已提交身份，不装载登录意图、不读取认证或凭据。 */
+function hasReadyIslandSession(): boolean {
+  const session = peekCommittedAppSession();
+  return !isAppSessionBoundaryPending() && !!session?.dataOwnerId
+    && (session.mode === 'local' || session.mode === 'cloud');
+}
 
 const log = createLogger('agent-island');
 const HARDWARE_NOTCH_CENTER_TOLERANCE_PX = 2;
@@ -217,6 +227,8 @@ export function initAgentIslandService(deps: AgentIslandServiceDeps): AgentIslan
   });
   if (supportsNativeIsland) {
     serviceSingleton.registerIpc();
+    const stopPreferences = serviceSingleton.connectDesktopPreferences();
+    app.once('will-quit', stopPreferences);
   } else {
     serviceSingleton.setEnabled(false);
   }
@@ -301,6 +313,9 @@ export class AgentIslandService {
   private nativeFailureLogged = false;
   private enabled = false;
   private enabledSynced = false;
+  private desktopPreferencesSyncPaused = false;
+  private desktopPreferencesSyncStopped = false;
+  private desktopPreferencesKey: string | null = null;
   private hiddenPublished = false;
   private readonly screenMetricsByDisplayId = new Map<number, AgentIslandNativeScreenMetrics>();
   private screenMetricsSignature = '';
@@ -375,6 +390,45 @@ export class AgentIslandService {
       onScreenMetrics: (metrics) => this.handleNativeScreenMetrics(metrics),
     });
     this.headless = this.nativeHost.headless === true;
+  }
+
+  /** 仅由已通过平台支持判断的 init 登记；inspect 本身永不初始化原生岛。 */
+  connectDesktopPreferences(): () => void {
+    if (this.headless) return () => {};
+    const refresh = () => {
+      if (!this.desktopPreferencesSyncPaused && !this.desktopPreferencesSyncStopped) {
+        this.applyCommittedDesktopPreferences();
+      }
+    };
+    const off = onDesktopPreferencesChanged(refresh);
+    refresh();
+    return () => {
+      if (this.desktopPreferencesSyncStopped) return;
+      this.desktopPreferencesSyncStopped = true;
+      off();
+    };
+  }
+
+  private applyCommittedDesktopPreferences(): DesktopPreferencesSnapshot['status'] {
+    if (this.headless || this.desktopPreferencesSyncStopped || !hasReadyIslandSession()) return 'unreadable';
+    let state: DesktopPreferencesSnapshot;
+    try { state = inspectDesktopPreferences(); }
+    catch { return 'unreadable'; }
+    if (state.status !== 'ready') return state.status;
+    const prefs = state.value;
+    const key = JSON.stringify([state.profileStamp, prefs.agentIslandEnabled,
+      prefs.agentIslandSoundSettings, prefs.agentIslandMascotSkin, prefs.agentIslandDisplayTarget]);
+    if (key === this.desktopPreferencesKey) return 'ready';
+    // 先原子替换配置，再统一 publish；关闭岛时不经过旧配置下的临时 enabled 帧。
+    this.soundSettings = cloneAgentIslandSoundSettings(prefs.agentIslandSoundSettings);
+    this.mascotSkin = prefs.agentIslandMascotSkin;
+    this.displayTarget = cloneAgentIslandDisplayTarget(prefs.agentIslandDisplayTarget);
+    if (this.desktopPreferencesSyncPaused) return 'ready';
+    this.desktopPreferencesKey = key;
+    const enabledChanged = !this.enabledSynced || this.enabled !== prefs.agentIslandEnabled;
+    this.setEnabled(prefs.agentIslandEnabled);
+    if (!enabledChanged) this.publish();
+    return 'ready';
   }
 
   setPermissionResolver(
@@ -507,12 +561,17 @@ export class AgentIslandService {
       if (typeof enabled !== 'boolean') {
         throwIpcError('INVALID_PARAMS', 'enabled must be boolean');
       }
-      this.setEnabled(enabled);
+      if (!this.desktopPreferencesSyncStopped && !this.headless && hasReadyIslandSession()) {
+        // 既有登录边沿恢复信号；旧 payload 不能盖过已提交的 Host 值。
+        this.desktopPreferencesSyncPaused = false;
+        if (this.applyCommittedDesktopPreferences() === 'migrationPending') this.setEnabled(enabled);
+      }
       return { ok: true };
     });
 
     ipcMain.handle(AGENT_ISLAND_SET_SOUND_SETTINGS_CHANNEL, (_event, rawSettings: unknown) => {
-      this.setSoundSettings(normalizeAgentIslandSoundSettings(rawSettings));
+      const settings = normalizeAgentIslandSoundSettings(rawSettings);
+      if (this.applyCommittedDesktopPreferences() === 'migrationPending') this.setSoundSettings(settings);
       return { ok: true };
     });
 
@@ -520,12 +579,13 @@ export class AgentIslandService {
       if (!isAgentIslandMascotSkin(rawSkin)) {
         throwIpcError('INVALID_PARAMS', 'mascot skin is invalid');
       }
-      this.setMascotSkin(rawSkin);
+      if (this.applyCommittedDesktopPreferences() === 'migrationPending') this.setMascotSkin(rawSkin);
       return { ok: true };
     });
 
     ipcMain.handle(AGENT_ISLAND_SET_DISPLAY_TARGET_CHANNEL, (_event, rawTarget: unknown) => {
-      this.setDisplayTarget(normalizeAgentIslandDisplayTarget(rawTarget));
+      const target = normalizeAgentIslandDisplayTarget(rawTarget);
+      if (this.applyCommittedDesktopPreferences() === 'migrationPending') this.setDisplayTarget(target);
       return { ok: true };
     });
 
@@ -628,6 +688,9 @@ export class AgentIslandService {
   }
 
   resetRuntimeState(): void {
+    // 登出/owner 边界暂停自动应用；后续无关 profile 提交不得重新开启原生岛。
+    this.desktopPreferencesSyncPaused = true;
+    this.desktopPreferencesKey = null;
     this.clearPublishTimer();
     this.clearStreamingPreviewPublishTimer();
     this.flushLayoutPreferenceWrites();

@@ -18,12 +18,21 @@
  */
 
 import { app } from 'electron';
-import fs from 'node:fs';
 import path from 'node:path';
+import { createOverrideSettingsFile } from './override-settings-file.js';
 
 import { desktopMakerLogger } from './logger-adapter.js';
 
+import { inspectSettingsFile, isSettingBoolean, validateOptionalSettingsFields } from './settings-inspection.js';
+
 const log = desktopMakerLogger.child('lsp-mode-store');
+
+/** 旧文件会物化完整值，文件中有字段并不能证明用户显式自定义。 */
+export function inspectLspModeSettings() {
+  return inspectSettingsFile({ filePath: settingsFilePath, defaults: DEFAULTS, normalize, savedSource: 'unknown',
+    validate: (raw) => validateOptionalSettingsFields(raw, { enabled: isSettingBoolean }),
+  });
+}
 
 export interface LspModeSettings {
   enabled: boolean;
@@ -45,36 +54,18 @@ function normalize(raw: unknown): LspModeSettings {
   };
 }
 
-let cached: LspModeSettings | null = null;
+const store = createOverrideSettingsFile<LspModeSettings>({
+  filePath: settingsFilePath, defaults: DEFAULTS, normalize, log, label: 'lsp-mode',
+  preserveUnreadableFile: true,
+  validateOverrides: raw => validateOptionalSettingsFields(raw, { enabled: isSettingBoolean }),
+});
+export function getLspSettingsStore() { return store; }
 
 export function readLspModeSettings(): LspModeSettings {
-  if (cached) return cached;
-  const file = settingsFilePath();
-  try {
-    if (fs.existsSync(file)) {
-      const text = fs.readFileSync(file, 'utf-8');
-      const parsed = JSON.parse(text);
-      cached = normalize(parsed);
-      log.info('lsp mode settings loaded', { ...cached, path: file });
-      return cached;
-    }
-  } catch (err) {
-    log.warn('lsp-mode-settings.json read failed → falling back to defaults', {
-      error: err instanceof Error ? err.message : String(err),
-      path: file,
-    });
-    try { fs.unlinkSync(file); } catch { /* no-op */ }
-  }
-  cached = { ...DEFAULTS };
-  return cached;
+  return store.read();
 }
 
 export function writeLspModeEnabled(enabled: boolean): void {
-  const next: LspModeSettings = { ...readLspModeSettings(), enabled };
-  const file = settingsFilePath();
-  const tmp = `${file}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(next, null, 2), 'utf-8');
-  fs.renameSync(tmp, file);
-  cached = next;
+  store.writePatch({ enabled }, { preserveDefaults: true });
   log.info('lsp mode setting written', { enabled });
 }

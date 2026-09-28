@@ -1,5 +1,7 @@
 import { useModelFavoritesHost } from './state/useModelFavoritesHost';
 import { getDataOwnerGeneration } from './contexts/dataOwnerGeneration';
+import { connectHostNewTaskPreferences } from './state/hostNewTaskPreferences';
+import { connectHostModelPresentationPreferences } from './state/hostModelPresentationPreferences';
 import { RouterProvider } from 'react-router-dom';
 
 import { useEffect } from 'react';
@@ -115,6 +117,8 @@ function syncNewMakerPrefs(appDefaultModelRequestId?: string) {
     // 用户供应商专有的模型（如 deepseek-v4-pro）会被网关 400 拒绝。
     providerId: cc.providerId ?? null,
   });
+  // 新 Host 只接受 CAS 偏好写入，旧整包镜像不能再反向覆盖执行端。
+  if (window.electronAPI.hostSettings) return;
   // main 缓存两用途:① collab worker spawn 读 model/effort/fastMode;② device-link 远程
   // 草稿镜像读全量(model/effort/fast/permission/source)+「是否显式选过模型」。故
   // lastByVendor 覆盖 cc/codex/pi，并带上 permissionMode + providerId(worker spawn
@@ -169,6 +173,8 @@ function MakerBootstrap() {
   const { isAuthenticated, dataOwnerId, dataOwnerRecoveryEpoch } = useAuth();
 
   useResyncAgentIslandSettingsAfterLogin(isAuthenticated);
+  useEffect(() => connectHostNewTaskPreferences(), [dataOwnerId, dataOwnerRecoveryEpoch]);
+  useEffect(() => connectHostModelPresentationPreferences(), [dataOwnerId, dataOwnerRecoveryEpoch]);
 
   useEffect(() => {
     setPromptRecommendationOwner(`${dataOwnerId ?? 'signed-out'}:${dataOwnerRecoveryEpoch}`);
@@ -267,7 +273,7 @@ export function App() {
   // 启动推一次 + 变化增量推,fire-and-forget;无控制者订阅时 main 端转发近似 no-op。
   useEffect(() => {
     const sync = () => {
-      window.electronAPI.syncProviderModelMemory(snapshotForSeed());
+      if (!window.electronAPI.hostSettings) window.electronAPI.syncProviderModelMemory(snapshotForSeed());
       syncNewMakerPrefs();
     };
     sync();

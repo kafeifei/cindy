@@ -23,6 +23,17 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { desktopPreferenceDefaults, type DesktopPreferencesSnapshot } from '../../shared/desktopPreferences.js';
+
+const desktopHost = vi.hoisted(() => ({ inspect: vi.fn<() => DesktopPreferencesSnapshot>(), update: vi.fn() }));
+vi.mock('../host-settings/desktop-preferences.js', () => ({ inspectDesktopPreferences: desktopHost.inspect, updateDesktopPreferences: desktopHost.update }));
+vi.mock('../host-settings/startup.js', () => { throw new Error('Host Skill preparation forbidden'); });
+vi.mock('../appSessionState.js', () => { throw new Error('Authorization access forbidden'); });
+function committedNotifications(enabled: boolean): DesktopPreferencesSnapshot {
+  const defaults = desktopPreferenceDefaults();
+  return { status: 'ready', profileStamp: 'fixture-profile', revision: 'fixture-revision', defaults,
+    value: { ...defaults, notificationsEnabled: enabled }, customizedKeys: ['notificationsEnabled'], isCustomized: true };
+}
 
 type IpcHandler = (event: unknown, payload: unknown) => Promise<void> | void;
 
@@ -198,7 +209,51 @@ describe('notificationService — channels 分发', () => {
     vi.useRealTimers();
   });
 
-  it('同步并校验 renderer 持久化的桌面通知总开关', async () => {
+  it('无 Renderer 时直接采用 ready Host，总发送入口也不能绕过关闭偏好', async () => {
+    const service = await freshService();
+    desktopHost.inspect.mockReturnValue(committedNotifications(false));
+    expect(service.getDesktopNotificationsEnabled()).toBe(false);
+    service.showDesktopSessionEvent(() => null, { sessionId: 's1', title: 'fixture', kind: 'done' });
+    expect(notificationCtor).not.toHaveBeenCalled();
+    expect(markSessionNeedsAttention).toHaveBeenCalledWith('s1');
+    desktopHost.inspect.mockReturnValue(committedNotifications(true));
+    service.showDesktopSessionEvent(() => null, { sessionId: 's1', title: 'fixture', kind: 'done' });
+    expect(notificationCtor).toHaveBeenCalledOnce();
+    expect(desktopHost.update).not.toHaveBeenCalled();
+  });
+
+  it('迟到 IPC 和 channels.desktop=true 都不能覆盖 Host，其他通道和角标不变', async () => {
+    const service = await freshService();
+    const feishuIm = makeFeishuIm('fixture-owner');
+    service.initNotificationService(baseDeps(feishuIm));
+    desktopHost.inspect.mockReturnValue(committedNotifications(false));
+    await registeredHandlers.get('notification:set-desktop-enabled')!({}, true);
+    await invokeHandler({ sessionId: 's1', title: 'fixture', kind: 'done', channels: { desktop: true, feishu: true } });
+    expect(service.getDesktopNotificationsEnabled()).toBe(false);
+    expect(notificationCtor).not.toHaveBeenCalled();
+    expect(feishuIm.sendMarkdownText).toHaveBeenCalledOnce();
+    expect(markSessionNeedsAttention).toHaveBeenCalledWith('s1');
+    expect(desktopHost.update).not.toHaveBeenCalled();
+  });
+
+  it('pending 保留旧临时同步，不可读保留最近确认运行值且不迁移或写默认', async () => {
+    const service = await freshService();
+    service.initNotificationService(baseDeps(makeFeishuIm(null)));
+    const update = registeredHandlers.get('notification:set-desktop-enabled')!;
+    await update({}, false);
+    expect(service.getDesktopNotificationsEnabled()).toBe(false);
+    desktopHost.inspect.mockReturnValue(committedNotifications(true));
+    expect(service.getDesktopNotificationsEnabled()).toBe(true);
+    desktopHost.inspect.mockReturnValue({ status: 'unreadable', profileStamp: 'fixture-profile', revision: null });
+    await update({}, false);
+    expect(service.getDesktopNotificationsEnabled()).toBe(true);
+    desktopHost.inspect.mockImplementation(() => { throw new Error('fixture read failure'); });
+    await update({}, false);
+    expect(service.getDesktopNotificationsEnabled()).toBe(true);
+    expect(desktopHost.update).not.toHaveBeenCalled();
+  });
+
+  it('同步并校验尚未迁移的 renderer 桌面通知临时开关', async () => {
     const { getDesktopNotificationsEnabled, initNotificationService } = await freshService();
     initNotificationService(baseDeps(makeFeishuIm('ou_owner')));
     const handler = registeredHandlers.get('notification:set-desktop-enabled');

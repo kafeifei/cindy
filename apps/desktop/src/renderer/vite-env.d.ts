@@ -1229,6 +1229,7 @@ interface ElectronAPI {
       patch: Partial<import('../shared/appearanceSettings').AppearanceSettings>,
     ) => Promise<import('../shared/appearanceSettings').AppearanceSettings>;
     reset: () => Promise<import('../shared/appearanceSettings').AppearanceSettings>;
+    clearFields: (fields: Array<keyof import('../shared/appearanceSettings').AppearanceSettings>) => Promise<import('../shared/appearanceSettings').AppearanceSettings>;
     onChanged: (
       callback: (settings: import('../shared/appearanceSettings').AppearanceSettings) => void,
     ) => () => void;
@@ -1236,6 +1237,9 @@ interface ElectronAPI {
   onApplicationMenuCommand: (callback: (command: ApplicationMenuCommand) => void) => () => void;
   setApplicationMenuLocale: (locale: ApplicationMenuLocale) => Promise<{ ok: true }>;
   billing: import('../shared/billing').BillingRendererApi;
+  hostSettings: import('../shared/hostSettings').HostSettingsRendererApi;
+  desktopPreferences: import('../shared/desktopPreferences').DesktopPreferencesRendererApi;
+  modelPresentationPreferences: import('../shared/modelPresentationPreferences').ModelPresentationPreferencesApi;
 
   // lifecycle 兜底 catch 到瞬时网络错误时推一次。renderer 收到后由
   // systemNetworkErrorToast.ts 负责节流 + 多语言 toast。

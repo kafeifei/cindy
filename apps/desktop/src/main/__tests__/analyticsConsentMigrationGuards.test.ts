@@ -75,9 +75,9 @@ describe('legacy consent migration window guards', () => {
     expect(body).toContain('if (authManager.isLocalMode()) sealMigrationWindowOrLog();');
     expect(body).not.toContain('closeMigrationWindowOrLog');
     // 封窗要发生在广播之前:广播出去的 allowed 必须已经反映本地模式。
-    expect(body.indexOf('sealMigrationWindowOrLog()')).toBeLessThan(
-      body.indexOf('broadcastSettingsChange()'),
-    );
+    const broadcastAt = body.indexOf('broadcastAnalyticsSettingsChange()');
+    expect(broadcastAt).toBeGreaterThan(-1);
+    expect(body.indexOf('sealMigrationWindowOrLog()')).toBeLessThan(broadcastAt);
   });
 
   it('上报结论叠加本地模式运行时闸,且不写盘', () => {

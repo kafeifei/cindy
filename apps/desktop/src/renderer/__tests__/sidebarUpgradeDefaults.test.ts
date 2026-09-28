@@ -9,8 +9,8 @@
  *     与全新安装无法直接区分,靠 sidebarInstallVintage 的旧版使用痕迹识别。
  */
 
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { captureLegacyDesktopPreferences } from '../state/hostDesktopPreferences';
+import { desktopPreferenceDefaults } from '../../shared/desktopPreferences';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -67,12 +67,7 @@ function uninstallLocalStorage(): void {
  * 按安装新旧给默认),源码侧的接线由 sidebarUpgradeDefaults 的静态断言守住。
  */
 function resolveMainViewMode(): 'text' | 'list' {
-  const explicit = localStorage.getItem('sidebar.mainListMode');
-  if (explicit === 'text' || explicit === 'list') return explicit;
-  const legacy = localStorage.getItem('sidebar.cardMode');
-  if (legacy === 'text' || legacy === 'false') return 'text';
-  if (legacy === 'card' || legacy === 'list' || legacy === 'true') return 'list';
-  return getSidebarInstallVintage() === 'legacy' ? 'text' : 'list';
+  return captureLegacyDesktopPreferences()?.sidebarMainMode ?? desktopPreferenceDefaults().sidebarMainMode;
 }
 
 describe('侧边栏升级兼容性:默认配置', () => {
@@ -240,18 +235,9 @@ describe('显示模式:唯一按安装新旧分叉的默认', () => {
     expect(resolveMainViewMode()).toBe('list');
   });
 
-  // 上面的用例复刻了判定顺序(源码里的内存 SoT 无法在同进程反复重置),
-  // 这条静态断言保证源码确实按同一顺序接线,两者不脱钩。
-  it('源码接线:显式值 → cardMode 迁移 → 按安装新旧兜底', () => {
-    const source = readFileSync(resolve(__dirname, '..', 'hooks', 'useSidebarCardMode.ts'), 'utf8');
-    const explicitIdx = source.indexOf('parseMainMode(localStorage.getItem(MAIN_STORAGE_KEY))');
-    // 注意 'parseMode(' 是 'parseMainMode(' 的子串,必须带 const legacy = 前缀定位。
-    const legacyIdx = source.indexOf('const legacy = parseMode(localStorage.getItem(STORAGE_KEY))');
-    const vintageIdx = source.indexOf("getSidebarInstallVintage() === 'legacy'");
-    expect(explicitIdx).toBeGreaterThanOrEqual(0);
-    expect(legacyIdx).toBeGreaterThan(explicitIdx);
-    expect(vintageIdx).toBeGreaterThan(legacyIdx);
-    expect(source).toContain("return (mainMemoryValue = 'text')");
-    expect(source).toContain("const DEFAULT_MAIN_MODE: SidebarMainViewMode = 'list'");
+  it('Host 导入保存旧安装兼容值，新默认不因读过其它设置而变更', () => {
+    localStorage.setItem('cc-agent.lastChatView.v1', '{"kind":"new"}');
+    expect(captureLegacyDesktopPreferences()).toMatchObject({ sidebarMainMode: 'text' });
+    expect(desktopPreferenceDefaults().sidebarMainMode).toBe('list');
   });
 });

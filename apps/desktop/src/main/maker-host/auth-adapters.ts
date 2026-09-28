@@ -1,5 +1,6 @@
 import { cindyManagedSkillRoots, listCindyManagedSkills } from './managed-skills.js';
 import { cindyManagedHomeDir } from '../cloudPilotDistribution.js';
+import { prepareHostSettingsSkill } from '../host-settings/cindy-settings-skill.js';
 import { retainInvalidatedProviderPresentation, retainProviderPresentationAfterAuthChange } from './provider-presentation-store.js';
 import { subscriptionAccountKind, subscriptionAccountState } from './subscription-account-auth.js';
 /**
@@ -617,6 +618,7 @@ export class DesktopClaudeAuthAdapter implements AuthAdapter {
   }
 
   private async runEnsureSharedGlobalSkills(ownerId: string | null): Promise<boolean> {
+    await prepareHostSettingsSkill();
     try {
       const result = await withSharedGlobalSkillProjectionMutation(ownerId, async () => {
         // Bundle publication keeps every managed Agent link on one stable
@@ -1372,6 +1374,7 @@ export class DesktopCodexAuthAdapter implements AuthAdapter {
   private async runEnsureGlobalCodexSkills(ownerId: string | null): Promise<boolean> {
     // Prepare the private built-in roots before Codex snapshots discovery.
     await desktopClaudeAuthAdapter.ensureSharedGlobalSkills();
+    await prepareHostSettingsSkill();
     const sharedOutcome = await withSharedGlobalSkillProjectionMutation(ownerId, () =>
       prepareSharedGlobalSkillLinks({
         assertOwnerStable: () => assertGhostSkillProjectionBoundaryStableForOwner(ownerId),

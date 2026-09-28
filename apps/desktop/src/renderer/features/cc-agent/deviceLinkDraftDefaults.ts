@@ -26,6 +26,9 @@ import { resolveNewMakerDefaultTuples } from '@/lib/newMakerDefaultTuple';
 
 /** 被控端当前草稿的原始值(maker:get-new-maker-defaults 隧道返回;字段全可选)。 */
 export interface RemoteDraftDefaults {
+  /** 执行 Host 已解析真源，空值和不可用型号也不能由控制端另选；旧端缺省保留兼容。 */
+  hostAuthoritative?: boolean;
+  planMode?: boolean;
   /** 执行端当前新任务的引擎；旧端缺省，不借控制端的登录态推断。 */
   preferredAgentKind?: AgentKind;
   defaultTupleCustomized?: boolean;
@@ -69,6 +72,7 @@ export function resolveDeviceLinkDraftAgent(input: {
   const { currentAgent, remoteDraft, providers, availableVendors } = input;
   const preferred = remoteDraft?.preferredAgentKind;
   const known = preferred === 'claude-code' || preferred === 'codex' || preferred === 'pi';
+  if (remoteDraft?.hostAuthoritative) return known ? preferred : currentAgent;
   const usableProviders = (agent: AgentKind) =>
     connectedProvidersForAgent([...providers], agent).filter(
       (p) =>
@@ -159,6 +163,11 @@ export function resolveDeviceLinkDraftDefaults(
   const models = capabilities.availableModels;
   let providerId = remoteDraft?.providerId ?? null;
   const permissionMode = pickPermissionMode(capabilities, remoteDraft?.permissionMode);
+  if (remoteDraft?.hostAuthoritative && (targetModel === undefined || targetModel === remoteDraft.model)) {
+    // 不把目录变化当成用户重新选择：保留执行 Host 激活档，发送时再显式报告不可用。
+    return { model: remoteDraft.model ?? '', providerId, effort: (remoteDraft.effort ?? '') as Effort,
+      fastMode: remoteDraft.fastMode === true, permissionMode };
+  }
 
   // 要解析哪个模型:控制端本次显式 targetModel(切模型)永远优先。初始 seed 只有在**新端明确
   // 回传未选过模型**时才采用区域目录默认；旧端缺字段时保守保留 remoteDraft.model，避免

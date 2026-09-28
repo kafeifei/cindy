@@ -45,6 +45,19 @@ function caps(overrides: Partial<AgentCapabilities> = {}): AgentCapabilities {
 }
 
 describe('resolveDeviceLinkDraftDefaults', () => {
+  it('新 Host 的不可用显式模型与空模型原样保留，不偷偷换成目录首项', () => {
+    const remote = { hostAuthoritative: true, model: 'removed', providerId: 'offline', effort: 'low', fastMode: true };
+    expect(resolveDeviceLinkDraftDefaults(caps(), remote, undefined, 'pi', [])).toMatchObject({ model: 'removed', providerId: 'offline', effort: 'low', fastMode: true });
+    expect(resolveDeviceLinkDraftDefaults(caps(), { hostAuthoritative: true }, undefined, 'pi', [])).toMatchObject({ model: '', providerId: null, effort: '', fastMode: false });
+  });
+  it('新 Host 激活 effort 优先于历史调档，保留与 Worker 不同的语义', () => {
+    const selected = resolveDeviceLinkDraftDefaults(caps(), { hostAuthoritative: true, model: 'claude-opus-4-8', providerId: 'anthropic', effort: 'xhigh',
+      effortByModel: { 'claude-opus-4-8': 'high' }, providerModelMemory: { 'claude-code:anthropic': { effortByModel: { 'claude-opus-4-8': 'high' }, fastByModel: {} } } }, undefined, 'claude-code');
+    expect(selected.effort).toBe('xhigh');
+  });
+  it('新 Host 保存的 Harness 不因控制端目录缺失而被替换', () => {
+    expect(resolveDeviceLinkDraftAgent({ currentAgent: 'pi', remoteDraft: { hostAuthoritative: true, preferredAgentKind: 'codex' }, providers: [], availableVendors: new Set(['pi']) })).toBe('codex');
+  });
   it('被控端草稿值在清单内 → 原样镜像(model/effort/fast/permission/source)', () => {
     const sel = resolveDeviceLinkDraftDefaults(caps(), {
       model: 'claude-opus-4-8',

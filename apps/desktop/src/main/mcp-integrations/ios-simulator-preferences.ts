@@ -11,7 +11,18 @@ import { activeOwnerScopeKey, ownerScopedUserDataPath } from '../appSessionState
 import { desktopMakerLogger } from '../maker-host/logger-adapter.js';
 import { createOverrideSettingsFile } from '../maker-host/override-settings-file.js';
 
+import path from 'node:path';
+import { inspectSettingsFile, isSettingBoolean, validateOptionalSettingsFields } from '../maker-host/settings-inspection.js';
+
 const log = desktopMakerLogger.child('ios-simulator-preferences');
+
+/** 不探测环境、Xcode、设备或运行时；平台适用性由聚合 reader 判断。 */
+export function inspectIOSSimulatorPreferences(ownerRoot: string) {
+  return inspectSettingsFile({ filePath: () => path.join(ownerRoot, 'ios-simulator-preferences.json'),
+    defaults: DEFAULTS, normalize, maxBytes: 4 * 1024,
+    validate: (raw) => validateOptionalSettingsFields(raw, { autoOpenEmbeddedPanel: isSettingBoolean }),
+  });
+}
 
 const DEFAULTS: IOSSimulatorPreferences = {
   autoOpenEmbeddedPanel: true,

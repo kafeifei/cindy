@@ -22,6 +22,7 @@ import { isAppContentWindow } from './windowFocusClassifier.js';
 import {
   readAppearanceSettings,
   readAppearanceSettingsState,
+  clearAppearanceSettingsFields,
   resetAppearanceSettings,
   updateAppearanceSettingsAtomic,
   writeAppearanceSettingsPatch,
@@ -100,6 +101,18 @@ export function registerAppearanceSettingsIpc(): void {
     return settings;
   });
 
+  ipcMain.handle('appearance-settings:clear-fields', async (event, fields: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    const allowed = ['uiFamily', 'codeFamily', 'uiSize', 'codeSize', 'windowZoom'];
+    if (!Array.isArray(fields) || fields.length === 0 || fields.length > allowed.length || fields.some((field) => typeof field !== 'string' || !allowed.includes(field))) {
+      throwIpcError('INVALID_PARAMS', 'invalid appearance fields');
+    }
+    const settings = await clearAppearanceSettingsFields(fields as Array<keyof AppearanceSettings>);
+    applyAppearanceToWindows(settings);
+    broadcast(settings);
+    return settings;
+  });
+
   ipcMain.handle('appearance-settings:reset', async (event) => {
     assertTrustedAppRendererEvent(event);
     const settings = await resetAppearanceSettings();
@@ -121,6 +134,16 @@ export function applyAppearanceToWindows(settings = readAppearanceSettings()): v
   for (const win of BrowserWindow.getAllWindows()) {
     applyAppearanceToWindow(win, settings);
   }
+}
+
+/** The caller owns the saved receipt; window failures must never replay persistence. */
+export function applySavedAppearance(settings: AppearanceSettings): void {
+  let failed = false;
+  for (const win of BrowserWindow.getAllWindows()) {
+    try { applyAppearanceToWindow(win, settings); } catch { failed = true; }
+  }
+  broadcast(settings);
+  if (failed) throw new Error('appearance application failed');
 }
 
 export function getPersistedWindowZoom(): number {

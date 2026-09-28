@@ -1,3 +1,4 @@
+import { validateAdditionalSettingsOverrides } from '../../shared/settingsEditableCatalog.js';
 /**
  * git-safety-settings-store —— Git safety workflow machine settings.
  *
@@ -18,9 +19,16 @@ import {
   type OverrideSettingsState,
 } from './override-settings-file.js';
 
+import { inspectSettingsFile, isSettingBoolean, validateOptionalSettingsFields } from './settings-inspection.js';
+
 const log = desktopMakerLogger.child('git-safety-settings-store');
 
 export type GitSafetyMode = 'off' | 'existing-git' | 'all-projects';
+export function inspectGitSafetySettings() {
+  return inspectSettingsFile({ filePath: settingsFilePath, defaults: DEFAULTS, normalize,
+    validate: (raw) => validateOptionalSettingsFields(raw, { mode: value => ['off', 'existing-git', 'all-projects'].includes(String(value)), autoSnapshotEnabled: isSettingBoolean }),
+  });
+}
 
 export interface GitSafetySettings {
   mode: GitSafetyMode;
@@ -131,3 +139,5 @@ export function resetGitSafetySettings(): GitSafetySettings {
 }
 
 export const __testing = { mergeOverrides, normalize };
+/** Internal Host settings adapter; no new IPC or persistence location. */
+export function getGitSafetySettingsStore() { return store; }

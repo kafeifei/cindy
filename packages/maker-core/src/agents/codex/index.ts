@@ -116,6 +116,7 @@ import {
 } from '../shared/auto-review-decision.js';
 import type { ReviewableAction } from '../shared/auto-review.js';
 import { UsageTracker } from '../shared/usage-tracker.js';
+import { withHostOwnedSkillEntries } from '../shared/customization-scanner.js';
 import { attachLiveGeneration, sampleGenerationDuration } from '../shared/live-generation-snapshot.js';
 import { getDefaultImageResizer } from '../shared/image-resizer.js';
 import { formatManagedImageReferences } from '../shared/managed-image-reference.js';
@@ -2165,18 +2166,22 @@ export class CodexAgent extends BaseAgent {
    * 运行时技能列表（command palette）走 listAgentSkills → RPC，不受影响。
    */
   async listCustomizations(opts: ListCustomizationsOptions): Promise<ListCustomizationsResult> {
-    return scanCodexCustomizations(opts);
+    const hostSkills = !opts.kinds?.length || opts.kinds.includes('skill') ? await this.deps.prepareHostOwnedSkills?.() : undefined;
+    return withHostOwnedSkillEntries(await scanCodexCustomizations(opts), 'codex', hostSkills?.paths ?? []);
   }
+
+  private hostSkillDiscoveryRevision?: string;
 
   private async listSkillsForCwd(
     workingDir: string,
     forceReload: boolean,
     remoteHostId?: string,
   ): Promise<{ skills: SkillMetadata[]; errors: Array<{ path?: string; message: string }> }> {
+    const hostSkills = !remoteHostId ? await this.deps.prepareHostOwnedSkills?.() : undefined;
     return this.withHostOperation(async () => remoteHostId
       ? { key: hostKey(remoteHostId), host: await this.getHost(remoteHostId) }
       : this.getUtilityHost(),
-    host => this.listSkillsForHost(host, workingDir, forceReload));
+    host => this.listSkillsForHost(host, workingDir, forceReload || !!hostSkills && (hostSkills.changed === true || hostSkills.revision !== this.hostSkillDiscoveryRevision))).then(result => { if (hostSkills) this.hostSkillDiscoveryRevision = hostSkills.revision; return result; });
   }
 
   private async listSkillsForHost(

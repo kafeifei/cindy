@@ -110,6 +110,7 @@ import { createAsyncQueue, type AsyncQueue } from '../shared/async-queue.js';
 import { AutoCompactController, isDeterministicHostCompactFailure } from '../shared/auto-compact-controller.js';
 import { resolveMcpToolTarget } from '../shared/mcp-tool-target.js';
 import { scanClaudeAtResources, scanClaudeSlashCommands } from '../shared/palette-scanner.js';
+import { withHostOwnedSkillEntries } from '../shared/customization-scanner.js';
 import { scanRemoteClaudeSkills } from '../shared/remote-skill-scanner.js';
 // scanClaudeSlashCommands 仍是 listAgentSkills 的实际数据源, 名字保留(它扫的是 commands+skills 两类)。
 import { UsageTracker } from '../shared/usage-tracker.js';
@@ -134,6 +135,7 @@ import {
 import { buildClaudeFlagSettings } from './flag-settings.js';
 import {
   buildClaudeAskUserQuestionCallerProvenanceHooks,
+  buildClaudeHostSettingsCallerProvenanceHooks,
   buildClaudeOrcaCallerProvenanceHooks,
   buildClaudeLocalToolGuardHooks,
   buildClaudeRemoteOrcaCallerGuards,
@@ -1108,7 +1110,12 @@ export class ClaudeCodeAgent extends BaseAgent {
       if (!fileOps) throw new Error('Claude Code remote Skill discovery requires remote file operations');
       return scanRemoteClaudeSkills({ fileOps, workingDir: opts.workingDir });
     }
+    const hostSkills = await this.deps.prepareHostOwnedSkills?.();
     const raw = await scanClaudeSlashCommands(opts.workingDir);
+    for (const item of withHostOwnedSkillEntries({ items: [], errors: [] }, 'claude-code', hostSkills?.paths ?? []).items) {
+      if (!raw.some(command => command.name === item.name)) raw.push({ name: item.name, description: item.description,
+        source: 'skill', path: item.mdPath!, scope: 'global', enabled: true });
+    }
     return {
       skills: [...await this.managedSkillCommands(raw.map((item) => item.name)), ...raw.map((c) => ({
         kind: 'agent-skill' as const,
@@ -1161,6 +1168,7 @@ export class ClaudeCodeAgent extends BaseAgent {
    * 按 name 去重), 二者共享 ~/.claude/{...} 扫盘事实, 但消费者不同。
    */
   async listCustomizations(opts: ListCustomizationsOptions): Promise<ListCustomizationsResult> {
+    const hostSkills = !opts.kinds?.length || opts.kinds.includes('skill') ? await this.deps.prepareHostOwnedSkills?.() : undefined;
     const result = await scanClaudeCustomizations(opts);
     if (!opts.kinds || opts.kinds.includes('skill')) {
       result.items.push(...(await this.deps.getManagedSkills?.() ?? []).filter((skill) => skill.path).map((skill) => ({
@@ -1169,7 +1177,7 @@ export class ClaudeCodeAgent extends BaseAgent {
         enabled: skill.enabled,
       })));
     }
-    return result;
+    return withHostOwnedSkillEntries(result, 'claude-code', hostSkills?.paths ?? []);
   }
 
   /**
@@ -2048,6 +2056,7 @@ export class ClaudeCodeAgent extends BaseAgent {
           buildClaudeOrcaCallerProvenanceHooks(),
           buildClaudeAskUserQuestionCallerProvenanceHooks(),
           nativeCliAuth ? workspaceSettingsConfigChangeHooks : undefined,
+          buildClaudeHostSettingsCallerProvenanceHooks(),
           this.deps.claudeHooks,
         );
     const deniedCapabilityRoute = (toolName: string) => {
@@ -2610,6 +2619,8 @@ export class ClaudeCodeAgent extends BaseAgent {
     // (eg. summarized reasoning UI 本地有 remote 没)。getter 让 memOverride /
     // mutableFastMode 读最新值 (setMemory / setFastMode 运行时改) 而不是 buildQuery
     // 时快照。装配逻辑(含 apiKeyHelper 恒置空的鉴权防线)在 flag-settings.ts。
+    const hostSkillPaths = opts.remoteHostId || opts.botRuntimeProfile || reviewMode
+      ? [] : (await this.deps.prepareHostOwnedSkills?.())?.paths ?? [];
     const managedSkillGrants = snapshotManagedSkillGrants(opts.botRuntimeProfile?.skillPolicy);
     const launchDisabledSkillPaths = opts.remoteHostId || reviewMode
       ? [] : [...(this.deps.getDisabledSkillPaths?.() ?? [])];
@@ -2619,7 +2630,7 @@ export class ClaudeCodeAgent extends BaseAgent {
     const disabledSkillSnapshot = disabledSkillLaunch.identities;
     const disabledSkillOverrides = disabledSkillPaths.length > 0
       ? claudeDisabledSkillOverrides(
-        (await scanClaudeRuntimeSkills(opts.workingDir, env.CLAUDE_CONFIG_DIR)).items,
+        withHostOwnedSkillEntries(await scanClaudeRuntimeSkills(opts.workingDir, env.CLAUDE_CONFIG_DIR), 'claude-code', hostSkillPaths).items,
         currentDisabledSkillLaunchPaths(disabledSkillLaunch),
       )
       : {};

@@ -299,10 +299,11 @@ export async function loadLocalThemes(): Promise<LocalThemesResult> {
   }
 }
 
-export function loadLocalThemesSync(): LocalThemesResult {
+export function loadLocalThemesSync(options?: { passive?: boolean }): LocalThemesResult {
   try {
-    const dir = getLocalThemesDir();
-    fs.mkdirSync(dir, { recursive: true });
+    const dir = options?.passive ? path.join(cindyManagedHomeDir(), '.cindy', 'themes') : getLocalThemesDir();
+    if (!options?.passive) fs.mkdirSync(dir, { recursive: true });
+    if (options?.passive && !fs.existsSync(dir)) return { success: true, themes: [], diagnostics: [] };
     const files = pickJsonFiles(fs.readdirSync(dir));
     const entries = files.map((file): FileEntry | { file: string; error: string } => {
       try {

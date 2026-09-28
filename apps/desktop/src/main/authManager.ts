@@ -3864,6 +3864,23 @@ export function getCurrentUserId(): string | null {
   return currentUser?.id ?? null;
 }
 
+export interface CommittedAuthIdentity {
+  userId: string;
+  membershipKind: 'personal' | 'org';
+  isAuthenticated: boolean;
+}
+
+/** 只投影现有内存身份；不初始化鉴权、不读凭据，也不返回令牌或用户资料。 */
+export function peekCommittedAuthIdentity(): CommittedAuthIdentity | null {
+  if (!currentUser || typeof currentUser.id !== 'string' || !currentUser.id
+    || (currentUser.membershipKind !== 'personal' && currentUser.membershipKind !== 'org')) return null;
+  return {
+    userId: currentUser.id,
+    membershipKind: currentUser.membershipKind,
+    isAuthenticated: typeof accessToken === 'string' && accessToken.length > 0,
+  };
+}
+
 /**
  * Public issue attribution may only use the raw auth membership display name.
  * UI fallbacks (`email` / "Cindy") are intentionally excluded for privacy.

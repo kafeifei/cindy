@@ -1,3 +1,4 @@
+import { openManagementAuthorization, attachManagementAuthorization } from '../host-settings/managementAuthorization.js';
 /**
  * grok-oauth-login —— xAI(SuperGrok 订阅)OAuth 浏览器登录 + token 存储/刷新。
  *
@@ -714,6 +715,7 @@ function createGrokAccount(providerId: string) {
     const cancelFromCaller = () => abort.abort();
     if (opts?.cancellationSignal?.aborted) abort.abort();
     else opts?.cancellationSignal?.addEventListener('abort', cancelFromCaller, { once: true });
+    attachManagementAuthorization(() => { abort.abort(); listener.close(); });
     _currentListener = listener;
     _currentAbort = abort;
     _currentLoginKey = `${scope}:${providerId}`;
@@ -756,10 +758,10 @@ function createGrokAccount(providerId: string) {
           /* handled at await site */
         });
 
-        opts?.onProgress?.('opening-browser');
-        opts?.onAuthorizationUrl?.(authUrl);
-        log.info('opening browser for xai oauth', { port: REDIRECT_PORT });
-        await shell.openExternal(authUrl);
+      opts?.onProgress?.('opening-browser');
+      opts?.onAuthorizationUrl?.(authUrl);
+      log.info('opening browser for xai oauth', { port: REDIRECT_PORT });
+      await openManagementAuthorization(authUrl, (url) => shell.openExternal(url));
 
         const code = await codePromise;
 

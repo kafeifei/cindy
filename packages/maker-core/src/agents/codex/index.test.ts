@@ -2614,6 +2614,32 @@ describe('CodexAgent capability routing', () => {
     await handle.close();
   });
 
+  it('freezes Host-owned Skill physical disable paths in native thread configuration', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-host-skill-'));
+    tempRoots.push(root);
+    vi.spyOn(os, 'homedir').mockReturnValue(root);
+    const source = path.join(root, 'profile', 'cindy-settings');
+    await fs.mkdir(source, { recursive: true });
+    await fs.writeFile(path.join(source, 'SKILL.md'), '---\nname: cindy-settings\ndescription: fixture\n---\n');
+    let disabled = [source];
+    const agent = new CodexAgent(createDeps({}, { getDisabledSkillPaths: () => disabled }));
+    const host = installFakeHost(agent, method => method === Method.SkillsList ? { data: [] } : undefined,
+      { codexHome: root, userAgent: 'mock-codex/0.153.4' });
+    const handle = await agent.startSession({ sessionId: 'host-skill', model: 'gpt-5.4', workingDir: root });
+    try {
+      const start = host.request.mock.calls.find(([method]) => method === Method.ThreadStart)?.[1] as { config: Record<string, unknown> };
+      const entries = start.config['skills.config'] as { path: string; enabled: boolean }[];
+      expect(entries).toHaveLength(new Set([source, await fs.realpath(source)]).size);
+      for (const entry of entries) {
+        expect(entry.enabled).toBe(false);
+        expect(await fs.realpath(entry.path)).toBe(await fs.realpath(path.join(source, 'SKILL.md')));
+      }
+      const frozenConfig = structuredClone(entries);
+      disabled = [];
+      expect(start.config['skills.config']).toEqual(frozenConfig);
+    } finally { await handle.close(); }
+  });
+
   it('applies host-owned plugin policy to new and resumed Codex 0.145 threads', async () => {
     const listComputerUseSkill = (method: string, params: unknown) => {
       if (method !== Method.SkillsList) return undefined;

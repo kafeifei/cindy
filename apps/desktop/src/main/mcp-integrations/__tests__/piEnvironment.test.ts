@@ -18,9 +18,15 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { getLiziMcpSessionContext } from '@cindy/mcps';
 import { createOrcaWorkerBridgeMcpProvider } from '@cindy/orca-workflow';
 
+const isolated = vi.hoisted(() => ({ profile: '' }));
 vi.mock('electron', () => ({
-  app: { getPath: vi.fn(() => '/tmp/cindy-pi-environment-test') },
+  app: { getPath: () => isolated.profile },
 }));
+vi.mock('../../appSessionState.js', () => ({
+  ownerScopedUserDataPath: (...parts: string[]) => path.join(isolated.profile, 'owners', 'fixture-owner', ...parts),
+}));
+beforeAll(() => { isolated.profile = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-pi-environment-')); });
+afterAll(() => { fs.rmSync(isolated.profile, { recursive: true, force: true }); });
 
 import type { Logger, McpProvider } from '@cindy/maker-core';
 import { CustomMcpProvider } from '../custom-mcp-provider.js';
@@ -226,6 +232,50 @@ describe('piEnvironment per-session identity', () => {
     const after = await fetch(server.url, { method: 'POST', headers, body: INIT_BODY(4) });
     expect(after.status).toBe(401);
     await after.text();
+  });
+
+  it.each(['root', 'descendant'] as const)('preserves SSH locality and %s provenance through the real HTTP accessor', async mcpCallerKind => {
+    const provider: McpProvider = {
+      name: 'cindy_helper',
+      toClaudeSdkConfig: ctx => {
+        const server = new McpServer({ name: 'cindy_helper', version: '1.0.0' });
+        const project = (context: ReturnType<typeof getLiziMcpSessionContext>) => ({
+          agentKind: context?.agentKind, sessionId: context?.sessionId,
+          sessionInstanceId: context?.sessionInstanceId, remoteHostId: context?.remoteHostId,
+          workingDir: context?.workingDir, memoryScopeKey: context?.memoryScopeKey,
+          mcpCallerKind: context?.mcpCallerKind, mcpCallerAttested: context?.mcpCallerAttested,
+        });
+        server.tool('context_probe', 'Inspect bridge identity through both accessors.', {}, async () => ({
+          content: [{ type: 'text', text: JSON.stringify({
+            active: project(getLiziMcpSessionContext()), provider: project(ctx.getSessionContext?.()),
+          }) }],
+        }));
+        return { type: 'sdk', instance: server };
+      },
+    };
+    const expected = {
+      agentKind: 'pi', sessionId: 'fixture-ssh-session', sessionInstanceId: 'fixture-ssh-instance',
+      remoteHostId: 'fixture-ssh-host', workingDir: '/remote/workspace', memoryScopeKey: 'fixture-memory',
+      mcpCallerKind, mcpCallerAttested: true,
+    };
+    const config = await getPiExtraSpawnConfig([provider], noopLogger(), expected);
+    const server = config!.mcpBridge!.servers[0]!;
+    const headers: Record<string, string> = {
+      authorization: `Bearer ${config!.mcpBridge!.token}`,
+      accept: 'application/json, text/event-stream', 'content-type': 'application/json',
+    };
+    const init = await fetch(server.url, { method: 'POST', headers, body: INIT_BODY(1) });
+    expect(init.status).toBe(200);
+    headers['mcp-session-id'] = init.headers.get('mcp-session-id')!;
+    await init.text();
+    const response = await fetch(server.url, {
+      method: 'POST', headers,
+      body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'context_probe', arguments: {} } }),
+    });
+    expect(response.status).toBe(200);
+    const result = await readRpcText(response) as { result: { content: Array<{ text: string }> } };
+    expect(JSON.parse(result.result.content[0].text)).toEqual({ active: expected, provider: expected });
+    config?.disposeSessionCtx?.();
   });
 
   /**

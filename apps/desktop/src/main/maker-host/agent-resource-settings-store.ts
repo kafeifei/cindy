@@ -1,3 +1,4 @@
+import { validateAdditionalSettingsOverrides } from '../../shared/settingsEditableCatalog.js';
 /**
  * agent-resource-settings-store —— agent 命令行资源占用治理的 main 端持久化设置。
  *
@@ -22,7 +23,20 @@ import {
   type OverrideSettingsState,
 } from './override-settings-file.js';
 
+import { inspectSettingsFile, isSettingBoolean, isSettingNumber, validateOptionalSettingsFields } from './settings-inspection.js';
+
 const log = desktopMakerLogger.child('agent-resource-settings-store');
+
+/** 只读偏好，不探测进程或修改优先级、线程限制。 */
+export function inspectAgentResourceSettings() {
+  return inspectSettingsFile({ filePath: settingsFilePath, defaults: DEFAULTS, normalize,
+    validate: (raw) => validateOptionalSettingsFields(raw, {
+      maxConcurrentCommands: isSettingNumber,
+      processPriority: (value) => value === 'normal' || value === 'low' || value === 'lowest',
+      capToolchainThreads: isSettingBoolean,
+    }),
+  });
+}
 
 /**
  * agent 进程的 OS 调度优先级档位:
@@ -87,6 +101,7 @@ function clampInt(v: number, min: number, max: number): number {
 }
 
 const store = createOverrideSettingsFile<AgentResourceSettings>({
+  validateOverrides: raw => validateAdditionalSettingsOverrides('agentResource', raw),
   filePath: settingsFilePath,
   defaults: DEFAULTS,
   normalize,
@@ -122,3 +137,6 @@ export function resetAgentResourceSettings(): AgentResourceSettings {
 }
 
 export const __testing = { normalize };
+
+/** Internal Host settings adapter; no new IPC or persistence location. */
+export function getAgentResourceSettingsStore() { return store; }

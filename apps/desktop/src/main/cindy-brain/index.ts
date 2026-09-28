@@ -1102,6 +1102,25 @@ export function listAvailableGhostsForAuthorization(): InstalledGhost[] {
   return availableGhosts();
 }
 
+/** Private settings projection. It does not migrate pins, install or grant a Plugin. */
+export function getHostPluginPreferenceContext() {
+  return availableGhosts().map(ghost => {
+    const options: Partial<Record<CindyCapabilityKey, Array<{ id: string; label: string }>>> = {};
+    for (const capability of CINDY_CAPABILITY_KEYS) {
+      const [kind, action] = capability.split('.');
+      const declared = ghost.manifest.cindy?.[kind as 'image' | 'video' | 'text' | 'embed'] as readonly string[] | undefined;
+      if (!declared?.includes(action!)) continue;
+      if (capability === 'text.oneshot') options[capability] = buildTextOneshotPinOptions(getActiveCatalog(), readModelDisableOverrides({ allowSideEffects: false }), readProviderOrder(), hasOneshotProviderCredential);
+      else if (capability === 'embed.text') options[capability] = getCatalogEmbedConfig().models.map(model => ({ id: model.id, label: model.label }));
+      else options[capability] = getGhostMediaPreferenceConfig(ghost.manifest.id, capability).models.map(model => ({ id: model.id, label: model.label }));
+    }
+    return { id: ghost.manifest.id, name: ghost.manifest.name, supported: { cindy: !!ghost.manifest.cindy, agent: !!ghost.manifest.agent, mainView: !!ghost.manifest.mainView }, options };
+  });
+}
+export function notifyHostPluginPreferenceChanged(id: string, capability: CindyCapabilityKey) {
+  getGhostSetupChangeBus().emit(id, { source: 'host_config', ref: `cindy-pref:${capability}` });
+}
+
 function requireGhostAvailableForActiveSession(id: string): void {
   if (!isGhostAvailableForActiveSession(id)) {
     if (isAppSessionBoundaryPending()) {

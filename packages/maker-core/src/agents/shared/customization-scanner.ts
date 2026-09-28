@@ -107,6 +107,25 @@ function readFolderSkill(source: SourceDef, folder: string, mdPath: string): Age
   };
 }
 
+/** Merge only exact Host-provided entries, never an extra discovery root. User names win collisions. */
+export function withHostOwnedSkillEntries(
+  result: ListCustomizationsResult,
+  engine: SourceDef['engine'],
+  entries: readonly string[],
+): ListCustomizationsResult {
+  const items = [...result.items];
+  for (const folder of entries) {
+    const name = path.basename(folder);
+    if (items.some(item => item.kind === 'skill' && item.name === name)) continue;
+    const mdPath = path.join(folder, 'SKILL.md');
+    try {
+      if (!path.isAbsolute(folder) || !fs.statSync(mdPath).isFile()) continue;
+      items.push(readFolderSkill({ engine, kind: 'skill', scope: engine === 'claude-code' ? 'global' : 'user', dir: path.dirname(folder) }, folder, mdPath));
+    } catch { /* Failed preparation/disappearing files do not fabricate discovery. */ }
+  }
+  return { ...result, items };
+}
+
 function readFileCustomization(source: SourceDef, mdPath: string): AgentCustomization {
   const name = path.basename(mdPath, path.extname(mdPath));
 
