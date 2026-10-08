@@ -36,6 +36,7 @@ const channels = new Set([
   'maker:contacts:sync:status:get',
   'maker:contacts:sync:now',
   'maker:auth:logout',
+  'maker:claude-oauth:login',
   'maker:claude-oauth:logout',
   'maker:xai-oauth:logout',
   'builtin-api-key-has',

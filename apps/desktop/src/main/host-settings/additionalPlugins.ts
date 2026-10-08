@@ -1,6 +1,6 @@
 import { getHostPluginPreferenceContext, notifyHostPluginPreferenceChanged } from '../cindy-brain/index.js';
 import { getHostPluginCindyStore, inspectGhostCindyPrefs } from '../cindy-brain/cindyPrefsStore.js';
-import { getHostPluginErrandStore, inspectGhostErrandPrefs } from '../cindy-brain/errandPrefsStore.js';
+import { getHostPluginErrandStore, inspectGhostErrandPrefs } from '../cindy-brain/pluginTaskPrefsStore.js';
 import { readKnownWorkspaces } from './readKnownWorkspaces.js';
 import { refreshSettingsModelRecommendation } from './catalog.js';
 import { captureSettingsModelGuard } from './additionalModels.js';

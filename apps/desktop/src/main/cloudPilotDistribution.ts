@@ -13,6 +13,10 @@ export function cloudPilotKeychainService(normal: string): string {
   return active ? `CindyCloudPilot-cn-r2:${normal}` : normal;
 }
 export function isCloudPilotDistribution(): boolean { return active; }
+/** The official CLI owns credentials; a pilot must give it its own configuration root. */
+export function cloudPilotClaudeCliEnv(): Record<string, string> {
+  return active ? { CLAUDE_CONFIG_DIR: path.join(cindyManagedHomeDir(), '.claude') } : {};
+}
 
 function reject(): never { throw new Error('CLOUD_PILOT_PROFILE_INVALID'); }
 function readJson(file: string): unknown {

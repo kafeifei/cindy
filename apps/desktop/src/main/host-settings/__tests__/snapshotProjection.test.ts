@@ -14,7 +14,7 @@ function snapshot(): HostSettingsSnapshot {
       effort: 'high', fast: false, thinking: true, worktree: false, planMode: false }, ['fast', 'planMode']),
     personalization: ready({ isCustomized: true }),
     databaseWarning: ready({ thresholdGiB: 10, disabled: false }, ['thresholdGiB']),
-    appearance: ready({ uiSize: 14, codeSize: 13, windowZoom: 1, uiFamily: 'PRIVATE-FONT-A', codeFamily: 'PRIVATE-FONT-B' }, ['codeFamily']),
+    appearance: ready({ wallpaperId: 'none', wallpaperOverlay: 0.2, wallpaperMotion: 'static', uiSize: 14, codeSize: 13, windowZoom: 1, uiFamily: 'PRIVATE-FONT-A', codeFamily: 'PRIVATE-FONT-B' }, ['codeFamily']),
   };
 }
 

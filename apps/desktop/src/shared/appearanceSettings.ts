@@ -92,6 +92,9 @@ export function isValidAppearanceSetting(key: string, value: unknown): value is 
     return typeof value === 'string' && value.length <= MAX_APPEARANCE_FONT_FAMILY_LENGTH
       && !/[\x00-\x1f]/.test(value);
   }
+  if (key === 'wallpaperId') return (WALLPAPER_IDS as readonly unknown[]).includes(value);
+  if (key === 'wallpaperMotion') return value === 'static' || value === 'dynamic';
+  if (key === 'wallpaperOverlay') return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 0.6;
   if (key !== 'uiSize' && key !== 'codeSize' && key !== 'windowZoom') return false;
   const limits = APPEARANCE_LIMITS[key];
   return typeof value === 'number' && Number.isFinite(value) && value >= limits.min && value <= limits.max

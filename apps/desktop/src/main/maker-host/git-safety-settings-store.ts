@@ -25,7 +25,7 @@ const log = desktopMakerLogger.child('git-safety-settings-store');
 
 export type GitSafetyMode = 'off' | 'existing-git' | 'all-projects';
 export function inspectGitSafetySettings() {
-  return inspectSettingsFile({ filePath: settingsFilePath, defaults: DEFAULTS, normalize,
+  return inspectSettingsFile({ filePath: settingsFilePath, defaults: derive(DEFAULTS), normalize: raw => derive(normalize(raw)),
     validate: (raw) => validateOptionalSettingsFields(raw, { mode: value => ['off', 'existing-git', 'all-projects'].includes(String(value)), autoSnapshotEnabled: isSettingBoolean }),
   });
 }

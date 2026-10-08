@@ -254,6 +254,7 @@ describe('notificationService — channels 分发', () => {
   });
 
   it('同步并校验尚未迁移的 renderer 桌面通知临时开关', async () => {
+    desktopHost.inspect.mockReturnValue({ status: 'migrationPending', profileStamp: 'fixture-profile', revision: 'pending' });
     const { getDesktopNotificationsEnabled, initNotificationService } = await freshService();
     initNotificationService(baseDeps(makeFeishuIm('ou_owner')));
     const handler = registeredHandlers.get('notification:set-desktop-enabled');

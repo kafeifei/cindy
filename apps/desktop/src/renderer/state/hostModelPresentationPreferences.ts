@@ -83,7 +83,7 @@ function captureLegacy(ownerId: string, generation: number): LegacyModelPresenta
     !adopt &&
     !migrationComplete &&
     !claim.claimedByOtherOwner &&
-    (!claim.claimed || !claim.canInitialize)
+    ((!claim.claimed || !claim.canInitialize) && storage.getItem(key) !== null)
   )
     return null;
   return {

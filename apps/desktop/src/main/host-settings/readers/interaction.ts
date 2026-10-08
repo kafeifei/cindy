@@ -59,12 +59,14 @@ export function inspectInteractionSettings(options: InteractionInspectionOptions
   const voiceState: { shortcut: import('../../../shared/voiceInputData.js').VoiceInputShortcut | null } = { shortcut: null };
   domain(['voice.'], () => {
     const state = inspectVoiceInputSettings(options.ownerRoot, platform);
-    const keys = ['language', 'muteSystemAudio', 'playInteractionSound', 'fastActivationEnabled', 'refinementEnabled', 'autoDictionaryEnabled'] as const;
+    const keys = ['language', 'muteSystemAudio', 'playInteractionSound', 'fastActivationEnabled', 'composerLongPressEnabled', 'refinementEnabled', 'autoDictionaryEnabled'] as const;
     const ids = [...keys, 'microphoneDeviceIdConfigured', 'refinementInstructionsConfigured', 'dictionarySyncEnabled', 'shortcutConfigured'];
     if (state.status !== 'ready') { for (const key of ids) fields[`voice.${key}`] = state; return; }
     // Historical voice files store full snapshots, not per-field intent.
     const source = (key: string): ReadonlySettingSource => has(state.raw, key) ? 'unknown' : 'default';
     for (const key of keys) put(`voice.${key}`, state.value[key], key === 'playInteractionSound' && has(state.raw, 'playStartSound') ? 'unknown' : source(key));
+    const longPressOverride = state.raw.composerLongPressEnabledOverride;
+    put('voice.composerLongPressEnabled', state.value.composerLongPressEnabled, typeof longPressOverride === 'boolean' ? 'override' : longPressOverride === null ? 'default' : source('composerLongPressEnabled'));
     put('voice.microphoneDeviceIdConfigured', Boolean(state.value.microphoneDeviceId), source('microphoneDeviceId'));
     put('voice.refinementInstructionsConfigured', typeof state.raw.refinementInstructions === 'string' && Boolean(state.raw.refinementInstructions.trim()), source('refinementInstructions'));
     const override = state.raw.dictionarySyncEnabledOverride;

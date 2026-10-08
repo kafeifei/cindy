@@ -3808,6 +3808,8 @@ export class PiAgent extends BaseAgent {
       // The catalog path may alias a managed source. Apply the managed grant and
       // activation checks once, including paths already selected by the Bot.
       const additionalSkillPaths = [...new Map([
+        ...hostSkillPaths.filter(skillPath => !managedSourceIdentities.has(canonicalSkillPath(skillPath))
+          && !currentDisabledSkillLaunchPaths(disabledSkillLaunch).some(disabled => canonicalSkillPath(disabled) === canonicalSkillPath(skillPath))),
         ...(loadProjectResourcesInPlace ? [] : botSkillSelection.explicitSkillPaths.filter((skillPath) =>
           !managedSourcePaths.has(path.resolve(skillPath)) && !managedSourceIdentities.has(canonicalSkillPath(skillPath)))),
       ].map((skillPath) => [canonicalSkillPath(skillPath), skillPath])).values()];

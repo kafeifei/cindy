@@ -46,7 +46,7 @@ export interface CoreSettingsStores {
 export const CORE_SETTINGS_FIELD_IDS = [
   'collaboration.workerSoftLimit', 'collaboration.workerHardLimit', 'collaboration.workerIdleReleaseMinutes',
   'agentResource.maxConcurrentCommands', 'agentResource.processPriority', 'agentResource.capToolchainThreads',
-  'gitSafety.autoSnapshotEnabled', 'memory.maker', 'memory.claudeCode', 'memory.codex', 'memory.pi',
+  'gitSafety.mode', 'gitSafety.autoInitProjectGit', 'gitSafety.autoSnapshotEnabled', 'memory.maker', 'memory.claudeCode', 'memory.codex', 'memory.pi',
   'compaction.claudeCodeAutoCompactPct', 'compaction.piAutoCompactPct', 'contacts.enabled', 'contacts.deviceSyncEnabled',
   'silentEncryptedRetry.enabled', 'chatEmbedding.enabled', 'lsp.enabled',
   'subagentModel.claudeCode', 'subagentModel.claudeCodeProviderId', 'subagentModel.codexSmartSubagentRouting',
@@ -112,7 +112,7 @@ export function readCoreSettings(deps: {
   const s = deps.stores;
   read('collaboration', ['workerSoftLimit', 'workerHardLimit', 'workerIdleReleaseMinutes'], () => s.collaboration());
   read('agentResource', ['maxConcurrentCommands', 'processPriority', 'capToolchainThreads'], () => s.agentResource());
-  read('gitSafety', ['autoSnapshotEnabled'], () => s.gitSafety());
+  read('gitSafety', ['mode', 'autoSnapshotEnabled', 'autoInitProjectGit'], () => s.gitSafety());
   read('memory', ['maker', 'claudeCode', 'codex', 'pi'], () => s.memory(context.ownerRoot));
   read('compaction', ['claudeCodeAutoCompactPct'], () => s.compaction(context.ownerRoot));
   read('compaction', ['piAutoCompactPct'], () => s.piCompaction(context.ownerRoot));

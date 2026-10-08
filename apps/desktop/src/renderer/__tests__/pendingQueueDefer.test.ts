@@ -1,3 +1,4 @@
+import { getUserPrompt } from '@/lib/userPromptStore';
 /**
  * pendingQueueDefer.test.ts
  * ---------------------------------------------------------------------------

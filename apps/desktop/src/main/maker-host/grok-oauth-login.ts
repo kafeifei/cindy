@@ -715,7 +715,7 @@ function createGrokAccount(providerId: string) {
     const cancelFromCaller = () => abort.abort();
     if (opts?.cancellationSignal?.aborted) abort.abort();
     else opts?.cancellationSignal?.addEventListener('abort', cancelFromCaller, { once: true });
-    attachManagementAuthorization(() => { abort.abort(); listener.close(); });
+    attachManagementAuthorization(() => { abort.abort(); listener?.close(); });
     _currentListener = listener;
     _currentAbort = abort;
     _currentLoginKey = `${scope}:${providerId}`;

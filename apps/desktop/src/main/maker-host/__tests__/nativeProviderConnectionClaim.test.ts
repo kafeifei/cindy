@@ -17,7 +17,7 @@ import { BUNDLED_CATALOG, type Catalog } from '@cindy/model-providers';
 const h = vi.hoisted(() => ({
   userDataDir: '',
   dataOwnerId: 'owner-a' as string | null,
-  generation: 1,
+  generation: 1, mode: 'local' as 'local' | 'cloud',
   legacyCloudOwner: false,
   catalog: null as Catalog | null,
   claudeCredentialPresent: true,

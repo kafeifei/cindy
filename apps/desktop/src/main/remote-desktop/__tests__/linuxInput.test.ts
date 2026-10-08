@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { LinuxDesktopInput, type LinuxInputText } from '../linuxInput';
+import { LinuxDesktopInput, type LinuxInputText } from '../linuxX11Input';
 
 function fixture() {
   let activeWindow = '42';

@@ -1139,8 +1139,10 @@ describe('Ghost plugin detail sections', () => {
     fireEvent.click(routeRow.querySelector('[data-row-customize]')!);
     const flyout = await screen.findByTestId('unified-model-config-flyout');
     expect(flyout.querySelector('[role="slider"], [data-fast-toggle]')).toBeNull();
-    fireEvent.click(flyout.querySelector('[data-engine-capsule="cc"]')!);
-    fireEvent.click(routeRow);
+    await act(async () => {
+      fireEvent.click(flyout.querySelector('[data-engine-capsule="cc"]')!);
+    });
+    fireEvent.click(within(reopened).getByText('GPT 5.5', { exact: true }).closest<HTMLElement>('[role="option"]')!);
     await waitFor(() =>
       expect(setCindyPref).toHaveBeenLastCalledWith(
         'xdt-knowledge',

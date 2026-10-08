@@ -544,6 +544,7 @@ describe('并发、世代与延迟回执', () => {
     expect(host.api.mutate).not.toHaveBeenCalled();
   });
   it('另一窗完成导入的Host通知可解除pending，不重导本地旧值', async () => {
+    storage.setItem(base, JSON.stringify({ 'pi:p:m': true }));
     host.claim.canInitialize = false;
     await start();
     const value = structuredClone(state().value);

@@ -9,11 +9,15 @@ export function useModelFavoritesHost(): void {
   useEffect(() => {
     const api = window.electronAPI.modelFavoritesHost;
     if (!api) return;
-    const off = api.onRequest((request) => {
+    const off = api.onRequest(async (request) => {
       try {
+        const assertCurrent = () => {
         if (Date.now() > request.expiresAt || !isDataOwnerPushStampCurrent(request.ownerStamp))
           throw new Error('Expired favorite request');
-        const items = accessHostModelFavorites(request.ownerStamp.dataOwnerId, request.mutation);
+        };
+        assertCurrent();
+        const items = await accessHostModelFavorites(request.ownerStamp.dataOwnerId, request.mutation, assertCurrent);
+        assertCurrent();
         api.reply({ requestId: request.requestId, items: [...items] });
       } catch {
         api.reply({ requestId: request.requestId, failed: true });

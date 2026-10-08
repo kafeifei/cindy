@@ -70,21 +70,13 @@ it('keeps formal owner markers and Skills untouched through pilot login, fanout 
   expect(boundary.readGhostSkillProjectionBoundaryState()).toMatchObject({ phase: 'stable', ownerId: null });
 });
 
-it('selects a separate Keychain service even if the credential module loaded before pilot activation', async () => {
-  const credentials = await import('../maker-host/claude-credentials-store.js');
-  h.security.mockReturnValue('');
-  credentials.readClaudeAiOAuthUnbound();
-  expect(h.security.mock.calls[0]?.[1]).toContain('Claude Code-credentials');
-  h.security.mockClear();
-  await activate();
-  h.security.mockImplementation((command: string, args: string[]) => {
-    expect(command).toBe('security');
-    expect(args).toContain('CindyCloudPilot-cn-r2:Claude Code-credentials');
-    if (args[0] === 'find-generic-password') return JSON.stringify({ claudeAiOauth: { accessToken: 'invalid-unit-token' } });
-    return '';
-  });
-  credentials.clearClaudeAiOAuth();
-  expect(h.security.mock.calls.map(call => call[1][0])).toEqual(['find-generic-password', 'delete-generic-password']);
+it('isolates the official Claude CLI configuration without reading or deleting its credentials', async () => {
+  const { cloudPilotClaudeCliEnv } = await import('../cloudPilotDistribution.js');
+  expect(cloudPilotClaudeCliEnv()).toEqual({});
+  const pilot = await activate();
+  expect(cloudPilotClaudeCliEnv()).toEqual({ CLAUDE_CONFIG_DIR: path.join(pilot.managedHome, '.claude') });
+  expect(h.security).not.toHaveBeenCalled();
+  expect(fs.existsSync(path.join(h.home, '.claude'))).toBe(false);
 });
 
 it('does not adopt the formal Codex auth file or migrate formal legacy themes', async () => {

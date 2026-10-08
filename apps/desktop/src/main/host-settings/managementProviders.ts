@@ -50,7 +50,12 @@ export async function listProviderManagement(caller: ManagementCaller): Promise<
       actions: ManagementAction[] = [];
     const builtinSubscription =
       provider.source === 'builtin' && ['anthropic', 'openai', 'xai'].includes(provider.id);
-    if (provider.auth.method === 'oauth' && !builtinSubscription) {
+    // v0.1.97 retires independent Claude accounts; only the official CLI owns its login.
+    const retiredClaude = provider.source === 'user' && provider.auth.native === 'claude';
+    if (provider.id === 'anthropic' && builtinSubscription && provider.auth.method === 'oauth')
+      actions.push({ resource, label: 'management.actions.authorize', intent: 'authorize',
+        run: (_values, execution) => invoke('maker:claude-oauth:login', [], execution) });
+    if (provider.auth.method === 'oauth' && !builtinSubscription && !retiredClaude) {
       actions.push({
         resource,
         label: 'management.actions.authorize',
@@ -139,7 +144,7 @@ export async function listProviderManagement(caller: ManagementCaller): Promise<
       actions,
     });
   }
-  for (const brand of ['anthropic', 'openai', 'xai'] as const) {
+  for (const brand of ['openai', 'xai'] as const) {
     if (!providers.some((provider) => provider.id === brand)) continue;
     const name = providers.find((provider) => provider.id === brand)!.name;
     entries.push({
@@ -154,21 +159,12 @@ export async function listProviderManagement(caller: ManagementCaller): Promise<
           intent: 'authorize',
           async run(_values, execution) {
             const id = `${brand}-${randomUUID().slice(0, 8)}`;
-            const native = brand === 'anthropic' ? 'claude' : brand === 'openai' ? 'codex' : 'xai';
+            const native = brand === 'openai' ? 'codex' : 'xai';
             const config: CustomProviderConfig = {
               id,
               name,
               auth: { method: 'oauth', native },
-              runtimes:
-                brand === 'anthropic'
-                  ? {
-                      'claude-code': {
-                        baseUrl: 'https://api.anthropic.com',
-                        wireProtocol: 'anthropic-messages',
-                        models: [],
-                      },
-                    }
-                  : {
+              runtimes: {
                       codex: {
                         baseUrl:
                           brand === 'openai'

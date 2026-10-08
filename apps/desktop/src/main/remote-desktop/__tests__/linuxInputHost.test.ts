@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { insertLinuxDesktopText } from '../linuxInputHost';
 import {
-  acquireHumanDesktopInput,
-  holdDesktopInputAction,
+  HumanDesktopInput,
+  isHumanDesktopInputActive,
   withAgentDesktopInput,
 } from '../inputOwnership';
 
@@ -75,30 +75,30 @@ describe('Linux text targets and shared input ownership', () => {
     expect(fixture.insertText).not.toHaveBeenCalled();
   });
 
-  it('excludes Agent actions while upstream remote control owns input', async () => {
-    const release = acquireHumanDesktopInput();
+  it('excludes Agent actions while actual remote input is pending', async () => {
+    const human = new HumanDesktopInput();
+    const batch = human.begin([{ kind: 'text', text: 'hello' }]);
     try {
-      await expect(withAgentDesktopInput(async () => {})).rejects.toThrow('person');
-      expect(holdDesktopInputAction).toThrow('person');
+      await batch.ready;
+      await expect(withAgentDesktopInput(async () => {})).rejects.toThrow('Remote desktop input');
     } finally {
-      release();
+      batch.complete(); human.release();
     }
     await expect(withAgentDesktopInput(async () => {})).resolves.toBeUndefined();
   });
 
-  it('keeps asynchronous action cleanup exclusive until its idempotent release', () => {
-    const release = holdDesktopInputAction();
-    try {
-      expect(acquireHumanDesktopInput).toThrow('BUSY');
-    } finally {
-      release();
-    }
-    const releaseHuman = acquireHumanDesktopInput();
-    release();
-    try {
-      expect(acquireHumanDesktopInput).toThrow('BUSY');
-    } finally {
-      releaseHuman();
-    }
+  it('waits for asynchronous Agent cleanup before delivering human input', async () => {
+    let release!: () => void;
+    const action = withAgentDesktopInput(() => new Promise<void>(resolve => { release = resolve; }));
+    const human = new HumanDesktopInput();
+    const batch = human.begin([{ kind: 'text', text: 'hello' }]);
+    const delivered = vi.fn();
+    void batch.ready.then(delivered);
+    expect(isHumanDesktopInputActive()).toBe(true);
+    await Promise.resolve(); expect(delivered).not.toHaveBeenCalled();
+    release(); await action; await batch.ready;
+    expect(delivered).toHaveBeenCalledOnce();
+    batch.complete(); batch.complete(); human.release(); human.release();
+    await expect(withAgentDesktopInput(async () => {})).resolves.toBeUndefined();
   });
 });

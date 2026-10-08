@@ -57,9 +57,10 @@ function project(domain: AdditionalSettingsDomain, state: { status: string; revi
   if (state.status !== 'ready') return { status: state.status === 'unreadable' ? 'unreadable' : 'unavailable', revision: null };
   const fields = Object.keys(additionalSettingsSchemas[domain].shape);
   const pick = (value: unknown) => Object.fromEntries(fields.map(key => [key, (value as Values)[key]]));
-  const value = additionalSettingsSchemas[domain].parse(pick(state.value)) as Values;
-  const defaults = additionalSettingsSchemas[domain].parse(pick(state.defaults)) as Values;
-  const customizedKeys = fields.filter(key => state.customizedKeys?.includes(key));
+  const legacyGit = (value: unknown) => domain === 'gitSafety' ? { autoSnapshotEnabled: (value as { mode: string }).mode !== 'off' } : value;
+  const value = additionalSettingsSchemas[domain].parse(pick(legacyGit(state.value))) as Values;
+  const defaults = additionalSettingsSchemas[domain].parse(pick(legacyGit(state.defaults))) as Values;
+  const customizedKeys = fields.filter(key => state.customizedKeys?.includes(key) || (domain === 'gitSafety' && state.customizedKeys?.includes('mode')));
   return { status: 'ready', revision: state.revision!, value, defaults, customizedKeys, isCustomized: customizedKeys.length > 0 };
 }
 export function inspectAdditionalSettings(domain: AdditionalSettingsDomain, workspaceId?: string): State {
@@ -158,6 +159,7 @@ export async function commitAdditionalSettings(domain: AdditionalSettingsDomain,
   }
   const result = await storeFor(domain).commitAtomic(state => {
     const next = { ...state.value, ...Object.fromEntries(change.clear.map(key => [key, state.defaults[key]])), ...change.set };
+    if (domain === 'gitSafety') return { set: Object.hasOwn(change.set, 'autoSnapshotEnabled') ? { mode: change.set.autoSnapshotEnabled ? 'all-projects' : 'off' } : {}, clear: change.clear.includes('autoSnapshotEnabled') ? ['mode', 'autoSnapshotEnabled'] : ['autoSnapshotEnabled'] };
     if (domain === 'collaboration' && Number(next.workerHardLimit) < Number(next.workerSoftLimit)) throw new HostSettingsError('INVALID_PARAMS');
     if (domain === 'terminal' && change.set.defaultShellPref !== undefined && change.set.defaultShellPref !== 'auto'
       && !probeAvailableShells().some(shell => shell.id === change.set.defaultShellPref)) throw new HostSettingsError('INVALID_PARAMS');

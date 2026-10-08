@@ -44,8 +44,14 @@ export async function executeWebSettingsRequest(request: SettingsWebEnvelope, as
     const choices = domain === 'terminal' ? { defaultShellPref: [
         { value: 'auto', label: 'Auto' }, ...probeAvailableShells().map(shell => ({ value: shell.id, label: shell.displayName })),
       ] } : undefined;
-    const settings = await getHostSettings(caller, domain, false, request.command.workspaceId);
+    let settings = await getHostSettings(caller, domain, false, request.command.workspaceId);
     assertCurrent();
+    if (domain === 'appearance' && settings.status === 'ready') {
+      const keys = ['uiFamily', 'codeFamily', 'uiSize', 'codeSize', 'windowZoom'];
+      const project = (value: unknown) => Object.fromEntries(keys.map(key => [key, (value as Record<string, unknown>)[key]]));
+      const customizedKeys = settings.customizedKeys.filter(key => keys.includes(key));
+      settings = { ...settings, value: project(settings.value), defaults: project(settings.defaults), customizedKeys, isCustomized: customizedKeys.length > 0 } as typeof settings;
+    }
     return { ok: true, settings: { ...settings, domain, ...(settings.status === 'ready' && domain === 'newTaskDefaults' ? { models } : {}),
       ...(settings.status === 'ready' && choices ? { choices } : {}) } } as SettingsWebResult;
   } catch (error) {

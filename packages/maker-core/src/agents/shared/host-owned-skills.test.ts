@@ -140,7 +140,7 @@ it('Codex retains native skills/list truth and refreshes only on Host revision c
   const agent = new CodexAgent(deps());
   const request = vi.fn(async () => ({ data: [{ cwd, skills: [{ name: 'cindy-settings', description: 'native truth', path: path.join(source, 'SKILL.md'), scope: 'user', enabled: true }], errors: [] }] }));
   // Exercise the actual public list -> private RPC seam, without starting a native process.
-  vi.spyOn(agent as never, 'getUtilityHost' as never).mockResolvedValue({ host: { request } } as never);
+  vi.spyOn(agent as never, 'getUtilityHost' as never).mockResolvedValue({ key: 'remote:fixture', host: { request } } as never);
   const first = await agent.listAgentSkills({ workingDir: cwd });
   expect(first.skills[0]?.description).toBe('native truth');
   expect(request).toHaveBeenLastCalledWith('skills/list', { cwds: [cwd], forceReload: true, perCwdExtraUserRoots: null });

@@ -7,6 +7,7 @@ const h = vi.hoisted(() => ({ dir: '', owner: 'a', pending: false }));
 vi.mock('electron', () => ({ app: { getPath: () => h.dir } }));
 vi.mock('../appSessionState.js', () => ({
   getActiveAppSession: () => ({ dataOwnerId: h.owner }),
+  peekCommittedAppSession: () => ({ dataOwnerId: h.owner, generation: 1 }),
   isAppSessionBoundaryPending: () => h.pending,
   ownerScopedUserDataPath: (name: string) => path.join(h.dir, h.owner, name),
 }));

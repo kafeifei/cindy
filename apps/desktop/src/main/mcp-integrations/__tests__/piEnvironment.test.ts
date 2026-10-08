@@ -12,7 +12,10 @@
  * getPiExtraSpawnConfig 内部起真 codexHttpBridge,故这里做真 HTTP 往返。
  */
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { beforeAll, afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { PluginRegistry } from '../../maker-host/plugins/plugin-registry';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { getLiziMcpSessionContext } from '@cindy/mcps';
@@ -258,7 +261,7 @@ describe('piEnvironment per-session identity', () => {
       remoteHostId: 'fixture-ssh-host', workingDir: '/remote/workspace', memoryScopeKey: 'fixture-memory',
       mcpCallerKind, mcpCallerAttested: true,
     };
-    const config = await getPiExtraSpawnConfig([provider], noopLogger(), expected);
+    const config = await getPiExtraSpawnConfig([provider], noopLogger(), { ...expected });
     const server = config!.mcpBridge!.servers[0]!;
     const headers: Record<string, string> = {
       authorization: `Bearer ${config!.mcpBridge!.token}`,

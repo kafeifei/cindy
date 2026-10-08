@@ -1509,7 +1509,7 @@ describe('PluginMarketService 自定义市场 detail/install', () => {
     runtime.session = { mode: 'cloud', dataOwnerId: 'user-1', generation: 1 };
   });
 
-  it.each(['before-start', 'before-placement'])('Agent custom install preserves removal %s', async (when) => {
+  it.each(['before-start', 'before-placement'])('Agent custom installation requires user consent with removal %s', async (when) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-custom-fixture-'));
     roots.push(root);
     const dir = writeLocalMarket(root, 'team-lib', [{ rel: 'plugins/alpha', id: 'alpha' }]);
@@ -1525,7 +1525,7 @@ describe('PluginMarketService 自定义市场 detail/install', () => {
     await expect(h.service.install(pluginId, {
       expectedReleaseId: detail.releaseId,
       expectedManifest: detail.manifest,
-    }, guard, { preserveRemovalPreferences: true })).rejects.toThrow('removed by the user');
+    }, { consent: { initiator: 'agent', prompt: async () => false }, assertCurrent: guard })).rejects.toThrow('MUTATION_CANCELLED');
     expect(runtime.install).not.toHaveBeenCalled();
   });
 

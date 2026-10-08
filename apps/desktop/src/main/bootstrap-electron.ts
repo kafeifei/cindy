@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { prepareImportedAutomation, finishImportedAutomation } from './bot-import/automationRuntime.js';
 import { ensureImportedAutomationReady, recoverCompanionImports } from './bot-import/host.js';
 import { listWorktreeRecycleStatus, controlWorktreeRecycle } from './worktree/recycleControls';
@@ -27,7 +28,7 @@ import {
   readCindyMakeSettings,
   writeCindyMakeSyncLatestBeforeBuild,
 } from './cindy-make/settingsStore.js';
-import { cloudManagementProviderRegistry, isCloudManagementInvocation } from './host-settings/managementCalls.js';
+import { cloudManagementProviderRegistry, isCloudManagementInvocation, cloudManagementExecution } from './host-settings/managementCalls.js';
 import { configureAdditionalSettingsRuntime } from './host-settings/additionalRuntime.js';
 import { initializeCloudDeviceLinkDefaults } from './instance-runtime/device-link-defaults.js';
 import { cindyManagedHomeDir } from './cloudPilotDistribution.js';
@@ -5226,13 +5227,18 @@ const registerIpcHandlers = () => {
     if (isNativeProviderAuthBound('anthropic')) await readClaudeCliLoginStatus({ maxAgeMs: 30_000 });
     return { authorized: hasClaudeNativeLogin() };
   });
-  ipcMain.handle(MAKER_IPC_INVOKE.CLAUDE_OAUTH_LOGIN, async (event, loginKey?: string) => {
-    assertTrustedAppRendererEvent(event);
+  cloudManagementProviderRegistry({ handle: (channel, handler) => ipcMain.handle(channel, handler) }).handle(MAKER_IPC_INVOKE.CLAUDE_OAUTH_LOGIN, async (event, loginKeyInput?: unknown) => {
+    const loginKey = typeof loginKeyInput === 'string' ? loginKeyInput : undefined;
+    if (!isCloudManagementInvocation(event)) assertTrustedAppRendererEvent(event as Electron.IpcMainInvokeEvent);
     const owner = activeOwnerScopeKey();
     if (isAppSessionBoundaryPending() || !getActiveAppSession().dataOwnerId)
       return { ok: false, reason: 'login_cancelled', authorized: false };
-    const signal = beginClaudeCliLogin(loginKey);
+    const management = cloudManagementExecution();
+    const key = management ? `cloud-${randomUUID()}` : loginKey;
+    const signal = beginClaudeCliLogin(key);
+    management?.onCancel(() => cancelClaudeCliLogin(key));
     const result = await runClaudeCliLogin(signal);
+    management?.assertCurrent();
     if (signal.aborted || owner !== activeOwnerScopeKey() || isAppSessionBoundaryPending())
       return { ok: false, reason: 'login_cancelled', authorized: false };
     if (!result.ok) return { ok: false, reason: result.reason, authorized: false };

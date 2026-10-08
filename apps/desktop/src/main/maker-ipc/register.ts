@@ -24,7 +24,7 @@ import { getSelfDeviceId, remoteInvoke as invokeBotPeer } from '../device-link/i
 import { registerModelFavoritesSync } from './modelFavoritesSync.js';
 import { advanceRuntimeRecoveryNotice } from '../im/shared/runtimeRecoveryNotice.js';
 import { markImSessionManualRouteOverride } from '../im/shared/manualRouteOverride.js';
-import { configureAppDefaultModelSelection, inspectAppDefaultModel } from './appDefaultModelControl.js';
+import { inspectAppDefaultModel } from './appDefaultModelControl.js';
 import { configureCloudMemoryManagement, configureCloudMcpCredentials } from '../host-settings/managementData.js';
 import { cloudMcpCredentialStore } from '../secrets/providerSecretStore.js';
 import { cloudManagementProviderRegistry, isCloudManagementInvocation, cloudManagementExecution, registerPrivateCloudManagementCall } from '../host-settings/managementCalls.js';
@@ -5132,13 +5132,6 @@ let disposePiPackagesChangedBroadcast: (() => void) | null = null;
  */
 export function registerModelVisibilitySyncIpc(): void {
   registerModelFavoritesSync(broadcastToAllWindows);
-  configureAppDefaultModelSelection((appDefaultSelection) => {
-    broadcastToAllWindows(MAKER_PUSH.DRAFT_PREF_APPLY, {
-      agent: appDefaultSelection.route.harness === 'claude' ? 'claude-code' : appDefaultSelection.route.harness,
-      providerId: appDefaultSelection.route.providerId ?? '', modelId: appDefaultSelection.route.model,
-      active: true, appDefaultSelection,
-    });
-  });
   installHostNewMakerDefaultsSource();
   onNewTaskDefaultsChanged(broadcastNewMakerDraftChanged);
   onModelPresentationPreferencesChanged(() => { broadcastToAllWindows(MAKER_PUSH.PROVIDER_CHANGED, {}); });

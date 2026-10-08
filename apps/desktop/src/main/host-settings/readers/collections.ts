@@ -6,7 +6,7 @@ import { inspectModelPriceOverrides } from '../../usage/modelPriceOverrideStore.
 import { inspectWorkspacePrefs, isWorkspacePrefsEntryDirty } from '../../hook-control/workspacePrefsStore.js';
 import { inspectTelegramBehavior } from '../../im/telegram/behaviorStore.js';
 import { inspectGhostCindyPrefs, CINDY_CAPABILITY_KEYS } from '../../cindy-brain/cindyPrefsStore.js';
-import { inspectGhostErrandPrefs } from '../../cindy-brain/errandPrefsStore.js';
+import { inspectGhostErrandPrefs } from '../../cindy-brain/pluginTaskPrefsStore.js';
 import { inspectSidebarSettings } from '../../sidebarSettingsStore.js';
 import { SettingsReader } from '../../maker-host/plugins/settings-reader.js';
 import { createBuiltinPlugins } from '../../maker-host/plugins/builtin-plugins.js';

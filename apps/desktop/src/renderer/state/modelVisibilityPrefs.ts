@@ -17,6 +17,23 @@ import {
   __resetHostModelPresentationForTest,
 } from './hostModelPresentationPreferences';
 
+export type ModelVisibilityInitializationFailure =
+  | 'owner-pending' | 'profile-pending' | 'legacy-owner-unavailable' | 'legacy-busy'
+  | 'preferences-corrupt' | 'storage-quota' | 'storage-unavailable' | 'lock-unavailable';
+/** Report only the current owner's Host state; never expose another owner's failure. */
+export function getModelVisibilityInitializationFailure(ownerId: string | null, generation: number): ModelVisibilityInitializationFailure | null {
+  const owner = getDataOwnerGeneration();
+  if (owner.dataOwnerId !== ownerId || owner.generation !== generation) return null;
+  const snapshot = getHostModelPresentationSnapshot();
+  if (snapshot?.status === 'ready') return null;
+  if (snapshot?.status === 'unreadable') return 'preferences-corrupt';
+  if (snapshot?.status === 'pending-migration') {
+    const claim = window.electronAPI?.maker?.claimLegacyModelVisibilityOwner?.();
+    if (claim?.profileOrigin === 'pending') return 'profile-pending';
+    return 'legacy-busy';
+  }
+  return snapshot?.status === 'unavailable' ? 'owner-pending' : 'storage-unavailable';
+}
 export const __STORAGE_KEY = 'xdt:modelVisibilityPrefs:v1';
 export const getModelVisibilityVersion = getHostModelPresentationVersion;
 export async function setModelVisibilityOwner(

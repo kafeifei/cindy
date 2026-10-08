@@ -20,6 +20,7 @@ vi.mock('../../im/ownerScopedStorage.js', () => ({
 }));
 import { getHostSettings, updateHostSettings } from '../index.js';
 import { normalizeHostSettingsChange, type HostSettingsDomain } from '../../../shared/hostSettings.js';
+import { readGitSafetySettings, writeGitSafetyMode } from '../../maker-host/git-safety-settings-store.js';
 import { readMemorySettings } from '../../maker-host/memory-settings-store.js';
 import { readCollaborationSettings } from '../../maker-host/collaboration-settings-store.js';
 import { getDefaultShellPref } from '../../terminal/terminalPrefsStore.js';
@@ -89,4 +90,22 @@ describe('expanded settings use the real native stores', () => {
     expect(getDefaultShellPref()).toBe('auto');
     expect(fs.existsSync(path.join(context.root, 'terminal-prefs.json'))).toBe(false);
   });
+});
+
+it('keeps the legacy cloud Git switch compatible with all native modes and stale form checks', async () => {
+  for (const mode of ['off', 'existing-git', 'all-projects'] as const) {
+    writeGitSafetyMode(mode);
+    expect(await getHostSettings(caller, 'gitSafety')).toMatchObject({ value: { autoSnapshotEnabled: mode !== 'off' } });
+  }
+  const stale = await request('gitSafety', { set: { autoSnapshotEnabled: false } });
+  writeGitSafetyMode('existing-git');
+  expect(await updateHostSettings(caller, stale)).toMatchObject({ saved: false, code: 'CONFLICT' });
+  expect(readGitSafetySettings().mode).toBe('existing-git');
+  for (const enabled of [false, true]) {
+    expect(await updateHostSettings(caller, await request('gitSafety', { set: { autoSnapshotEnabled: enabled } }))).toMatchObject({ saved: true });
+    expect(readGitSafetySettings().mode).toBe(enabled ? 'all-projects' : 'off');
+  }
+  expect(await updateHostSettings(caller, await request('gitSafety', { clear: ['autoSnapshotEnabled'] }))).toMatchObject({ saved: true });
+  expect(readGitSafetySettings().mode).toBe('existing-git');
+  expect(await getHostSettings(caller, 'gitSafety')).toMatchObject({ customizedKeys: [] });
 });

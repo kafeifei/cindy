@@ -593,7 +593,7 @@ export function importModelPresentationSource(
     };
   } else if (!vis.migrationComplete) {
     if (!claim.claimedByOtherOwner) {
-      if (!claim.claimed || !claim.canInitialize) invalid();
+      if (vis.legacy !== null && (!claim.claimed || !claim.canInitialize)) invalid();
       const legacy = vis.legacy === null ? {} : parseLegacy(vis.legacy);
       booleanMap(legacy);
       // 旧 owner 的恢复默认同样是明确选择，不能被待导入的全局开关复活。

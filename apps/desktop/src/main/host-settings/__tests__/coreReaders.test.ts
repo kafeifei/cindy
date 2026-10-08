@@ -288,7 +288,7 @@ it('aggregates all fixed leaves with native facts, bounded-domain error isolatio
   const result = unchanged(() => readCoreSettings({ getContext: context, stores }));
   expect(Object.keys(result.fields).sort()).toEqual([...CORE_SETTINGS_FIELD_IDS].sort());
   expect(result.fields['collaboration.workerSoftLimit']).toEqual({ status: 'unreadable' });
-  expect(result.fields['gitSafety.autoSnapshotEnabled']).toEqual({ status: 'value', value: false, source: 'default' });
+  expect(result.fields['gitSafety.autoSnapshotEnabled']).toEqual({ status: 'value', value: true, source: 'default' });
   expect(result.collections?.visionBridgeTargets).toMatchObject({ status: 'value', total: 2, complete: true,
     entries: [{ key: '1', fields: { model: { value: 'private-model-a', source: 'override' } } }, { key: '2' }] });
   expect(JSON.stringify(result)).not.toContain('private-device');

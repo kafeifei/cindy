@@ -42,11 +42,18 @@ export function startInstanceStatus(
   config: InstanceConfig,
   read: () => InstanceReadiness,
   onFailure: () => void,
-  readOauthIdentity: () => PluginOauthPublicIdentity | undefined = () => undefined,
+  readOauthIdentity: () => PluginOauthPublicIdentity | undefined | Promise<PluginOauthPublicIdentity | undefined> = () => undefined,
 ): () => void {
-  const write = (stopping = false): void => {
+  let epoch = 0;
+  let inflight = false;
+  const write = async (stopping = false): Promise<void> => {
+    if (inflight && !stopping) return;
+    inflight = true;
+    const generation = ++epoch;
     const temporary = `${config.statusFile}.${randomUUID()}`;
     try {
+      const oauthIdentity = stopping ? undefined : await readOauthIdentity();
+      if (generation !== epoch) return;
       fs.mkdirSync(path.dirname(config.statusFile), {
         recursive: true,
         mode: 0o700,
@@ -54,7 +61,7 @@ export function startInstanceStatus(
       fs.writeFileSync(
         temporary,
         JSON.stringify(
-          buildInstanceStatus(config, read(), Date.now(), stopping, readOauthIdentity()),
+          buildInstanceStatus(config, read(), Date.now(), stopping, oauthIdentity),
         ),
         { flag: "wx", mode: 0o600 },
       );
@@ -63,13 +70,14 @@ export function startInstanceStatus(
       onFailure();
     } finally {
       fs.rmSync(temporary, { force: true });
+      if (generation === epoch) inflight = false;
     }
   };
-  write();
-  const timer = setInterval(write, 5_000);
+  void write();
+  const timer = setInterval(() => { void write(); }, 5_000);
   timer.unref();
   return () => {
     clearInterval(timer);
-    write(true);
+    void write(true);
   };
 }

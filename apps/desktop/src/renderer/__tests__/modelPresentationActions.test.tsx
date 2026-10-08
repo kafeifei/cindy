@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, renderHook } from '@testing-library/react';
+import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, afterEach, it, expect, vi } from 'vitest';
 import type { UnifiedModelEntry } from '@cindy/model-providers';
 import {
@@ -72,7 +72,8 @@ it('收藏成功点亮必须等Host回执，等待期间列表不变', async () 
     operation = hook.result.current.addFavorite(anchor, config);
     await Promise.resolve();
   });
-  expect(hook.result.current.pending).toBe(true);
+  // Upstream deliberately delays the disabled treatment to keep fast writes flicker-free.
+  await waitFor(() => expect(hook.result.current.pending).toBe(true));
   expect(listModelFavorites()).toEqual([]);
   expect(opts.onFavoriteFlash).not.toHaveBeenCalled();
   await act(async () => {

@@ -1,7 +1,7 @@
 import { BrowserWindow, screen } from 'electron';
 import { insertManagedBrowserText } from '../mcp-integrations/browser-focused-text';
 import { openLinuxDisplay } from './linuxDisplay';
-import { LinuxDesktopInput, type LinuxInputText } from './linuxInput';
+import { LinuxDesktopInput, type LinuxInputText } from './linuxX11Input';
 import { checkLinuxInputGuard, openLinuxInputGuard } from './linuxInputGuard';
 
 export async function insertLinuxDesktopText(request: LinuxInputText): Promise<void> {

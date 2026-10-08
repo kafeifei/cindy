@@ -3741,7 +3741,7 @@ describe('统一选择器 · 旧偏好与配置变更回归', () => {
   });
 
   it('编辑收藏的异步 Fast 写入期间，改深度与删除收藏排队，落定后按顺序执行', async () => {
-    const uid = addModelFavorite({
+    const uid = await addModelFavorite({
       providerId: 'xd',
       modelId: 'gpt-5.5',
       agent: 'codex',

@@ -1,7 +1,7 @@
 import type { BotModelRoute } from '../../../shared/botModelChain';
 import type { ProviderView } from '@cindy/model-providers';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { changeAppDefaultModel, configureAppDefaultModelSelection, inspectAppDefaultModel, validateTaskModel, resolveTaskModelSelection } from '../appDefaultModelControl';
+import { changeAppDefaultModel, inspectAppDefaultModel, validateTaskModel, resolveTaskModelSelection } from '../appDefaultModelControl';
 import { setNewMakerDraftCache, syncNewMakerDraftCache } from '../../maker-host/newMakerDefaultsCache';
 
 const host = vi.hoisted(() => ({ owner: 'owner:1', enabled: true, connected: true, agents: ['codex'],
@@ -62,11 +62,10 @@ describe('直接写入 Host 的应用默认模型', () => {
     expect((await inspectAppDefaultModel()).current).toEqual(route);
   });
   it('resolves a one-task selection without changing application preferences', async () => {
-    const dispatch = vi.fn(); configureAppDefaultModelSelection(dispatch);
     expect(await resolveTaskModelSelection({ id, effort: 'low', fastMode: true })).toEqual({ ...route, effort: 'low', fastMode: true });
     expect(await resolveTaskModelSelection({ id })).toEqual(route);
     expect((await inspectAppDefaultModel()).current).toEqual(route);
-    expect(dispatch).not.toHaveBeenCalled();
+    expect(host.commit).not.toHaveBeenCalled();
   });
   it.each(['disabled', 'disconnected', 'harness', 'account', 'effort', 'fast'] as const)('rejects an unavailable one-task selection: %s', async failure => {
     const selection = { id, effort: 'medium', fastMode: false };
@@ -81,12 +80,14 @@ describe('直接写入 Host 的应用默认模型', () => {
     }
     await expect(resolveTaskModelSelection(selection)).rejects.toThrow();
   });
-  it('waits for the real owner-fenced mirror instead of mutating the cache itself', async () => {
-    const dispatch = vi.fn(selection => mirror(selection.route, selection.requestId));
-    configureAppDefaultModelSelection(dispatch);
-    expect(await changeAppDefaultModel(id, 'low')).toEqual({ current: { ...route, effort: 'low' } });
-    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ expectedRoute: route,
-      ownerStamp: { dataOwnerId: 'owner', ownerGeneration: 1 } }));
+  it('acknowledges only persisted Host defaults without requiring a renderer mirror', async () => {
+    expect(await changeAppDefaultModel(id, 'low')).toEqual({
+      current: { ...route, effort: 'low' }, saved: true, revision: 'revision-saved', application: 'next_task',
+    });
+    expect(host.commit).toHaveBeenCalledWith({ set: {
+      harness: 'codex', providerId: 'openai', modelId: 'luna', effort: 'low', fast: false,
+    } }, { expectedRevision: 'revision-1', assertCurrent: expect.any(Function) });
+    expect((await inspectAppDefaultModel()).current).toEqual(route);
   });
   it('保存失败不伪造成功回执', async () => {
     host.commit.mockRejectedValue(new Error('CONFLICT'));

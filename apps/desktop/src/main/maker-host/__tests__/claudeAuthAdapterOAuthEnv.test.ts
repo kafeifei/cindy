@@ -152,7 +152,6 @@ describe('DesktopClaudeAuthAdapter — Claude 订阅只经 CLI 自己的登录',
   });
   afterEach(() => {
     vi.restoreAllMocks(); vi.unstubAllEnvs();
-    fs.rmSync(h.userData, { recursive: true, force: true });
   });
 
   it('keeps the owner-scoped BYOK key readable when Cindy gateway access is disabled', async () => {

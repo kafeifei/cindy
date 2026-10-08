@@ -3,7 +3,7 @@ import { z } from 'zod';
 /** 只读公开目录，不是 mutation 协议；元数据只供 Host 投影与 CIS 排版，不随报告上传。 */
 export const SETTINGS_READ_TABS = [
   'general', 'personalization', 'providers', 'billing', 'usage', 'voice-input', 'im-bot',
-  'shortcuts', 'agent-island', 'import', 'remote-control', 'ghosts', 'builtin-tools',
+  'shortcuts', 'agent-island', 'import', 'remote-control', 'shared-tasks', 'ghosts', 'builtin-tools',
   'computer-use', 'cindy-make', 'storage', 'help', 'about',
 ] as const;
 export type SettingsReadTab = typeof SETTINGS_READ_TABS[number];
@@ -164,7 +164,7 @@ const core = {
     uiFontCustomized: bool, codeFontCustomized: bool }, 'general', 'AppearanceSection', 'shared/appearanceSettings.ts#APPEARANCE_LIMITS', 'cloudDesktop'),
   ...group('collaboration', { workerSoftLimit: number(1, 20), workerHardLimit: number(1, 20), workerIdleReleaseMinutes: number(0, 120) }, 'general', 'CollaborationSection', 'main/maker-host/collaboration-settings-store.ts'),
   ...group('agentResource', { maxConcurrentCommands: integer(0, 64), processPriority: z.enum(['normal', 'low', 'lowest']), capToolchainThreads: bool }, 'general', 'AgentResourceSection', 'main/maker-host/agent-resource-settings-store.ts', 'profile', 'nextAgentStart'),
-  ...group('gitSafety', { autoSnapshotEnabled: bool }, 'general', 'GitSafetySection', 'main/maker-host/git-safety-settings-store.ts', 'profile', 'nextTask'),
+  ...group('gitSafety', { mode: z.enum(['off', 'existing-git', 'all-projects']), autoSnapshotEnabled: bool, autoInitProjectGit: bool }, 'general', 'GitSafetySection', 'main/maker-host/git-safety-settings-store.ts', 'profile', 'nextTask'),
   ...group('memory', { maker: bool, claudeCode: bool, codex: bool, pi: bool }, 'personalization', 'MemorySection', 'main/maker-host/memory-settings-store.ts', 'owner', 'nextAgentStart'),
   ...group('compaction', { claudeCodeAutoCompactPct: integer(50, 95), piAutoCompactPct: integer(50, 95) }, 'personalization', 'CompactionSection', 'main/maker-host/compaction-settings-store.ts', 'owner', 'nextAgentStart'),
   ...group('subagentModel', { claudeCode: settingsReadReferenceSchema, claudeCodeProviderId: settingsReadReferenceSchema,
@@ -211,7 +211,7 @@ const desktop = {
 export const SETTINGS_READ_ASR_PROVIDERS = ['custom-realtime-asr', 'elevenlabs-scribe-realtime', 'openai-realtime-whisper', 'litellm-gpt-realtime-whisper', 'litellm-qwen3-asr-flash-realtime', 'litellm-volcengine-sauc-asr', 'litellm-batch'] as const;
 const voice = {
   ...group('voice', { language: z.enum(['auto', 'zh-CN', 'zh-TW', 'en', 'ja', 'ko']), microphoneDeviceIdConfigured: bool,
-    muteSystemAudio: bool, playInteractionSound: bool, fastActivationEnabled: bool, refinementEnabled: bool,
+    muteSystemAudio: bool, playInteractionSound: bool, fastActivationEnabled: bool, composerLongPressEnabled: bool, refinementEnabled: bool,
     refinementInstructionsConfigured: bool, autoDictionaryEnabled: bool, dictionarySyncEnabled: bool, shortcutConfigured: bool,
     serviceMode: z.enum(['cindy', 'byok']), customAsrConfigured: bool,
     asrProvider: z.enum(SETTINGS_READ_ASR_PROVIDERS), asrProviderChain: z.array(z.enum(SETTINGS_READ_ASR_PROVIDERS)).max(7),
@@ -324,6 +324,7 @@ export const SETTINGS_READ_EXTERNAL_CATALOG = [
   { id: 'im.connections', tab: 'im-bot', control: 'ImBotSection', kind: 'authorization', entry: 'im' },
   { id: 'im.officialTelegramBehavior', tab: 'im-bot', control: 'TelegramBehaviorSettings', kind: 'external', entry: 'im' },
   { id: 'import.sessions', tab: 'import', control: 'SessionImportSection', kind: 'action', entry: 'import' },
+  { id: 'sharedTasks.sharing', tab: 'shared-tasks', control: 'SharedTaskDialog', kind: 'resource', entry: 'sharedTasks' },
   { id: 'remote.connections', tab: 'remote-control', control: 'RemoteControlSection', kind: 'authorization', entry: 'remote' },
   { id: 'plugins.settingsHtml', tab: 'ghosts', control: 'SettingsCatalogPanel', kind: 'external', entry: 'plugin' },
   { id: 'plugins.resources', tab: 'ghosts', control: 'SettingsCatalogPanel', kind: 'resource', entry: 'plugin' },
@@ -331,6 +332,7 @@ export const SETTINGS_READ_EXTERNAL_CATALOG = [
   { id: 'computer.systemPermissions', tab: 'computer-use', control: 'ComputerPermissionRow', kind: 'authorization', entry: 'computer' },
   { id: 'computer.driverInstall', tab: 'computer-use', control: 'ComputerUseSection', kind: 'action', entry: 'computer' },
   { id: 'cindyMake.build', tab: 'cindy-make', control: 'CindyMakeSection', kind: 'action', entry: 'cindyMake' },
+  { id: 'storage.worktrees', tab: 'storage', control: 'WorktreeRecycleCard', kind: 'action', entry: 'storage' },
   { id: 'storage.cleanup', tab: 'storage', control: 'StorageManagementCard', kind: 'action', entry: 'storage' },
   { id: 'storage.backup', tab: 'storage', control: 'StorageManagementCard', kind: 'action', entry: 'storage' },
   { id: 'help.support', tab: 'help', control: 'HelpSection', kind: 'external', entry: 'help' },

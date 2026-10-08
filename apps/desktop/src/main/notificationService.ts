@@ -176,7 +176,7 @@ export function showDesktopSessionEvent(
 ): boolean {
   const { sessionId, title, kind } = payload;
   if (sessionId) markSessionNeedsAttention(sessionId);
-  if (!getDesktopNotificationsEnabled()) return;
+  if (!getDesktopNotificationsEnabled()) return false;
   const safeTitle = title?.trim() || sessionId.slice(0, 8) || getSessionNotificationUntitled();
   return showDesktopToast(safeTitle, kind, () => focusWindow(getWindow, sessionId), payload.body, payload.teammate);
 }

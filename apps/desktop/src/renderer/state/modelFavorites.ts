@@ -3,6 +3,8 @@
  * 编辑成相同配置的旧锚点仍独立保留。
  */
 import { useSyncExternalStore } from 'react';
+import { parseModelFavoriteMutation, sameModelFavorite, type ModelFavoriteMutation } from '@cindy/device-link';
+import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '../contexts/dataOwnerGeneration';
 import { EFFORT_VALUES } from '@cindy/model-providers';
 import {
   isModelPresentationEngine,
@@ -13,6 +15,8 @@ import {
 } from '../../shared/modelPresentationPreferences';
 import {
   commitHostModelPresentation,
+  ensureHostModelPresentationLoaded,
+  getHostModelPresentationSnapshot,
   getHostModelPresentationValue,
   invalidateHostModelPresentationOwner,
   subscribeHostModelPresentation,
@@ -72,4 +76,47 @@ export function setModelFavoritesOwner(_ownerId: string | null): void {
 }
 export function __resetForTest(): void {
   __resetHostModelPresentationForTest();
+}
+
+/** Compatibility for upstream remote favorites; persistence remains Host-owned. */
+export async function accessHostModelFavorites(
+  ownerId: string | null,
+  mutation?: ModelFavoriteMutation,
+  assertCaller: () => void = () => {},
+): Promise<readonly ModelFavoriteItem[]> {
+  const owner = getDataOwnerGeneration();
+  const assertOwner = () => {
+    assertCaller();
+    if (!ownerId || owner.dataOwnerId !== ownerId || !isDataOwnerGenerationCurrent(owner))
+      throw new Error('Favorites owner not ready');
+  };
+  assertOwner();
+  await ensureHostModelPresentationLoaded();
+  assertOwner();
+  const read = () => {
+    const snapshot = getHostModelPresentationSnapshot();
+    if (snapshot?.status !== 'ready') throw new Error('Favorites host not ready');
+    return snapshot.value.favorites.items;
+  };
+  if (!mutation) return read();
+  const op = parseModelFavoriteMutation(mutation);
+  const guard = () => {
+    assertOwner();
+    if (op.kind !== 'add') {
+      const current = read().find(item => item.uid === op.expected.uid);
+      if (!current || !sameModelFavorite(current, op.expected))
+        throw new Error('Favorite changed; refresh before retrying');
+    }
+    return true;
+  };
+  guard();
+  const receipt = await commitHostModelPresentation(op.kind === 'add'
+    ? { kind: 'favorite-add', config: normalizeModelFavoriteConfig(op.item)! }
+    : op.kind === 'remove' ? { kind: 'favorite-remove', uid: op.expected.uid }
+    : { kind: 'favorite-update', uid: op.expected.uid, patch: {
+      agent: op.item.agent, effort: op.item.effort ?? null, fast: !!op.item.fast,
+    } }, guard);
+  assertOwner();
+  if (!receipt || receipt.snapshot.status !== 'ready') throw new Error('Favorite changed or save failed');
+  return receipt.snapshot.value.favorites.items;
 }

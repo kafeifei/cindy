@@ -1,3 +1,4 @@
+import os from 'node:os';
 import { cindyManagedHomeDir } from '../cloudPilotDistribution.js';
 /**
  * skillhub/installService.ts — Market install / uninstall 链路（Hub + registry 版）。
