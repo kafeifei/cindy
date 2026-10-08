@@ -471,12 +471,12 @@ describe("remote desktop viewport", () => {
     native.send({ type: 'init', epoch: 'unicode', width: 1280, height: 800 });
     native.send({ type: 'control', enabled: true });
     native.send({ type: 'keyboard', enabled: true });
-    native.keyboard('compositionstart');
+    native.keyboardInput('compositionstart');
     native.elements['keyboard-input'].value = '\u200b' + text;
-    native.keyboard('input', { isComposing: true });
+    native.keyboardInput('input', { isComposing: true });
     expect(native.messages.flatMap((message) => message.events ?? []).filter((event) => event.kind === 'text')).toEqual([]);
-    native.keyboard('compositionend');
-    native.keyboard('input', { isComposing: false });
+    native.keyboardInput('compositionend');
+    native.keyboardInput('input', { isComposing: false });
     native.flush();
     const chunks = native.messages.flatMap((message) => message.events ?? []).filter((event) => event.kind === 'text').map((event) => event.text!);
     expect(chunks).toHaveLength(2);

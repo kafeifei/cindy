@@ -1,9 +1,11 @@
 import { z } from 'zod';
 import {
-  SETTINGS_READ_CATALOG, SETTINGS_READ_FIELD_IDS, SETTINGS_READ_COLLECTION_CATALOG, SETTINGS_READ_COLLECTION_IDS,
+  SETTINGS_READ_CATALOG, SETTINGS_READ_COLLECTION_CATALOG, SETTINGS_READ_COLLECTION_IDS,
   settingsReadReferenceSchema, settingsReadPublicIdentifierSchema,
-  type SettingsSnapshotFieldId, type SettingsSnapshotCollectionId,
+  type SettingsSnapshotCollectionId,
 } from './settingsReadCatalog.js';
+import { SETTINGS_SNAPSHOT_V2_FIELD_IDS, type SettingsSnapshotV2FieldId } from './settingsSnapshotV2FieldIds.js';
+export { SETTINGS_SNAPSHOT_V2_FIELD_IDS, type SettingsSnapshotV2FieldId } from './settingsSnapshotV2FieldIds.js';
 export type { SettingsSnapshotFieldId, SettingsSnapshotCollectionId } from './settingsReadCatalog.js';
 
 /** v1 的 8 KiB 常量和 parser 留在原模块，绝不借 v2 放宽旧报文。 */
@@ -22,7 +24,7 @@ export type SettingsSnapshotFieldV2<T> =
   | { status: 'value'; value: T; source: SettingsSnapshotSourceV2 }
   | { status: SettingsSnapshotUnavailableStatus };
 export type SettingsSnapshotFieldsV2 = {
-  [K in SettingsSnapshotFieldId]: SettingsSnapshotFieldV2<z.infer<typeof SETTINGS_READ_CATALOG[K]['valueSchema']>>;
+  [K in SettingsSnapshotV2FieldId]: SettingsSnapshotFieldV2<z.infer<typeof SETTINGS_READ_CATALOG[K]['valueSchema']>>;
 };
 export function settingsSnapshotFieldV2Schema<T extends z.ZodTypeAny>(value: T) {
   return z.union([
@@ -31,7 +33,7 @@ export function settingsSnapshotFieldV2Schema<T extends z.ZodTypeAny>(value: T) 
   ]);
 }
 export const settingsSnapshotFieldsV2Schema: z.ZodType<SettingsSnapshotFieldsV2> = z.object(
-  Object.fromEntries(SETTINGS_READ_FIELD_IDS.map(id => [id, settingsSnapshotFieldV2Schema(SETTINGS_READ_CATALOG[id].valueSchema)])),
+  Object.fromEntries(SETTINGS_SNAPSHOT_V2_FIELD_IDS.map(id => [id, settingsSnapshotFieldV2Schema(SETTINGS_READ_CATALOG[id].valueSchema)])),
 ).strict() as unknown as z.ZodType<SettingsSnapshotFieldsV2>;
 
 export type SettingsSnapshotCollectionEntry<K extends SettingsSnapshotCollectionId> = z.infer<typeof SETTINGS_READ_COLLECTION_CATALOG[K]['entrySchema']>;
@@ -120,7 +122,7 @@ export function validateSettingsSnapshotBudget(
 
 /** 仅用于初始化一次采样；聚合器必须逐项以实际读取结果覆盖，不代表读取已完成。 */
 export function createSettingsSnapshotV2UnavailableFields(status: SettingsSnapshotUnavailableStatus = 'unavailable'): SettingsSnapshotFieldsV2 {
-  return Object.fromEntries(SETTINGS_READ_FIELD_IDS.map(id => [id, { status }])) as SettingsSnapshotFieldsV2;
+  return Object.fromEntries(SETTINGS_SNAPSHOT_V2_FIELD_IDS.map(id => [id, { status }])) as SettingsSnapshotFieldsV2;
 }
 export function createSettingsSnapshotV2UnavailableCollections(status: SettingsSnapshotUnavailableStatus = 'unavailable'): SettingsSnapshotCollectionsV2 {
   return Object.fromEntries(SETTINGS_READ_COLLECTION_IDS.map(id => [id, { status, total: null, omitted: null, entries: [] }])) as unknown as SettingsSnapshotCollectionsV2;

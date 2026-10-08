@@ -73,6 +73,7 @@ function handleInteractionRequestForTest(
 }
 
 const mocks = vi.hoisted(() => ({
+  services: new Set<AgentIslandService>(),
   committedSession: { dataOwnerId: 'test-owner', generation: 1, mode: 'local' } as ActiveAppSession | null,
   boundaryPending: false,
   nativeSupported: true,
@@ -169,6 +170,26 @@ vi.mock('../../device-link/broadcast-tap.js', () => ({
 }));
 
 import { resetEpermGuidanceForTest } from '../../file-access/permissions.js';
+
+// Each directly constructed fixture owns publish/expiry timers. Letting one
+// survive a test can enumerate displays while a later owner-boundary test runs.
+vi.mock('../service.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../service.js')>();
+  return {
+    ...actual,
+    AgentIslandService: class extends actual.AgentIslandService {
+      constructor(...args: ConstructorParameters<typeof actual.AgentIslandService>) {
+        super(...args);
+        mocks.services.add(this);
+      }
+    },
+  };
+});
+
+afterEach(() => {
+  for (const service of mocks.services) service.resetRuntimeState();
+  mocks.services.clear();
+});
 
 beforeEach(() => {
   mocks.committedSession = { dataOwnerId: 'test-owner', generation: 1, mode: 'local' };
@@ -6105,7 +6126,12 @@ describe('Agent Island 消费已提交 profile 偏好', () => {
     service = initAgentIslandService({ getMainWindow: () => null, nativeHost: { failed: false, headless, publish, suspend } });
     return service!;
   };
-  beforeEach(() => { vi.resetModules(); publish.mockClear(); suspend.mockClear(); service = null; });
+  beforeEach(() => {
+    // These cases exercise fresh production singletons; direct-constructor
+    // fixtures above have already been reset by the outer teardown.
+    vi.doUnmock('../service.js');
+    vi.resetModules(); publish.mockClear(); suspend.mockClear(); service = null;
+  });
   afterEach(() => {
     for (const [event, listener] of mocks.appOnce.mock.calls) if (event === 'will-quit') listener();
     service?.resetRuntimeState();

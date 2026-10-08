@@ -10,6 +10,8 @@ export function cloudSettingsFieldCoverage(id: SettingsSnapshotFieldId): CloudSe
   if (domain === 'newTaskDefaults') return edit(domain, field === 'plan' ? 'planMode' : field);
   if (domain === 'personalization') return edit(domain, 'userPrompt');
   if (domain === 'appearance') return edit(domain, ({uiFontSize:'uiSize',codeFontSize:'codeSize',zoomFactor:'windowZoom',uiFontCustomized:'uiFamily',codeFontCustomized:'codeFamily'} as Record<string,string>)[field]!);
+  if (id === 'gitSafety.mode') return { kind: 'dedicated', reason: 'The native Git safety control selects three modes; the legacy cloud switch cannot select existing-git.' };
+  if (id === 'gitSafety.autoInitProjectGit') return { kind: 'derived', reason: 'Derived from Git safety mode; this is not an independently writable override.' };
   if (['databaseWarning','collaboration','agentResource','gitSafety','memory','silentEncryptedRetry','chatEmbedding','lsp','terminal','auxiliaryModel','botModelChain','visionBridge'].includes(domain!)) return edit(domain!, field);
   if (domain === 'compaction') return edit(field === 'piAutoCompactPct' ? 'piCompaction' : 'claudeCompaction', field);
   if (domain === 'subagentModel') return edit(domain, field === 'claudeCodeProviderId' ? 'claudeCode' : field);

@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { settingsSnapshotCompatibilityCorpus } from './settingsSnapshotCorpus.js';
-import { SETTINGS_READ_CATALOG, SETTINGS_READ_COLLECTION_CATALOG, SETTINGS_READ_COLLECTION_IDS, SETTINGS_READ_FIELD_IDS } from '../settingsReadCatalog.js';
+import { SETTINGS_READ_CATALOG, SETTINGS_READ_COLLECTION_CATALOG, SETTINGS_READ_COLLECTION_IDS } from '../settingsReadCatalog.js';
+import { SETTINGS_SNAPSHOT_V2_FIELD_IDS } from '../settingsSnapshotV2FieldIds.js';
 import {
   SETTINGS_SNAPSHOT_COMPATIBILITY_FIXTURE, SETTINGS_SNAPSHOT_MAX_BYTES, settingsSnapshotReportSchema, settingsSnapshotAnyReportSchema,
   SETTINGS_SNAPSHOT_V2_COMPATIBILITY_FIXTURE, SETTINGS_SNAPSHOT_CAPABILITIES, settingsSnapshotCapabilitiesSchema,
@@ -48,7 +49,7 @@ function maximal(schema: z.ZodTypeAny): unknown {
   throw new Error(`UNHANDLED_MAXIMAL_SCHEMA_${String(kind)}`);
 }
 function maxReport(): SettingsSnapshotReportV2 {
-  const fields = Object.fromEntries(SETTINGS_READ_FIELD_IDS.map(id => [id, { status: 'value', source: 'override', value: maximal(SETTINGS_READ_CATALOG[id].valueSchema) }]));
+  const fields = Object.fromEntries(SETTINGS_SNAPSHOT_V2_FIELD_IDS.map(id => [id, { status: 'value', source: 'override', value: maximal(SETTINGS_READ_CATALOG[id].valueSchema) }]));
   const candidates = Object.fromEntries(SETTINGS_READ_COLLECTION_IDS.map(id => [id, { status: 'complete', total: 32, omitted: 0,
     entries: Array.from({ length: 32 }, (_, i) => ({ ...maximal(SETTINGS_READ_COLLECTION_CATALOG[id].entrySchema) as object, ordinal: i + 1 })) }])) as SettingsSnapshotCollectionsV2;
   return settingsSnapshotReportV2Schema.parse({ ...SETTINGS_SNAPSHOT_V2_COMPATIBILITY_FIXTURE,
@@ -71,11 +72,17 @@ describe(`same-value corpus sha256 ${corpusDigest}`, () => {
     if (test.valid && parsed.success) expect(parsed.data).toEqual(test.input);
   });
 });
-it(`maximum report: ${SETTINGS_READ_FIELD_IDS.length} fixed leaves / ${maximumBudget.fixedBytes} fixed bytes / ${maximumBudget.collectionsBytes} dynamic bytes / ${maximumBudget.bytes} total bytes`, () => {
+it(`maximum report: ${SETTINGS_SNAPSHOT_V2_FIELD_IDS.length} fixed leaves / ${maximumBudget.fixedBytes} fixed bytes / ${maximumBudget.collectionsBytes} dynamic bytes / ${maximumBudget.bytes} total bytes`, () => {
   expect(maximumBudget.ok).toBe(true);
 });
 
 describe('settings snapshot v2 strict wire', () => {
+  it.each(['gitSafety.mode', 'gitSafety.autoInitProjectGit', 'voice.composerLongPressEnabled'] as const)('keeps native-only addition %s outside the negotiated v2 wire', id => {
+    expect(SETTINGS_READ_CATALOG[id]).toBeDefined();
+    expect(Object.keys(sample().fields)).toHaveLength(453);
+    expect(Object.hasOwn(sample().fields, id)).toBe(false);
+    expect(settingsSnapshotFieldsV2Schema.safeParse({ ...sample().fields, [id]: { status: 'unsupported' } }).success).toBe(false);
+  });
   it('keeps v1 fixture, ranges and 8 KiB contract intact', () => {
     expect(SETTINGS_SNAPSHOT_MAX_BYTES).toBe(8192);
     expect(settingsSnapshotReportSchema.parse(SETTINGS_SNAPSHOT_COMPATIBILITY_FIXTURE)).toEqual(SETTINGS_SNAPSHOT_COMPATIBILITY_FIXTURE);
@@ -143,7 +150,7 @@ describe('settings snapshot v2 byte budgets and completeness', () => {
     const report = maxReport();
     const budget = validateSettingsSnapshotBudget(report);
     expect(budget.ok).toBe(true);
-    expect(Object.keys(report.fields).sort()).toEqual([...SETTINGS_READ_FIELD_IDS].sort());
+    expect(Object.keys(report.fields).sort()).toEqual([...SETTINGS_SNAPSHOT_V2_FIELD_IDS].sort());
     expect(Object.values(report.fields).every(field => field.status === 'value')).toBe(true);
     expect(budget.fixedBytes).toBeLessThanOrEqual(SETTINGS_SNAPSHOT_V2_FIXED_MAX_BYTES);
     // 每个数字最多再预留 32 bytes；浮点十进制长度变化不能破坏固定预算证明。
@@ -210,6 +217,6 @@ describe('settings snapshot v2 byte budgets and completeness', () => {
   it('never serializes catalog metadata in a report', () => {
     const report = maxReport();
     for (const privateKey of ['valueSchema', 'sourcePath', 'control', 'reader', 'labelKey', 'platforms']) expect(JSON.stringify(report)).not.toContain(`\"${privateKey}\"`);
-    expect(Object.keys(createSettingsSnapshotV2UnavailableFields())).toHaveLength(SETTINGS_READ_FIELD_IDS.length);
+    expect(Object.keys(createSettingsSnapshotV2UnavailableFields())).toHaveLength(SETTINGS_SNAPSHOT_V2_FIELD_IDS.length);
   });
 });

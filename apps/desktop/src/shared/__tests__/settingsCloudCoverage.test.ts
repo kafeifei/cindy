@@ -4,6 +4,12 @@ import { additionalSettingsSchemas } from '../settingsEditableCatalog.js';
 import { cloudSettingsFieldCoverage, CLOUD_SETTINGS_COLLECTION_COVERAGE, CLOUD_SETTINGS_EXTERNAL_COVERAGE, type CloudSettingsCoverage } from '../settingsCloudCoverage.js';
 import { HOST_SETTINGS_CATALOG } from '../hostSettings.js';
 describe('complete client directory to cloud settings coverage', () => {
+  it('does not invent independent writes for the native Git mode or its derived boolean', () => {
+    expect(cloudSettingsFieldCoverage('gitSafety.mode')?.kind).toBe('dedicated');
+    expect(cloudSettingsFieldCoverage('gitSafety.autoInitProjectGit')?.kind).toBe('derived');
+    expect(cloudSettingsFieldCoverage('gitSafety.autoSnapshotEnabled')).toEqual({ kind: 'editable', domain: 'gitSafety', field: 'autoSnapshotEnabled' });
+    expect(cloudSettingsFieldCoverage('voice.composerLongPressEnabled')?.kind).toBe('notApplicable');
+  });
   it('accounts for every fixed field, collection and dedicated entry without inferring writability', () => {
     const extra = Object.fromEntries(Object.entries(additionalSettingsSchemas).map(([id,schema])=>[id,Object.keys(schema.shape)]));
     const native: Record<string,string[]> = {newTaskDefaults:['harness','providerId','modelId','effort','fast','thinking','worktree','planMode'],personalization:['userPrompt'],databaseWarning:['thresholdGiB','disabled'],appearance:['uiFamily','codeFamily','uiSize','codeSize','windowZoom']};

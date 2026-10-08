@@ -8,6 +8,16 @@ Host 是设置唯一权威。网页只读取 CIS 保存的最近一份脱敏快�
 
 ### 全量目录的范围
 
+0.1.97 本地读取目录现为 456 个字段。新增 `gitSafety.mode`、
+`gitSafety.autoInitProjectGit` 与 `voice.composerLongPressEnabled` 仍须有真实 reader，
+但不加入已经协商的 v2 固定报文。v2 字段由 `settingsSnapshotV2FieldIds.ts` 固定为下述
+453 项，投影只发送该集合，保留与现有 CIS 的严格 parser、兼容 corpus 和字节预算。
+将来上传新增字段须单独协商协议，不能只改 corpus 摘要或放宽旧端校验。
+
+云端旧 Git 开关仍只写 `autoSnapshotEnabled`，兼容读出三种原生模式，并保留冲突校验和
+恢复默认行为；三档 `mode` 使用原生专用入口，`autoInitProjectGit` 是派生值，不独立写入。
+本轮不新增远程三档编辑协议；语音长按项沿用云端无音频设备的不可适用分类。
+
 客户端 `apps/desktop/src/shared/settingsReadCatalog.ts` 登记固定字段、动态配置和外部项目，CIS 维护同值本地目录；不跨仓 import，不把静态标题、翻译、范围、单位、源路径或控件元数据随报告上传。
 
 | 类别 | 数量 | 展示边界 |

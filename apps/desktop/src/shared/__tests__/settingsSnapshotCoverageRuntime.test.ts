@@ -65,7 +65,7 @@ import { collectSettingsInspection } from '../../main/host-settings/readSnapshot
 import { projectSettingsSnapshotV2 } from '../../main/host-settings/snapshotProjectionV2.js';
 import type { ReadonlySettingsInspection } from '../../main/host-settings/readTypes.js';
 import { SETTINGS_READ_FIELD_IDS, SETTINGS_READ_COLLECTION_IDS } from '../settingsReadCatalog.js';
-import { settingsSnapshotReportV2Schema, SETTINGS_SNAPSHOT_V2_COMPATIBILITY_FIXTURE } from '../settingsSnapshot.js';
+import { settingsSnapshotReportV2Schema, SETTINGS_SNAPSHOT_V2_COMPATIBILITY_FIXTURE, SETTINGS_SNAPSHOT_V2_FIELD_IDS } from '../settingsSnapshot.js';
 import { desktopPreferenceDefaults } from '../desktopPreferences.js';
 import { DEFAULT_APPEARANCE_SETTINGS } from '../appearanceSettings.js';
 import { emptyModelPresentationPreferences } from '../modelPresentationPreferences.js';
@@ -114,8 +114,8 @@ function assertCoverage(parts: ReadonlySettingsInspection[]) {
   expect([...owned].sort()).toEqual([...SETTINGS_READ_FIELD_IDS].sort());
   // 真正执行结果独立于目录：删除实际 put/publish 或遗漏循环项必须使本断言失败。
   const produced = parts.flatMap(part => Object.keys(part.fields));
-  expect(produced.length).toBe(453);
-  expect(new Set(produced).size).toBe(453);
+  expect(produced.length).toBe(456);
+  expect(new Set(produced).size).toBe(456);
   expect(produced.sort()).toEqual([...SETTINGS_READ_FIELD_IDS].sort());
   for (const [index, expected] of [PREFERENCE_SETTINGS_FIELD_IDS, CORE_SETTINGS_FIELD_IDS, INTERACTION_SETTINGS_FIELD_IDS].entries()) {
     expect(Object.keys(parts[index]!.fields).sort()).toEqual([...expected].sort());
@@ -136,15 +136,18 @@ afterEach(() => {
 });
 
 describe('production reader to v2 coverage seam', () => {
-  it.each(['darwin', 'win32', 'linux'] as const)('reads all 453 leaves and 15 collections on %s without placeholder fill', platform => {
+  it.each(['darwin', 'win32', 'linux'] as const)('reads all 456 native leaves and projects the 453 v2 leaves on %s without placeholder fill', platform => {
     state.platform = platform;
     const { parts, inspection, report } = noWrites(() => read());
     assertCoverage(parts);
     for (const [id, field] of Object.entries(inspection.fields)) {
       expect(['value', 'unsupported', 'private'], id).toContain(field.status);
-      // 完成一次真实读取后，不允许投影因为 schema 漂移把好值降级为 unreadable。
-      expect(report.fields[id as keyof typeof report.fields].status, id).toBe(field.status);
     }
+    expect(Object.keys(report.fields)).toEqual([...SETTINGS_SNAPSHOT_V2_FIELD_IDS]);
+    expect(Object.keys(inspection.fields).filter(id => !Object.hasOwn(report.fields, id)).sort())
+      .toEqual(['gitSafety.autoInitProjectGit', 'gitSafety.mode', 'voice.composerLongPressEnabled']);
+    // 所有旧版 wire 字段保留真实读取状态，新版字段仍必须有本地读取接线。
+    for (const id of SETTINGS_SNAPSHOT_V2_FIELD_IDS) expect(report.fields[id].status, id).toBe(inspection.fields[id]!.status);
     expect(report.fields['im.wecom.notificationsEnabled']).toEqual({ status: 'private' });
     expect(report.collections.modelVisibility.status).toBe('migrationPending');
     expect(report.collections.modelParameterHistory.status).toBe('migrationPending');
@@ -185,7 +188,7 @@ describe('production reader to v2 coverage seam', () => {
     write('ghost-errand-prefs.json', { errand: { 'private-plugin': { agentKind: 'cc', model: 'private-model', workingDir: '/private-fixture/workspace', fastMode: false } } });
     const { parts, inspection, report } = noWrites(() => read());
     assertCoverage(parts);
-    for (const [id, raw] of Object.entries(inspection.fields)) expect(report.fields[id as keyof typeof report.fields].status, id).toBe(raw.status);
+    for (const id of SETTINGS_SNAPSHOT_V2_FIELD_IDS) expect(report.fields[id].status, id).toBe(inspection.fields[id]!.status);
     for (const [id, collection] of Object.entries(report.collections)) {
       expect(collection.status, id).toBe(id === 'builtinToolOverrides' ? 'partial' : 'complete');
       expect(collection.entries.length, id).toBeGreaterThan(0);

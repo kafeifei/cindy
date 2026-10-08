@@ -156,6 +156,34 @@ describe('Host settings production caller resolver', () => {
     expect(f.confirm).not.toHaveBeenCalled();
   });
 
+  it.each(['bot', 'bot-main'] as const)('keeps real Host settings denied on the inherited %s helper surface', async surface => {
+    const f = fixture();
+    f.getSource.mockResolvedValue('bot');
+    const write = vi.spyOn(settings, 'updateHostSettings');
+    const server = createXdtHelperMcpServer({ settings: hostSettingsHelper, resolveSurface: async () => surface }, {
+      agentKind: 'pi', workingDir: isolated.root, sessionId: f.context.sessionId, getSessionContext: () => f.context,
+    });
+    const [left, right] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'fixture-bot-settings', version: '1.0.0' });
+    try {
+      await Promise.all([client.connect(left), server.connect(right)]);
+      expect(await hostSettingsHelper.allowed(f.context)).toBe(false);
+      expect(payload(await client.callTool({ name: 'list_tools', arguments: { category: 'settings' } })))
+        .toMatchObject({ errorCode: 'CAPABILITY_NOT_AVAILABLE' });
+      const args = { domain: 'appearance', expected_revision: 'r', operation_id: 'op', set: { uiSize: 16 } };
+      expect(payload(await client.callTool({ name: 'call_tool', arguments: { name: 'update_settings', args } })))
+        .toMatchObject({ errorCode: 'CAPABILITY_NOT_AVAILABLE' });
+      expect(await hostSettingsHelper.call(f.context, 'update_settings', args)).toMatchObject({ errorCode: 'SETTINGS_NOT_ALLOWED' });
+      expect(write).not.toHaveBeenCalled();
+      expect(f.confirm).not.toHaveBeenCalled();
+      expect(f.broadcast).not.toHaveBeenCalled();
+      expect(fs.readdirSync(isolated.root)).toEqual([]);
+    } finally {
+      await client.close(); await server.close();
+      f.confirmation.cleanupForSession(f.context.sessionId!);
+    }
+  });
+
   it('denies Plan, non-desktop source and a pending owner boundary', async () => {
     const f = fixture();
     f.live.stablePlanModeState.enabled = true;

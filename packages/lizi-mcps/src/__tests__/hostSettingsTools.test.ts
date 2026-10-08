@@ -10,7 +10,7 @@ function payload(result: unknown): Record<string, unknown> {
   if (first?.type !== 'text' || !first.text) throw new Error('fixture missing text');
   return JSON.parse(first.text) as Record<string, unknown>;
 }
-async function setup(agentKind: 'claude-code' | 'codex' | 'pi' = 'codex', surface: 'default' | 'bot' | 'restricted' = 'default', withSettings = true) {
+async function setup(agentKind: 'claude-code' | 'codex' | 'pi' = 'codex', surface: 'default' | 'bot' | 'bot-main' | 'restricted' = 'default', withSettings = true) {
   let context: LiziMcpSessionContext = { agentKind, workingDir: '/fixture', sessionId: 'fixture-session' };
   const allowed = vi.fn<HostSettingsCallbacks['allowed']>(async () => true);
   const call = vi.fn<HostSettingsCallbacks['call']>(async (_ctx, tool) => ({ ok: true, tool }));
@@ -72,8 +72,21 @@ describe('Host settings 实际 MCP 传输与参数边界', () => {
     } finally { await fixture.close(); }
   });
 
-  it.each(['bot', 'restricted'] as const)('%s 能力面不暴露或执行全局设置', async surface => {
+  it.each(['bot', 'bot-main'] as const)('%s 继承普通工具类别，但发现与执行仍遵守 Host 设置授权', async surface => {
     const fixture = await setup('pi', surface);
+    try {
+      // The generic MCP layer inherits ordinary tools. Real Desktop Bot denial
+      // comes from the Host's live source resolver, not a second surface policy.
+      expect(await fixture.list('settings')).toHaveProperty('tools');
+      fixture.allowed.mockResolvedValue(false);
+      expect(await fixture.list('settings')).toMatchObject({ errorCode: 'CAPABILITY_NOT_AVAILABLE' });
+      expect(await fixture.invoke('update_settings', { domain: 'appearance', expected_revision: 'r', operation_id: 'op', set: { uiSize: 16 } })).toMatchObject({ errorCode: 'CAPABILITY_NOT_AVAILABLE' });
+      expect(fixture.call).not.toHaveBeenCalled();
+    } finally { await fixture.close(); }
+  });
+
+  it('restricted 能力面即使 Host 回调允许也不暴露或执行全局设置', async () => {
+    const fixture = await setup('pi', 'restricted');
     try {
       expect(await fixture.list('settings')).toMatchObject({ errorCode: 'CAPABILITY_NOT_AVAILABLE' });
       expect(await fixture.invoke('list_settings')).toMatchObject({ errorCode: 'CAPABILITY_NOT_AVAILABLE' });

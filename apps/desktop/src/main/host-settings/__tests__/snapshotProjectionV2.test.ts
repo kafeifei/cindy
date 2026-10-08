@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { SETTINGS_READ_FIELD_IDS, SETTINGS_READ_COLLECTION_IDS } from '../../../shared/settingsReadCatalog.js';
-import { settingsSnapshotReportV2Schema, SETTINGS_SNAPSHOT_V2_COMPATIBILITY_FIXTURE } from '../../../shared/settingsSnapshotV2.js';
+import { settingsSnapshotReportV2Schema, SETTINGS_SNAPSHOT_V2_COMPATIBILITY_FIXTURE, SETTINGS_SNAPSHOT_V2_FIELD_IDS } from '../../../shared/settingsSnapshotV2.js';
 import { encodeCatalogModelPin } from '../../../shared/catalogModelPin.js';
 import { projectSettingsSnapshotV2 } from '../snapshotProjectionV2.js';
 import { inspectedValue, type ReadonlySettingsInspection } from '../readTypes.js';
@@ -15,11 +15,22 @@ const value = (v: unknown) => inspectedValue(v, 'override');
 describe('全字段公开投影', () => {
   it('每个固定叶子与动态类别都必须接读取器，不能以默认值掩盖遗漏', () => {
     const complete = input();
-    expect(Object.keys(projectSettingsSnapshotV2(complete).fields)).toHaveLength(SETTINGS_READ_FIELD_IDS.length);
+    expect(Object.keys(projectSettingsSnapshotV2(complete).fields)).toEqual([...SETTINGS_SNAPSHOT_V2_FIELD_IDS]);
     delete complete.fields['desktop.theme'];
     expect(() => projectSettingsSnapshotV2(complete)).toThrow('MISSING_SETTINGS_FIELD_READER');
     const missingCollection = input(); delete missingCollection.collections!.modelPrices;
     expect(() => projectSettingsSnapshotV2(missingCollection)).toThrow('MISSING_SETTINGS_COLLECTION_READER');
+  });
+  it('新版原生字段不改变旧版报告，仍保留兼容 Git 开关的真实值', () => {
+    const raw = input();
+    raw.fields['gitSafety.mode'] = value('existing-git');
+    raw.fields['gitSafety.autoSnapshotEnabled'] = value(true);
+    raw.fields['gitSafety.autoInitProjectGit'] = value(false);
+    raw.fields['voice.composerLongPressEnabled'] = value(true);
+    const out = projectSettingsSnapshotV2(raw);
+    expect(out.fields['gitSafety.autoSnapshotEnabled']).toEqual({ status: 'value', source: 'override', value: true });
+    for (const id of ['gitSafety.mode', 'gitSafety.autoInitProjectGit', 'voice.composerLongPressEnabled']) expect(Object.hasOwn(out.fields, id)).toBe(false);
+    expect(settingsSnapshotReportV2Schema.safeParse({ ...SETTINGS_SNAPSHOT_V2_COMPATIBILITY_FIXTURE, ...out }).success).toBe(true);
   });
   it('只公开受信目录精确证明的ID，语法合法不等于公开', () => {
     const raw = input();

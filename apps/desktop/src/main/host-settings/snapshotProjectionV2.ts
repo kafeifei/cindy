@@ -1,10 +1,10 @@
 import { parseAuxiliaryModelRef } from '../../shared/auxiliaryModelChain.js';
 import {
-  SETTINGS_READ_CATALOG, SETTINGS_READ_FIELD_IDS, SETTINGS_READ_COLLECTION_CATALOG, SETTINGS_READ_COLLECTION_IDS,
+  SETTINGS_READ_CATALOG, SETTINGS_READ_COLLECTION_CATALOG, SETTINGS_READ_COLLECTION_IDS,
   type SettingsSnapshotFieldId, type SettingsSnapshotCollectionId,
 } from '../../shared/settingsReadCatalog.js';
 import {
-  boundSettingsSnapshotCollections, createSettingsSnapshotV2UnavailableCollections,
+  boundSettingsSnapshotCollections, createSettingsSnapshotV2UnavailableCollections, SETTINGS_SNAPSHOT_V2_FIELD_IDS,
   projectSettingsSnapshotPublicReference, settingsSnapshotFieldsV2Schema,
   type SettingsSnapshotCollectionsV2, type SettingsSnapshotReportV2,
 } from '../../shared/settingsSnapshotV2.js';
@@ -94,12 +94,12 @@ function projectCollection(id: SettingsSnapshotCollectionId, input: ReadonlySett
   }
 }
 
-/** 全字段必须有真实读取器。缺接线是实现错误，不用全unavailable报告掩盖。 */
+/** v2 的每个固定字段必须有真实读取器；新版本地字段不能改变已协商的旧版 wire。 */
 export function projectSettingsSnapshotV2(
   input: ReadonlySettingsInspection, ids: SettingsPublicIdentifiers = NO_PUBLIC_SETTINGS_IDENTIFIERS,
 ): Pick<SettingsSnapshotReportV2, 'fields' | 'collections'> {
   const fields: Record<string, unknown> = {};
-  for (const id of SETTINGS_READ_FIELD_IDS) {
+  for (const id of SETTINGS_SNAPSHOT_V2_FIELD_IDS) {
     const state = input.fields[id];
     if (!state) throw new Error('MISSING_SETTINGS_FIELD_READER');
     if (state.status !== 'value') { fields[id] = { status: state.status }; continue; }
