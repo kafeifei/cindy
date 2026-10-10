@@ -18,6 +18,43 @@ async function settle() {
 afterEach(() => vi.useRealTimers());
 
 describe('cloud hook authorization lifecycle', () => {
+  it('retries an old generation without closing a newer authorization', async () => {
+    vi.useFakeTimers();
+    const first = vi.fn().mockRejectedValueOnce(new Error('temporary close failure')).mockResolvedValue(undefined);
+    const next = vi.fn(async () => {}), warn = vi.fn();
+    const browser = { open: vi.fn().mockResolvedValueOnce(first).mockResolvedValueOnce(next) };
+    const windows = new HookAuthorizationWindows(browser, warn);
+    windows.update(view());
+    await windows.open('slack', 'https://slack.example/first');
+    windows.update(view('confirmed'));
+    await settle();
+    windows.update(view());
+    await windows.open('slack', 'https://slack.example/next');
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(first).toHaveBeenCalledTimes(2);
+    expect(next).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+    await windows.dispose();
+    expect(next).toHaveBeenCalledOnce();
+  });
+  it('bounds persistent cleanup failures and waits for retries on teardown', async () => {
+    vi.useFakeTimers();
+    const close = vi.fn(async () => { throw new Error('unavailable'); }), warn = vi.fn();
+    const windows = new HookAuthorizationWindows({ open: async () => close }, warn);
+    windows.update(view());
+    await windows.open('x', 'https://x.example/');
+    let disposed = false;
+    const done = windows.dispose().then(() => { disposed = true; });
+    await settle();
+    expect(disposed).toBe(false);
+    expect(close).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(6000);
+    await done;
+    expect(close).toHaveBeenCalledTimes(3);
+    expect(warn).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(close).toHaveBeenCalledTimes(3);
+  });
   it.each(['confirmed', 'denied', 'expired', 'failed', 'none'])(
     'reclaims Slack only at %s',
     async (state) => {

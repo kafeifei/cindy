@@ -70,7 +70,21 @@ export class HookAuthorizationWindows {
     // Completion can precede browser startup. The late window is still reclaimed.
     const cleanup = lease.close
       .then(
-        (close) => close(),
+        async (close) => {
+          // Retain this generation's cleanup handle while retrying transient CDP
+          // failures. Backoff is outside the browser queue so a new login or a
+          // different provider is not blocked by a failed close.
+          for (let attempt = 0; ; attempt++) {
+            try { await close(); return; }
+            catch (error) {
+              if (attempt === 2) throw error;
+              await new Promise<void>((resolve) => {
+                const timer = setTimeout(resolve, attempt === 0 ? 1_000 : 5_000);
+                timer.unref();
+              });
+            }
+          }
+        },
         () => {},
       )
       .catch(this.warn);

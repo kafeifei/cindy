@@ -42,6 +42,42 @@ function harness() {
 }
 
 describe('cloud authorization target ownership', () => {
+  it.each(['Target.getTargets', 'Target.closeTarget'])(
+    'retries a failed %s cleanup and preserves other windows', async (method) => {
+      const h = harness(), close = await h.browser.open('https://login.example/first');
+      await h.browser.open('https://login.example/second');
+      h.targets.set('user', { targetId: 'user', type: 'page', url: 'https://user.example/' });
+      const original = h.call.getMockImplementation()!;
+      let failed = false;
+      h.call.mockImplementation(async (name, params) => {
+        if (!failed && name === method) { failed = true; throw new Error('temporary CDP failure'); }
+        return original(name, params);
+      });
+      await expect(close()).rejects.toThrow('temporary CDP failure');
+      expect(h.targets.has('auth-1')).toBe(true);
+      await close();
+      await close();
+      expect([...h.targets.keys()]).toEqual(['auth-2', 'user']);
+      expect(h.call.mock.calls.some(([name]) => name === 'Browser.close')).toBe(false);
+    },
+  );
+  it('retries after only some SSO windows have closed', async () => {
+    const h = harness(), close = await h.browser.open('https://login.example/');
+    h.targets.set('sso', { targetId: 'sso', type: 'page', url: 'https://sso.example/', openerId: 'auth-1' });
+    const original = h.call.getMockImplementation()!;
+    let failed = false;
+    h.call.mockImplementation(async (method, params) => {
+      if (!failed && method === 'Target.closeTarget' && params?.targetId === 'auth-1') {
+        failed = true; throw new Error('temporary close failure');
+      }
+      return original(method, params);
+    });
+    await expect(close()).rejects.toThrow('temporary close failure');
+    expect([...h.targets.keys()]).toEqual(['auth-1']);
+    await close();
+    expect(h.targets.size).toBe(0);
+    expect(h.call.mock.calls.filter(([method]) => method === 'Browser.close')).toHaveLength(1);
+  });
   it('closes its bootstrap, auth page and SSO descendants, then releases the empty browser', async () => {
     const h = harness(),
       close = await h.browser.open('https://login.example/authorize');

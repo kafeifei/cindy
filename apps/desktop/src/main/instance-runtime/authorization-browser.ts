@@ -178,11 +178,11 @@ export class AuthorizationBrowser {
       let closed = false;
       const close = async () => {
         if (closed) return;
-        closed = true;
-        if (this.connection !== connection) return;
+        if (this.connection !== connection) { closed = true; return; }
         if (!connection.alive()) {
           await waitForBrowserExit(connection);
           this.connection = null;
+          closed = true;
           return;
         }
         const targets = (await connection.call('Target.getTargets')).targetInfos as Target[];
@@ -215,6 +215,7 @@ export class AuthorizationBrowser {
           if (!connection.alive()) {
             await waitForBrowserExit(connection);
             this.connection = null;
+            closed = true;
             return;
           }
           try {
@@ -223,6 +224,7 @@ export class AuthorizationBrowser {
             if (!connection.alive()) {
               await waitForBrowserExit(connection);
               this.connection = null;
+              closed = true;
               return;
             }
             throw error;
@@ -237,6 +239,8 @@ export class AuthorizationBrowser {
           await waitForBrowserExit(connection);
           this.connection = null;
         }
+        // A transient CDP failure must leave this handle usable for a retry.
+        closed = true;
       };
       try {
         // Remove only this launch's untouched bootstrap blank, after the auth window exists.
