@@ -1325,7 +1325,16 @@ describe('远程交互接线不变式', () => {
     expect(chatInputSrc).toContain('markModelChoice: true');
     expect(chatInputSrc).toContain('agentKind: targetAgentKind');
 
-    const appSrc = read('App.tsx');
+    const app = read('App.tsx');
+    const listenerStart = app.indexOf('const offDraft = window.electronAPI.onMakerDraftPrefApply(');
+    const listenerEnd = app.indexOf('const offSession =', listenerStart);
+    expect(listenerStart).toBeGreaterThan(-1);
+    expect(listenerEnd).toBeGreaterThan(listenerStart);
+    const listener = app.slice(listenerStart, listenerEnd);
+    expect(listener).toContain('applyAppDefaultModelSelection(appDefaultSelection)');
+    expect(listener).toContain('syncNewMakerPrefs(appDefaultSelection.requestId)');
+    expect(listener).toMatch(/applyRemoteDraftPreference\(\{\s*agent, providerId, modelId, active, effort, fast, thinking, markModelChoice,?\s*\}\)/);
+    const appSrc = read('state/applyRemoteDraftPreference.ts');
     expect(appSrc).toContain(
       'markModelChoice === false ? patchVendorPrefsPreservingModelChoice : patchVendorPrefs',
     );
@@ -1333,7 +1342,7 @@ describe('远程交互接线不变式', () => {
     expect(appSrc).not.toContain('markModelChoice === false ? {} : { model: modelId }');
 
     const draftSrc = read('state/newMakerDraft.ts');
-    expect(draftSrc).toContain('if (!opts.markModelChoice && modelChosen[vendor] === true)');
+    expect(draftSrc).toContain('if (!opts.markModelChoice && (modelChosen[vendor] === true || hasHostDraftPreferences()))');
     expect(draftSrc).toContain('delete nextPatch.model');
     expect(draftSrc).toContain('delete nextPatch.providerId');
     expect(draftSrc).toContain('if (incomingModel !== savedModel)');
@@ -1347,7 +1356,15 @@ describe('远程交互接线不变式', () => {
     expect(pushActiveEnd).toBeGreaterThan(pushActiveStart);
     const pushActiveBody = newMakerDraftRouteSrc.slice(pushActiveStart, pushActiveEnd);
     expect(pushActiveBody).toContain('active: true');
-    expect(pushActiveBody).toContain('markModelChoice: false');
+    expect(pushActiveBody).toContain('markModelChoice: target !== undefined && target.markModelChoice !== false');
+  });
+
+  it('Host 计划默认跨任务保留，远端草稿开关只覆盖本次草稿、不读写控制端偏好', () => {
+    const src = read('features/cc-agent/NewMakerDraftRoute.tsx');
+    expect(src).toContain('? remoteDraftPlan.enabled : remoteDraftState.value?.planMode === true)');
+    expect(src).toContain(': chatPrefs.planMode === true;');
+    expect(src.match(/if \(effectivePlanMode && !hasHostDraftPreferences\(\) && !isDeviceLinkDraft\) patch/g)).toHaveLength(3);
+    expect(src).not.toContain('if (effectivePlanMode) patch');
   });
 
   it('外部 session effort patch 必须在 layout commit 时对齐 cache 并抢占旧 runtime', () => {
@@ -1526,7 +1543,7 @@ describe('远程交互接线不变式', () => {
   });
 
   it('App active Fast-only 写穿不能改 lastByVendor model/effort 配对', () => {
-    const src = read('App.tsx');
+    const src = read('state/applyRemoteDraftPreference.ts');
     const start = src.indexOf('if (active) {');
     expect(start).toBeGreaterThan(-1);
     const body = src.slice(start, start + 700);

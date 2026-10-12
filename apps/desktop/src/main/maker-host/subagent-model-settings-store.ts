@@ -17,7 +17,22 @@ import {
 } from './override-settings-file.js';
 import { ownerScopedUserDataPath } from '../appSessionState.js';
 
+import path from 'node:path';
+import { isValidSubagentModelIdInput } from '../../shared/subagentModelSettings.js';
+import { inspectSettingsFile, isSettingBoolean, validateOptionalSettingsFields } from './settings-inspection.js';
+
 const log = desktopMakerLogger.child('subagent-model-settings-store');
+
+/** 保留盘上旧键；不清理孤儿来源、不做动态准入、不读取凭据。 */
+export function inspectSubagentModelSettings(ownerRoot: string) {
+  return inspectSettingsFile({ filePath: () => path.join(ownerRoot, 'subagent-model-settings.json'),
+    defaults: SUBAGENT_MODEL_SETTINGS_DEFAULTS, normalize,
+    validate: (raw) => validateOptionalSettingsFields(raw, {
+      claudeCode: isValidSubagentModelIdInput, claudeCodeProviderId: isValidSubagentModelIdInput,
+      codexSmartSubagentRouting: isSettingBoolean,
+    }),
+  });
+}
 
 function settingsFilePath(): string {
   return ownerScopedUserDataPath('subagent-model-settings.json');
@@ -49,6 +64,10 @@ const store = createOverrideSettingsFile<SubagentModelSettings>({
   filePath: settingsFilePath,
   defaults: SUBAGENT_MODEL_SETTINGS_DEFAULTS,
   normalize,
+  validateOverrides: raw => validateOptionalSettingsFields(raw, {
+    claudeCode: isValidSubagentModelIdInput, claudeCodeProviderId: isValidSubagentModelIdInput,
+    codexSmartSubagentRouting: isSettingBoolean,
+  }),
   // 写设置时顺便移除旧版 Codex 固定路由与护栏键；它们已不属于有效协议。
   mergeOverrides: ({ patch, next, defaults, overrides }) => {
     const activeOverrides = Object.fromEntries(
@@ -112,3 +131,6 @@ export function resetSubagentModelSettings(): SubagentModelSettings {
 }
 
 export const __testing = { normalize };
+
+/** Internal Host settings adapter; uses the native persistence and revision lock. */
+export function getSubagentModelSettingsStore() { return store; }

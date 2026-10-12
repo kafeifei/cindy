@@ -1,4 +1,4 @@
-import os from 'node:os';
+import { cindyManagedHomeDir } from '../cloudPilotDistribution.js';
 import path from 'node:path';
 import { promises as fsp } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
@@ -179,7 +179,7 @@ function groupOverlaysByMarketplace(
   return grouped;
 }
 
-export function codexGlobalPluginsPaths(codexHome: string, homeDir = os.homedir()) {
+export function codexGlobalPluginsPaths(codexHome: string, homeDir = cindyManagedHomeDir()) {
   return {
     codexHome,
     cacheDir: path.join(codexHome, 'plugins', 'cache'),

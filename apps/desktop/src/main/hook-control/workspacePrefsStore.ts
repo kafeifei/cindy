@@ -1,3 +1,4 @@
+import { createOverrideSettingsFile, type OverrideSettingsCommitOptions } from '../maker-host/override-settings-file.js';
 /**
  * hook-control/workspacePrefsStore.ts
  * ---------------------------------------------------------------------------
@@ -47,6 +48,23 @@ interface StoreFile {
   version: 1;
   migrated: Partial<Record<HookPrefsChannel, boolean>>;
   entries: WorkspacePrefsEntry[];
+}
+
+import { inspectSettingsJson, isSettingsRecord } from '../maker-host/inspect-settings-json.js';
+
+/** Known local rows only; no remote hydration, migration, reconciliation or mirror writes. */
+export function inspectWorkspacePrefs(ownerRoot: string) {
+  return inspectSettingsJson(path.join(ownerRoot, 'hook-workspace-prefs.json'), (raw): StoreFile => {
+    if (raw.version !== undefined && raw.version !== 1) throw new Error('unknown version');
+    if (raw.entries !== undefined && (!Array.isArray(raw.entries) || !raw.entries.every(isEntry))) throw new Error('invalid entries');
+    const migrated: StoreFile['migrated'] = {};
+    if (isSettingsRecord(raw.migrated)) {
+      for (const channel of ['slack', 'telegram', 'x'] as const) {
+        if (raw.migrated[channel] === true) migrated[channel] = true;
+      }
+    }
+    return { version: 1, migrated, entries: (raw.entries ?? []) as WorkspacePrefsEntry[] };
+  });
 }
 
 const FILE_NAME = 'hook-workspace-prefs.json';
@@ -162,6 +180,9 @@ function isDirtyRow(row: WorkspacePrefsEntry): boolean {
   return isBlankRow(row);
 }
 
+/** 只读投影复用镜像同步的同一纯规则，保留旧删除墓碑的缺省 dirty 语义。 */
+export { isDirtyRow as isWorkspacePrefsEntryDirty };
+
 function mergePatch(base: HookPrefsPatch | undefined, patch: HookPrefsPatch): HookPrefsPatch {
   const merged: HookPrefsPatch = { ...base };
   for (const field of PREF_FIELDS) {
@@ -233,14 +254,7 @@ export function getWorkspacePref(
     : { workspace, model: null, effort: null, agentKind: null, permissionMode: null, teamId };
 }
 
-export function setWorkspacePref(
-  channel: HookPrefsChannel,
-  teamId: string | null,
-  workspace: string,
-  patch: HookPrefsPatch,
-): { prefs: HookWorkspacePrefs[]; row: HookWorkspacePrefs; rev: number } {
-  const fp = filePath();
-  const store = readStore(fp);
+function applyWorkspacePrefPatch(store: StoreFile, channel: HookPrefsChannel, teamId: string | null, workspace: string, patch: HookPrefsPatch) {
   const exact = store.entries.find((e) => sameKey(e, channel, teamId, workspace));
   const inherited =
     exact === undefined && teamId !== null
@@ -285,12 +299,20 @@ export function setWorkspacePref(
   if (entries.length > HOOK_WORKSPACE_PREFS_MAX_ENTRIES) {
     throw new Error('too many workspace prefs entries');
   }
-  writeStore(fp, { ...store, entries });
   return {
+    entries,
     prefs: entries.filter((e) => e.channel === channel).map(toHookPrefs),
     row: toHookPrefs(nextRow),
     rev,
   };
+}
+
+export function setWorkspacePref(channel: HookPrefsChannel, teamId: string | null, workspace: string, patch: HookPrefsPatch) {
+  const fp = filePath();
+  const store = readStore(fp);
+  const { entries, ...result } = applyWorkspacePrefPatch(store, channel, teamId, workspace, patch);
+  writeStore(fp, { ...store, entries });
+  return result;
 }
 
 function needsTeamTombstone(entries: WorkspacePrefsEntry[], row: WorkspacePrefsEntry): boolean {
@@ -617,4 +639,23 @@ export function resolveWorkspacePrefOverrides(
     effort: pick('effort'),
     permissionMode: pick('permissionMode'),
   };
+}
+
+/** Same row/revision/tombstone rules as the native editor, with one CAS for a batch. */
+const hostPrefsStore = createOverrideSettingsFile<StoreFile>({
+  filePath, defaults: { version: 1, migrated: {}, entries: [] },
+  normalize: raw => raw as StoreFile,
+  validateOverrides: raw => {
+    if (raw.version !== undefined && raw.version !== 1 || raw.entries !== undefined && (!Array.isArray(raw.entries) || !raw.entries.every(isEntry))) throw new Error('Invalid workspace preferences');
+    if (raw.migrated !== undefined && (!isSettingsRecord(raw.migrated) || Object.values(raw.migrated).some(value => typeof value !== 'boolean'))) throw new Error('Invalid migration state');
+  }, preserveUnreadableFile: true, maxBytes: 1024 * 1024,
+  log: { info() {}, warn() {} }, label: 'hook-workspace-prefs',
+});
+export const getHostWorkspacePrefsStore = () => hostPrefsStore;
+export function commitHostWorkspacePrefs(updates: Array<{ channel: HookPrefsChannel; teamId: string | null; workspace: string; patch: HookPrefsPatch }>, options: OverrideSettingsCommitOptions) {
+  return hostPrefsStore.commitAtomic(current => {
+    let next = current.value;
+    for (const update of updates) next = { ...next, entries: applyWorkspacePrefPatch(next, update.channel, update.teamId, update.workspace, update.patch).entries };
+    return { set: { entries: next.entries } };
+  }, options);
 }

@@ -1,6 +1,6 @@
+import { cindyManagedHomeDir, isCloudPilotDistribution } from '../cloudPilotDistribution.js';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { brandUserDataDirName } from '@cindy/maker-shared/brand-identity';
@@ -491,7 +491,7 @@ function claudeSdkSessionIdFromFile(file: string): string {
 
 function resolveTranscriptDiscoveryContext(options: TranscriptDiscoveryOptions): TranscriptDiscoveryContext {
   const env = options.env ?? process.env;
-  const homeDir = options.homeDir ?? os.homedir();
+  const homeDir = options.homeDir ?? cindyManagedHomeDir();
   const platform = options.platform ?? process.platform;
   const appDataDir = options.appDataDir ?? env.APPDATA ?? path.join(homeDir, 'AppData', 'Roaming');
   return {
@@ -528,7 +528,7 @@ function claudeHomeCandidates(context: TranscriptDiscoveryContext): string[] {
 
 function codexHomeCandidates(context: TranscriptDiscoveryContext): string[] {
   const candidates = [
-    context.env.CODEX_HOME ?? '',
+    isCloudPilotDistribution() ? '' : context.env.CODEX_HOME ?? '',
     path.join(context.homeDir, '.codex'),
     path.join(context.userDataDir, 'codex-home'),
   ];

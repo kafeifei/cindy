@@ -13,6 +13,7 @@ import { activeOwnerScopeKey, getActiveAppSession } from '../appSessionState.js'
 import { getDesktopContactsManager } from '../maker-host/maker-contacts-host.js';
 import {
   commitContactsDeviceSyncSettingIntent,
+  type HostContactsSyncCommitOptions,
   readContactsDeviceSyncSettingIntent,
   readContactsSettings,
   writeContactsDeviceSyncSettingIntent,
@@ -219,7 +220,8 @@ export function getContactsDeviceSyncStatus(): ContactsDeviceSyncStatus {
   return { ...liveStatus };
 }
 
-export async function setContactsDeviceSyncEnabled(enabled: boolean): Promise<void> {
+export async function setContactsDeviceSyncEnabled(enabled: boolean, options?: HostContactsSyncCommitOptions): Promise<void> {
+  options?.assertCurrent?.();
   ensureCurrentOwnerStatus();
   const intentGeneration = ++settingsIntentGeneration;
   const ownerId = getActiveAppSession().dataOwnerId;
@@ -237,7 +239,7 @@ export async function setContactsDeviceSyncEnabled(enabled: boolean): Promise<vo
   }
   let persistedIntent: Awaited<ReturnType<typeof writeContactsDeviceSyncSettingIntent>>;
   try {
-    persistedIntent = await writeContactsDeviceSyncSettingIntent(enabled);
+    persistedIntent = await writeContactsDeviceSyncSettingIntent(enabled, options);
   } catch (error) {
     if (!enabled) activeDisableIntentWrites = Math.max(0, activeDisableIntentWrites - 1);
     if (settingsIntentGeneration === intentGeneration && activeOwnerScopeKey() === ownerScopeKey) {
@@ -274,7 +276,7 @@ export async function setContactsDeviceSyncEnabled(enabled: boolean): Promise<vo
       throw error;
     }
     if (!intentIsCurrent()) return;
-    if (!(await commitContactsDeviceSyncSettingIntent(persistedIntent))) return;
+    if (!(await commitContactsDeviceSyncSettingIntent(persistedIntent, options))) return;
     if (!intentIsCurrent()) return;
     if (ownerId) locallyDisabledOwners.delete(ownerId);
     if (activeOwnerScopeKey() !== ownerScopeKey) {
@@ -289,7 +291,7 @@ export async function setContactsDeviceSyncEnabled(enabled: boolean): Promise<vo
   }
   // 落盘失败时保留本进程的关闭抑制，不能由轮询读到旧的 true 后偷偷重启。
   try {
-    if (!(await commitContactsDeviceSyncSettingIntent(persistedIntent))) {
+    if (!(await commitContactsDeviceSyncSettingIntent(persistedIntent, options))) {
       activeDisableIntentTokens.delete(persistedIntent.token);
       reconcileSupersededDisable(enabled, ownerId, ownerScopeKey);
       return;

@@ -15,6 +15,8 @@ import {
   type CopyPngToClipboardParams,
 } from '../shared/pngClipboard';
 import type { ByokStatus } from '../shared/modelAccess.js';
+import { createDesktopPreferencesApi } from './desktopPreferences';
+import { createModelPresentationPreferencesApi } from './modelPresentationPreferences';
 import type { LocalPluginOauthRequest, LocalPluginSecretRequest } from '../shared/pluginOauth';
 import { REMOTE_VIEWER } from '../shared/remoteDesktopViewer';
 import type { RoutineInput } from '@cindy/maker-scheduler';
@@ -1123,6 +1125,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
   pageZoomOut: (): Promise<{ ok: true; zoomFactor: number }> => ipcRenderer.invoke('page-zoom:out'),
   pageZoomReset: (): Promise<{ ok: true; zoomFactor: number }> =>
     ipcRenderer.invoke('page-zoom:reset'),
+  desktopPreferences: createDesktopPreferencesApi(ipcRenderer),
+  modelPresentationPreferences: createModelPresentationPreferencesApi(ipcRenderer),
+  hostSettings: {
+    get: () => ipcRenderer.invoke('host-settings:get'),
+    update: (input) => ipcRenderer.invoke('host-settings:update', input),
+    saveHistory: (input) => ipcRenderer.invoke('host-settings:save-history', input),
+    importPrompt: (input) => ipcRenderer.invoke('host-settings:import-prompt', input),
+    onChanged: (callback) => {
+      const listener = (_event: Electron.IpcRendererEvent, stamp: import('../shared/hostSettings').SettingsOwnerStamp | null) => callback(stamp);
+      ipcRenderer.on('host-settings:changed', listener);
+      return () => ipcRenderer.removeListener('host-settings:changed', listener);
+    },
+  } satisfies import('../shared/hostSettings').HostSettingsRendererApi,
   appearanceSettings: {
     importWallpaper: () => ipcRenderer.invoke('appearance-settings:import-wallpaper'),
     ensureWallpaperVideo: (id: string) => ipcRenderer.invoke('appearance-settings:ensure-wallpaper-video', id),
@@ -1132,6 +1147,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     setPatch: (patch: Partial<AppearanceSettings>): Promise<AppearanceSettings> =>
       ipcRenderer.invoke('appearance-settings:set-patch', patch),
     reset: (): Promise<AppearanceSettings> => ipcRenderer.invoke('appearance-settings:reset'),
+    clearFields: (fields: Array<keyof AppearanceSettings>): Promise<AppearanceSettings> =>
+      ipcRenderer.invoke('appearance-settings:clear-fields', fields),
     onChanged: fanOutAppearanceSettingsChanged,
   },
   onApplicationMenuCommand: (callback: (command: ApplicationMenuCommand) => void): (() => void) =>
@@ -2523,6 +2540,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   syncNewMakerDraft: (snapshot: {
     ownerStamp: import('../shared/dataOwnerPush').DataOwnerPushStamp;
     selectedRoute?: import('../shared/botModelChain').BotModelRoute;
+    vendor?: 'cc' | 'codex' | 'pi';
+    defaultTupleCustomized?: boolean;
     lastByVendor: Partial<
       Record<
         'cc' | 'codex' | 'pi',

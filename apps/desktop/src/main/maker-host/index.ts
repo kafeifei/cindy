@@ -7,6 +7,8 @@ import { registerCodexTextOnlyPolicy } from './codex-text-only-policy.js';
 import { readDisabledSkillPaths } from '../skillhub/activationPreferences';
 import { cindyMakeManager } from '../cindy-make/manager.js';
 import { makeSourceRoot } from '../cindy-make/sourcePaths.js';
+import { prepareHostSettingsSkillDiscovery } from '../host-settings/cindy-settings-skill.js';
+import { captureHostPersonalization } from '../host-settings/startup.js';
 import { clearCodexAccountUsageSnapshot } from '../usageBroadcaster.js';
 /**
  * apps/desktop/src/main/maker-host
@@ -1246,6 +1248,7 @@ export function getMaker(): Maker {
       resolveSessionEnvironment: resolveCompanionRuntimeEnvironment,
       getDisabledSkillPaths: readDisabledSkillPaths,
       getManagedSkills: listCindyManagedSkills,
+      prepareHostOwnedSkills: () => prepareHostSettingsSkillDiscovery('claude-code'),
       auth: desktopClaudeAuthAdapter,
       runtimeConfig: buildDesktopClaudeRuntimeConfig(getClaudeEndpoint),
       binaryPath: claudePath,
@@ -1575,6 +1578,7 @@ export function getMaker(): Maker {
       getDisabledSkillPaths: readDisabledSkillPaths,
       getManagedSkills: listCindyManagedSkills,
       prepareCodexSkills: prepareCindyCodexSkills,
+      prepareHostOwnedSkills: () => prepareHostSettingsSkillDiscovery('codex'),
       auth: desktopCodexAuthAdapter,
       runtimeConfig: desktopCodexRuntimeConfig,
       binaryPath: codexPath,
@@ -2750,6 +2754,7 @@ export function getMaker(): Maker {
           }
           // 所有创建路径共用的派发边界,opts.providerId 此刻已是本次启动的终值。
           freezeSessionProviderAtStart(sessionId, opts.providerId);
+          if (!opts.hostStartupPreferences) captureHostPersonalization(opts);
           await preparePersistedOrcaSessionStart(sessionId, opts as MakerSessionCreateOpts);
           if (opts.agentKind === 'pi' && opts.thinkingEnabled === undefined) {
             const thinkingEnabled = getThinkingEnabledFromMemory(

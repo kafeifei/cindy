@@ -143,6 +143,9 @@ export const CONTROLLER_CAPABILITY_PROVIDER_LOGO_KINDS_V2 = 'provider-logo-kinds
 export const CONTROLLER_CAPABILITY_SET_MODEL_EXPLICIT_PROVIDER_NULL_V1 =
   'set-model-explicit-provider-null-v1';
 
+/** Controller displays the entire Host settings change and returns native, one-shot interaction receipts. */
+export const CONTROLLER_CAPABILITY_HOST_SETTINGS_CONFIRMATION_V1 = 'host-settings-confirmation-v1';
+
 /** 控制端会为有损模型换窗携带用户明确确认过的精确窗口。 */
 export const CONTROLLER_CAPABILITY_MODEL_WINDOW_CONFIRMATION_V1 =
   'model-window-confirmation-v1';

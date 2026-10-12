@@ -1,11 +1,25 @@
-/**
- * model-visibility-mirror 单测 —— renderer 镜像到 main 的可见性 override 缓存。
- * 覆盖:整表替换、脏数据过滤、key 维度命中、未设 ⇒ undefined(回落目录默认)、重置。
- */
-
-import { afterEach, describe, expect, it, vi } from 'vitest';
+/** Main 兼容门面只有 Host 正本，不再接收 Renderer 整表/策略作为权限或可见性真相。 */
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { isModelVisible, type ProviderView } from '@cindy/model-providers';
-
+import {
+  emptyModelPresentationPreferences,
+  type ModelPresentationPreferencesSnapshot,
+} from '../../../shared/modelPresentationPreferences';
+const host = vi.hoisted(() => ({
+  snapshot: {
+    status: 'unavailable',
+    revision: null,
+    ownerStamp: null,
+  } as ModelPresentationPreferencesSnapshot,
+  listeners: [] as Array<() => void>,
+}));
+vi.mock('../../host-settings/model-presentation-preferences', () => ({
+  inspectModelPresentationPreferences: () => structuredClone(host.snapshot),
+  onModelPresentationPreferencesChanged: (listener: () => void) => {
+    host.listeners.push(listener);
+    return () => {};
+  },
+}));
 import {
   __resetModelVisibilityMirrorForTest,
   clearModelVisibilityMirror,
@@ -15,209 +29,167 @@ import {
   setModelVisibilityMirror,
   syncModelVisibilityMirror,
   syncModelVisibilityMirrorForOwner,
-} from '../model-visibility-mirror.js';
-
+} from '../model-visibility-mirror';
+const stamp = { dataOwnerId: 'owner-a', ownerGeneration: 1 };
+function ready(overrides: Record<string, boolean> = {}) {
+  const value = emptyModelPresentationPreferences();
+  value.visibility.overrides = overrides;
+  host.snapshot = {
+    status: 'ready',
+    initialized: true,
+    revision: 'revision',
+    ownerStamp: stamp,
+    value,
+  };
+}
+const publish = () => host.listeners.forEach((listener) => listener());
+beforeEach(() => {
+  host.snapshot = { status: 'unavailable', revision: null, ownerStamp: null };
+  __resetModelVisibilityMirrorForTest();
+});
 afterEach(() => {
   __resetModelVisibilityMirrorForTest();
   vi.useRealTimers();
 });
-
-describe('model-visibility-mirror', () => {
-  it('尚未收到账号配置时不自动显示默认模型', () => {
-    expect(() => getModelVisibilityOverride('claude-code', 'xd', 'gpt-5.5')).toThrow('MODEL_VISIBILITY_NOT_READY');
+describe('visibility Host 门面', () => {
+  it.each(['unavailable', 'unreadable'] as const)(
+    '%s不猜测默认开启，只有目录bootstrap允许空映射',
+    (status) => {
+      host.snapshot = { status, ownerStamp: stamp, revision: null };
+      expect(() => getModelVisibilityOverride('pi', 'p', 'm')).toThrow(
+        'MODEL_VISIBILITY_NOT_READY',
+      );
+      expect(() => getModelVisibilityMirrorSnapshot()).toThrow();
+      expect(getModelVisibilityMirrorSnapshot([], true)).toEqual({});
+    },
+  );
+  it('没有任何Renderer推送也可读Host显式值，agent/provider/model不串', () => {
+    ready({ 'claude-code:p:m': false, 'codex:other:m': true, 'pi:p:private:m:private': false });
+    expect(getModelVisibilityOverride('claude-code', 'p', 'm')).toBe(false);
+    expect(getModelVisibilityOverride('codex', 'other', 'm')).toBe(true);
+    expect(getModelVisibilityOverride('codex', 'p', 'm')).toBeUndefined();
+    expect(getModelVisibilityOverride('pi', 'p:private', 'm:private')).toBe(false);
   });
-
-  it('按 `${agent}:${providerId}:${modelId}` 命中对应 override', () => {
-    setModelVisibilityMirror({
-      'claude-code:xd:gpt-5.5': false,
-      'codex:openai:gpt-5.5': true,
-    });
-    expect(getModelVisibilityOverride('claude-code', 'xd', 'gpt-5.5')).toBe(false);
-    expect(getModelVisibilityOverride('codex', 'openai', 'gpt-5.5')).toBe(true);
-    // 维度不同(agent/provider)不串
-    expect(getModelVisibilityOverride('codex', 'xd', 'gpt-5.5')).toBeUndefined();
-    expect(getModelVisibilityOverride('claude-code', 'openai', 'gpt-5.5')).toBeUndefined();
+  it('每次读取Host最新整表，返回副本不能改正本', () => {
+    ready({ 'pi:p:a': false });
+    const copy = getModelVisibilityMirrorSnapshot();
+    copy['pi:p:a'] = true;
+    expect(getModelVisibilityOverride('pi', 'p', 'a')).toBe(false);
+    ready({ 'pi:p:b': true });
+    expect(getModelVisibilityOverride('pi', 'p', 'a')).toBeUndefined();
+    expect(getModelVisibilityOverride('pi', 'p', 'b')).toBe(true);
   });
-
-  it('整表替换语义:后一次推送完全覆盖前一次', () => {
-    setModelVisibilityMirror({ 'claude-code:xd:a': false });
-    setModelVisibilityMirror({ 'claude-code:xd:b': true });
-    expect(getModelVisibilityOverride('claude-code', 'xd', 'a')).toBeUndefined();
-    expect(getModelVisibilityOverride('claude-code', 'xd', 'b')).toBe(true);
-  });
-
-  it('账号边界同步清空旧 owner 的进程内镜像', () => {
-    setModelVisibilityMirror({ 'codex:openai:gpt-5.6': false });
-    clearModelVisibilityMirror();
-    expect(() => getModelVisibilityOverride('codex', 'openai', 'gpt-5.6')).toThrow('MODEL_VISIBILITY_NOT_READY');
-  });
-
-  it('仅在净化后的整表实际变化时返回 true，供调用方广播目录失效事件', () => {
-    expect(setModelVisibilityMirror({
-      'claude-code:xd:a': false,
-      dirty: 'ignored',
-    })).toBe(true);
-    expect(setModelVisibilityMirror({
-      dirty: 1,
-      'claude-code:xd:a': false,
-    })).toBe(false);
-    expect(setModelVisibilityMirror({
-      'claude-code:xd:a': true,
-    })).toBe(true);
-    expect(setModelVisibilityMirror(null)).toBe(true);
-    expect(setModelVisibilityMirror([])).toBe(false);
-  });
-
-  it('只在镜像实变时调用目录失效回调', () => {
-    const invalidate = vi.fn();
-
-    expect(syncModelVisibilityMirror({ 'codex:openai:gpt-5': false }, invalidate)).toBe(true);
-    expect(syncModelVisibilityMirror(
-      { dirty: 'ignored', 'codex:openai:gpt-5': false },
-      invalidate,
-    )).toBe(false);
-    expect(syncModelVisibilityMirror({ 'codex:openai:gpt-5': true }, invalidate)).toBe(true);
-
-    expect(invalidate).toHaveBeenCalledTimes(2);
-  });
-
-  it('过滤非 boolean 脏值;非对象入参清空镜像', () => {
-    setModelVisibilityMirror({ 'claude-code:xd:a': false, 'claude-code:xd:bad': 'nope' as unknown as boolean });
-    expect(getModelVisibilityOverride('claude-code', 'xd', 'a')).toBe(false);
-    expect(getModelVisibilityOverride('claude-code', 'xd', 'bad')).toBeUndefined();
-
-    setModelVisibilityMirror(null);
-    expect(getModelVisibilityOverride('claude-code', 'xd', 'a')).toBeUndefined();
-  });
-
-  it('只接受当前稳定 owner 的快照，拒绝切换中和迟到 generation', () => {
-    const invalidate = vi.fn();
-    const activeOwner = { dataOwnerId: 'owner-b', ownerGeneration: 2 };
-
-    expect(syncModelVisibilityMirrorForOwner(
-      { 'codex:openai:gpt-5.6': false },
-      { dataOwnerId: 'owner-a', ownerGeneration: 1 },
-      activeOwner,
-      false,
-      invalidate,
-    )).toBe(false);
-    expect(syncModelVisibilityMirrorForOwner(
-      { 'codex:openai:gpt-5.6': false },
-      { dataOwnerId: 'owner-b', ownerGeneration: 1 },
-      { dataOwnerId: 'owner-b', ownerGeneration: 3 },
-      false,
-      invalidate,
-    )).toBe(false);
-    expect(syncModelVisibilityMirrorForOwner(
-      { 'codex:openai:gpt-5.6': false },
-      activeOwner,
-      activeOwner,
-      true,
-      invalidate,
-    )).toBe(false);
-    expect(() => getModelVisibilityOverride('codex', 'openai', 'gpt-5.6')).toThrow('MODEL_VISIBILITY_NOT_READY');
-
-    expect(syncModelVisibilityMirrorForOwner(
-      { 'codex:openai:gpt-5.6': false },
-      activeOwner,
-      activeOwner,
-      false,
-      invalidate,
-    )).toBe(true);
-    expect(getModelVisibilityOverride('codex', 'openai', 'gpt-5.6')).toBe(false);
-    expect(invalidate).toHaveBeenCalledOnce();
-  });
-});
-
-
-describe('initialized model visibility policy', () => {
-  it('keeps old on/off switches and rejects unseen models even when catalog defaults are on', () => {
-    setModelVisibilityMirror({ 'claude-code:xd:fable-5': true, 'claude-code:xd:fable-5-1': false }, { fallback: false, followCatalogKeys: [] });
-    expect(getModelVisibilityOverride('claude-code', 'xd', 'fable-5')).toBe(true);
-    expect(getModelVisibilityOverride('claude-code', 'xd', 'fable-5-1')).toBe(false);
-    expect(isModelVisible(getModelVisibilityOverride('pi', 'xd', 'brand-new'), true)).toBe(false);
-  });
-
-  it('expands late catalog models into ordinary off overrides for old remote clients', () => {
-    setModelVisibilityMirror({ 'claude-code:xd:fable-5': true }, { fallback: false, followCatalogKeys: [] });
-    const providers = [{ id: 'xd', agents: ['claude-code', 'pi'], models: {
-      'claude-code': [{ id: 'fable-5', defaultEnabled: false }],
-      pi: [{ id: 'brand-new', defaultEnabled: true }],
-    } }] as unknown as ProviderView[];
-    const snapshot = getModelVisibilityMirrorSnapshot(providers);
-    expect(snapshot['claude-code:xd:fable-5']).toBe(true);
-    expect(isModelVisible(snapshot['pi:xd:brand-new'], true)).toBe(false);
-  });
-
-  it('follows defaults only for explicit reset targets and still honors a later off override', () => {
-    const policy = { fallback: false, followCatalogKeys: ['pi:xd:gemini'] };
-    setModelVisibilityMirror({}, policy);
-    expect(getModelVisibilityOverride('pi', 'xd', 'gemini')).toBeUndefined();
-    expect(getModelVisibilityOverride('pi', 'xd', 'other')).toBe(false);
-    setModelVisibilityMirror({ 'pi:xd:gemini': false }, policy);
-    expect(getModelVisibilityOverride('pi', 'xd', 'gemini')).toBe(false);
-  });
-
-  it('invalidates on policy-only changes, rejects stale-owner policy, and clears at account boundary', () => {
+  it.each([null, [], { 'pi:p:a': true }, { 'pi:p:a': 'invalid' }])(
+    '旧Renderer payload %j不能替代正本或清空',
+    (payload) => {
+      ready({ 'pi:p:a': false });
+      setModelVisibilityMirror(payload, { fallback: true, pending: false });
+      expect(getModelVisibilityOverride('pi', 'p', 'a')).toBe(false);
+    },
+  );
+  it('变化通知只比较Host当前值，输入脏值/策略不能制造重复失效', () => {
     const notify = vi.fn();
-    setModelVisibilityMirror({}); // Older renderer retains its legacy default semantics.
-    expect(syncModelVisibilityMirror({}, notify, { fallback: false, followCatalogKeys: [] })).toBe(true);
-    expect(syncModelVisibilityMirror({}, notify, { fallback: false, followCatalogKeys: [] })).toBe(false);
-    expect(notify).toHaveBeenCalledOnce();
-    expect(syncModelVisibilityMirrorForOwner({}, { dataOwnerId: 'old', ownerGeneration: 1 },
-      { dataOwnerId: 'new', ownerGeneration: 2 }, false, notify, undefined)).toBe(false);
-    expect(getModelVisibilityOverride('pi', 'xd', 'new')).toBe(false);
-    clearModelVisibilityMirror();
-    expect(() => getModelVisibilityOverride('pi', 'xd', 'new')).toThrow('MODEL_VISIBILITY_NOT_READY');
+    ready({ 'pi:p:a': false });
+    expect(syncModelVisibilityMirror({}, notify)).toBe(true);
+    expect(syncModelVisibilityMirror({ dirty: 1 }, notify, { fallback: false })).toBe(false);
+    ready({ 'pi:p:a': true });
+    expect(syncModelVisibilityMirror({}, notify)).toBe(true);
+    expect(notify).toHaveBeenCalledTimes(2);
   });
-});
-
-
-describe('model visibility synchronization readiness', () => {
-  it('invalidates a ready snapshot when legacy migration becomes pending and recovers after synchronization', async () => {
-    const invalidate = vi.fn();
-    setModelVisibilityMirror({});
-    expect(getModelVisibilityOverride('pi', 'xd', 'recommended')).toBeUndefined();
-    expect(syncModelVisibilityMirror({}, invalidate, { pending: true })).toBe(true);
-    expect(() => getModelVisibilityMirrorSnapshot()).toThrow('MODEL_VISIBILITY_NOT_READY');
-    expect(syncModelVisibilityMirror({}, invalidate, { pending: true })).toBe(false);
-    expect(invalidate).toHaveBeenCalledOnce();
-    const waiting = waitForModelVisibilityMirror();
-    setModelVisibilityMirror({ 'pi:xd:recommended': false });
-    await waiting;
-    expect(getModelVisibilityOverride('pi', 'xd', 'recommended')).toBe(false);
+  it('旧sync拒绝错误owner/过期generation/边界切换，不接收迟到策略', () => {
+    const notify = vi.fn();
+    ready({ 'pi:p:a': false });
+    expect(
+      syncModelVisibilityMirrorForOwner(
+        {},
+        { dataOwnerId: 'old', ownerGeneration: 1 },
+        stamp,
+        false,
+        notify,
+      ),
+    ).toBe(false);
+    expect(
+      syncModelVisibilityMirrorForOwner({}, { ...stamp, ownerGeneration: 0 }, stamp, false, notify),
+    ).toBe(false);
+    expect(syncModelVisibilityMirrorForOwner({}, stamp, stamp, true, notify)).toBe(false);
+    expect(notify).not.toHaveBeenCalled();
+    expect(syncModelVisibilityMirrorForOwner({}, stamp, stamp, false, notify)).toBe(true);
+    expect(getModelVisibilityOverride('pi', 'p', 'a')).toBe(false);
   });
-
-  it('waits for a complete snapshot, retaining explicit on/off instead of inventing an empty list', async () => {
+  it('未知route为undefined交给当前目录默认，历史初始化不是有效可见性', () => {
+    ready({ 'pi:p:on': true, 'pi:p:off': false });
+    if (host.snapshot.status !== 'ready') throw new Error();
+    host.snapshot.value.visibility.initialization.defaults['pi:p:new'] = false;
+    expect(getModelVisibilityOverride('pi', 'p', 'on')).toBe(true);
+    expect(getModelVisibilityOverride('pi', 'p', 'off')).toBe(false);
+    expect(getModelVisibilityOverride('pi', 'p', 'new')).toBeUndefined();
+    expect(isModelVisible(getModelVisibilityOverride('pi', 'p', 'new'), true)).toBe(true);
+    expect(isModelVisible(getModelVisibilityOverride('pi', 'p', 'new'), false)).toBe(false);
+  });
+  it('provider列表不制造额外off override，旧客户端也沿用目录默认', () => {
+    ready({ 'pi:p:on': true });
+    const providers = [
+      {
+        id: 'p',
+        agents: ['pi'],
+        models: {
+          pi: [
+            { id: 'on', defaultEnabled: false },
+            { id: 'new', defaultEnabled: true },
+          ],
+        },
+      },
+    ] as unknown as ProviderView[];
+    expect(getModelVisibilityMirrorSnapshot(providers)).toEqual({ 'pi:p:on': true });
+  });
+  it('恢复默认删除override，后续显式off仍优先', () => {
+    ready();
+    if (host.snapshot.status !== 'ready') throw new Error();
+    host.snapshot.value.visibility.initialization.followCatalogKeys.push('pi:p:m');
+    expect(getModelVisibilityOverride('pi', 'p', 'm')).toBeUndefined();
+    host.snapshot.value.visibility.overrides['pi:p:m'] = false;
+    expect(getModelVisibilityOverride('pi', 'p', 'm')).toBe(false);
+  });
+  it('pending不能以空表完成等待，Host初始化通知才唤醒', async () => {
+    host.snapshot = {
+      status: 'pending-migration',
+      initialized: false,
+      revision: 'revision',
+      ownerStamp: stamp,
+      value: emptyModelPresentationPreferences(),
+    };
     const done = vi.fn();
     const waiting = waitForModelVisibilityMirror().then(done);
-    setModelVisibilityMirror({}, { fallback: false, pending: true });
+    publish();
+    setModelVisibilityMirror({ 'pi:p:forged': true });
     await Promise.resolve();
     expect(done).not.toHaveBeenCalled();
-    expect(getModelVisibilityMirrorSnapshot([], true)).toEqual({}); // local catalog can bootstrap
-    expect(() => getModelVisibilityMirrorSnapshot()).toThrow('MODEL_VISIBILITY_NOT_READY');
-    setModelVisibilityMirror({ 'pi:xd:kept': true, 'pi:xd:off': false }, { fallback: false });
+    expect(getModelVisibilityMirrorSnapshot([], true)).toEqual({});
+    ready({ 'pi:p:on': true, 'pi:p:off': false });
+    publish();
     await waiting;
-    expect(getModelVisibilityOverride('pi', 'xd', 'kept')).toBe(true);
-    expect(getModelVisibilityOverride('pi', 'xd', 'off')).toBe(false);
-    expect(getModelVisibilityOverride('pi', 'xd', 'new')).toBe(false);
+    expect(done).toHaveBeenCalledOnce();
+    expect(getModelVisibilityOverride('pi', 'p', 'off')).toBe(false);
   });
-
-  it('accepts a deliberately empty complete snapshot as all off', async () => {
-    setModelVisibilityMirror({}, { fallback: false });
+  it('已初始化的空表不是未初始化，可立即读取目录默认', async () => {
+    ready();
     await expect(waitForModelVisibilityMirror()).resolves.toBeUndefined();
-    expect(getModelVisibilityOverride('pi', 'xd', 'new')).toBe(false);
+    expect(getModelVisibilityOverride('pi', 'p', 'new')).toBeUndefined();
   });
-
-  it('rejects unavailable and changed-account waits; a later snapshot recovers', async () => {
+  it('超时与账号边界拒绝等待，切到新Host文件后恢复', async () => {
     vi.useFakeTimers();
-    const timeout = expect(waitForModelVisibilityMirror(100)).rejects.toThrow('MODEL_VISIBILITY_NOT_READY');
+    const timeout = expect(waitForModelVisibilityMirror(100)).rejects.toThrow(
+      'MODEL_VISIBILITY_NOT_READY',
+    );
     await vi.advanceTimersByTimeAsync(100);
     await timeout;
-    const boundary = expect(waitForModelVisibilityMirror()).rejects.toThrow('MODEL_VISIBILITY_NOT_READY');
+    const boundary = expect(waitForModelVisibilityMirror()).rejects.toThrow(
+      'MODEL_VISIBILITY_NOT_READY',
+    );
     clearModelVisibilityMirror();
     await boundary;
-    setModelVisibilityMirror({ 'pi:xd:b': true }, { fallback: false });
+    ready({ 'pi:p:new': true });
     await expect(waitForModelVisibilityMirror()).resolves.toBeUndefined();
+    expect(getModelVisibilityOverride('pi', 'p', 'new')).toBe(true);
   });
 });

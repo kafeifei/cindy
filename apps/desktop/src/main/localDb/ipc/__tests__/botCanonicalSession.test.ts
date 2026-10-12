@@ -5,7 +5,6 @@ import { canResumeAfterRuntimeFallback } from '../../../maker-ipc/botCandidateRe
 import { createDrizzleProxy } from '../../client/drizzleProxy';
 import type { DbTransport } from '../../client/DbTransport';
 import { getSelectedNewMakerRoute, setNewMakerDraftCache } from '../../../maker-host/newMakerDefaultsCache';
-import { setModelVisibilityMirror } from '../../../maker-host/model-visibility-mirror';
 import { setMainLocale } from '../../../i18n';
 import Database from 'better-sqlite3';
 import { AgentInputCoordinator } from '../../../maker-ipc/agent-input-coordinator';
@@ -48,12 +47,26 @@ import {
 } from '../../schema';
 
 // Host preference storage is outside this database/runtime integration test.
+vi.mock('../../../host-settings/model-presentation-preferences.js', async () => {
+  const { emptyModelPresentationPreferences } = await import('../../../../shared/modelPresentationPreferences');
+  return {
+    inspectModelPresentationPreferences: () => ({
+      status: 'ready', ownerStamp: { dataOwnerId: h.ownerScopeKey, ownerGeneration: 1 },
+      revision: 'fixture', initialized: true, value: emptyModelPresentationPreferences(),
+    }),
+    onModelPresentationPreferencesChanged: () => () => {},
+  };
+});
 vi.mock('electron-store', () => ({ default: class {
   private values = new Map<string, unknown>();
   get(key: string, fallback?: unknown) { return this.values.get(key) ?? fallback; }
   set(key: string, value: unknown) { this.values.set(key, value); }
   delete(key: string) { this.values.delete(key); }
 } }));
+vi.mock('../../../host-settings/new-task-defaults.js', () => ({
+  inspectNewTaskDefaults: () => ({ status: 'ready', revision: 'fixture' }),
+  commitNewTaskDefaults: () => { throw new Error('Teammate model changes must not write app defaults'); },
+}));
 vi.mock('../../../maker-ipc/appDefaultModelControl.js', async importOriginal => ({
   ...await importOriginal<typeof import('../../../maker-ipc/appDefaultModelControl.js')>(),
   validateTaskModel: vi.fn(async () => true),
@@ -487,7 +500,6 @@ const { list: findBotCapabilities, select: selectBotCapability } = createBotCapa
 
 beforeEach(async () => {
   setSessionOpeningModelAdmission(async body => body);
-  setModelVisibilityMirror({}, { fallback: true });
   h.toolsetsAvailable = false;
   h.validateCapabilityAdditions.mockReset().mockResolvedValue(undefined);
   h.customMcpConfigs = [{ id: 'shared-docs', name: 'Shared Docs', transport: 'http', url: 'https://example.invalid/private', headers: { Authorization: 'FAKE_SECRET' } }];

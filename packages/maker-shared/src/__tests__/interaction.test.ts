@@ -20,6 +20,7 @@ import {
   encodeMultiSelectAnswer,
   extractPlanOutline,
   formatPermissionInput,
+  parseSettingsConfirmationPreview,
   interactionBlocksRemoteComposer,
   isFreeTextAskOptionLabel,
   normalizeAskQuestions,
@@ -158,6 +159,37 @@ describe('interaction shared model', () => {
     expect(permissionTitle({ kind: 'permission', requestId: 'p1', toolName: 'Bash' })).toBe(
       '允许使用 Bash?',
     );
+  });
+
+  it('shows the complete Host settings change without offering a standing permission', () => {
+    const input = {
+      preview: { version: 1, title: 'Change settings', description: 'Next agent session.',
+        confirmLabel: 'Save changes', cancelLabel: 'Cancel',
+        changes: [{ label: 'Personal instructions', previous: 'Not set', value: `${'long prompt '.repeat(100)}END_OF_CHANGE` }],
+      },
+    };
+    const presentation = buildPermissionReviewPresentation({
+      kind: 'permission', requestId: 'settings-1', toolName: 'cindy_host_settings', input,
+      metadata: { hostOwnedConfirmation: 'host_settings_v1' },
+    });
+    expect(presentation.settings).toEqual(input.preview);
+    expect(presentation.code).toContain('Personal instructions\nNot set →');
+    expect(presentation.code).not.toContain('"preview"');
+    expect(presentation.code).toContain('END_OF_CHANGE');
+    expect(presentation.canAlwaysAllow).toBe(false);
+    expect(remoteInteractionHandling({ request: {
+      kind: 'permission', requestId: 'settings-1', toolName: 'cindy_host_settings', input,
+    } })).toBe('resolvable');
+  });
+
+  it('rejects malformed or oversized settings previews rather than showing partial changes', () => {
+    expect(parseSettingsConfirmationPreview({})).toBeNull();
+    const preview = { version: 1, title: 'Settings', description: '', confirmLabel: 'Save', cancelLabel: 'Cancel',
+      changes: [{ label: 'Instructions', value: 'x'.repeat(8193) }],
+    };
+    expect(parseSettingsConfirmationPreview({ preview })).toBeNull();
+    expect(parseSettingsConfirmationPreview({ preview: { ...preview, changes: [{ label: 'Font', value: { font: 'Arial' } }] } })).toBeNull();
+    expect(parseSettingsConfirmationPreview({ preview: { ...preview, version: 2, changes: [] } })).toBeNull();
   });
 
   it('builds compact permission review evidence for mobile approval cards', () => {

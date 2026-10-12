@@ -1,6 +1,6 @@
 /**
  * MessageNavRailCell — TipsSection 内的 "显示提问导航条" cell row。
- * 纯 Renderer 本地偏好(localStorage,默认开启),切换立即生效,无 IPC。
+ * Host profile 偏好(默认开启),成功提交后更新 Renderer。
  * 行内形态与 SilentEncryptedRetryCell 对齐;恢复默认走 DefaultOverrideControls
  * (语义 = 清 override 跟随版本默认,见 useMessageNavRailPreference)。
  */
@@ -11,11 +11,12 @@ import { ListOrdered } from 'lucide-react';
 import { Switch } from '@/components/ui/switch';
 import { useMessageNavRailPreference } from '@/hooks/useMessageNavRailPreference';
 import { cn } from '@/lib/utils';
+import { toast } from '@/lib/toast';
 import { DefaultOverrideControls } from './DefaultOverrideControls';
 
 export function MessageNavRailCell() {
   const { t } = useTranslation();
-  const { enabled, isCustomized, setEnabled } = useMessageNavRailPreference();
+  const { enabled, isCustomized, setEnabled, resetPreference } = useMessageNavRailPreference();
 
   return (
     <div className="flex items-center justify-between gap-3 px-4 py-[14px]">
@@ -38,7 +39,9 @@ export function MessageNavRailCell() {
         </div>
       </div>
       <div className="flex items-center gap-2">
-        <DefaultOverrideControls isCustomized={isCustomized} onReset={() => setEnabled(true)} />
+        <DefaultOverrideControls isCustomized={isCustomized} onReset={async () => {
+          if (!await resetPreference()) toast.error(t('hostSettings.saveFailed'));
+        }} />
         <Switch
           checked={enabled}
           onCheckedChange={setEnabled}

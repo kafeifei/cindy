@@ -9,6 +9,7 @@
  */
 
 import { createRoot } from 'react-dom/client';
+import { connectHostDesktopPreferences } from './state/hostDesktopPreferences';
 
 import '@fontsource-variable/inter';
 import '@fontsource-variable/jetbrains-mono';
@@ -34,6 +35,8 @@ document.documentElement.dataset.platform = window.electronAPI.platform;
 installHiddenAnimationGate();
 bootstrapLocalThemesSync();
 themeService.applyTheme(getInitialThemeVariant().theme);
+const disposeDesktopPreferences = connectHostDesktopPreferences({ readOnly: true });
+import.meta.hot?.dispose(disposeDesktopPreferences);
 applyFontSettings(getInitialFontSettings());
 bootstrapInitialLocale();
 

@@ -1,3 +1,4 @@
+import { registerCloudDomainCall } from '../host-settings/managementCalls.js';
 /**
  * contacts-ipc —— 智能通讯录的 IPC 层(设置页管理 UI 的数据通道)。
  *
@@ -391,6 +392,7 @@ export function registerContactsIpc(runtime: {
     },
   });
   for (const [channel, handler] of Object.entries(handlers)) {
+    registerCloudDomainCall(channel, handler);
     ipcMain.handle(channel, (event, ...args) => {
       assertTrustedAppRendererEvent(event);
       return handler(...args);

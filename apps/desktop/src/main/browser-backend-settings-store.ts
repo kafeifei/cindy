@@ -1,3 +1,5 @@
+import { validateOptionalSettingsFields } from './maker-host/settings-inspection.js';
+import { inspectSettingsJson } from './maker-host/inspect-settings-json.js';
 /**
  * browser-backend-settings-store — controls which backend the MCP `browser`
  * tool drives (Phase 5).
@@ -109,6 +111,7 @@ function normalize(raw: unknown): BrowserBackendSettings {
 }
 
 const store = createOverrideSettingsFile<BrowserBackendSettings>({
+  validateOverrides: raw => validateOptionalSettingsFields(raw, { kind: value => VALID_KINDS.includes(value as BackendKind), useRealProfile: value => typeof value === 'boolean' }),
   filePath: settingsFilePath,
   defaults: DEFAULTS,
   normalize,
@@ -116,9 +119,18 @@ const store = createOverrideSettingsFile<BrowserBackendSettings>({
   label: 'browser-backend',
 });
 
+export function inspectBrowserBackendSettings(root: string) {
+  return inspectSettingsJson(path.join(root, 'browser-backend-settings.json'), raw => {
+    validateOptionalSettingsFields(raw, { kind: value => VALID_KINDS.includes(value as BackendKind), useRealProfile: value => typeof value === 'boolean' });
+    return normalize(raw);
+  });
+}
+
 export function readBrowserBackendSettings(): BrowserBackendSettings {
   return store.read();
 }
+
+export function getHostBrowserBackendStore() { return store; }
 
 export function readBrowserBackendSettingsState(): OverrideSettingsState<BrowserBackendSettings> {
   return store.readState();

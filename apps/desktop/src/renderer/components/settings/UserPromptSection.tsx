@@ -1,34 +1,54 @@
-import { Button } from '@/components/ui/button';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { cn } from '@/lib/utils';
 import { useUserPrompt } from '@/hooks/useUserPrompt';
 import { USER_PROMPT_MAX_LENGTH } from '@/lib/userPrompt.constants';
 import { toast } from '@/lib/toast';
+import { Button } from '@/components/ui/button';
 
 export function UserPromptSection() {
-  const { value, setValue } = useUserPrompt();
+  const { value, ready, unavailable, customized, revision, ownerKey, setValue, resetValue } = useUserPrompt();
   const { t } = useTranslation();
 
-  const [draft, setDraft] = useState(value);
+  const [draft, setDraft] = useState({ value, revision, ownerKey });
+  const previousValue = useRef(value);
+  const [saving, setSaving] = useState(false);
 
-  // 外部 storage 变化（其他 window 实例 setValue 触发的 storage event）时刷新草稿。
-  // 单 Electron 窗口里几乎不会触发，留作兜底。
+  // 同 owner 的外部修改不吞掉正在编辑的草稿；其旧 revision 会阻止覆盖。
   useEffect(() => {
-    setDraft(value);
-  }, [value]);
+    const previous = previousValue.current;
+    previousValue.current = value;
+    setDraft(current => current.ownerKey !== ownerKey || current.value === previous
+      ? { value, revision, ownerKey } : current);
+  }, [value, revision, ownerKey]);
 
-  const length = draft.length;
+  const length = draft.value.length;
   const overLimit = length > USER_PROMPT_MAX_LENGTH;
-  const dirty = draft !== value;
-  const canSave = dirty && !overLimit;
+  const dirty = draft.value !== value;
+  const conflicted = dirty && draft.revision !== revision;
+  const canSave = ready && dirty && !overLimit && !saving && !conflicted;
 
-  const handleSave = useCallback(() => {
-    if (!canSave) return;
-    setValue(draft);
-    toast.success(t('settings.personalization.toast.saved'));
+  const handleSave = useCallback(async () => {
+    if (!canSave || !draft.revision) return;
+    setSaving(true);
+    try {
+      await setValue(draft.value, draft.revision);
+      toast.success(t('settings.personalization.toast.saved'));
+    } catch { toast.error(t('hostSettings.saveFailed')); }
+    finally { setSaving(false); }
   }, [canSave, draft, setValue, t]);
+
+  const handleReset = useCallback(async () => {
+    if (!ready || !revision || saving) return;
+    setSaving(true);
+    try {
+      await resetValue(revision);
+      setDraft({ value: '', revision: null, ownerKey });
+      toast.success(t('settings.personalization.toast.saved'));
+    } catch { toast.error(t('hostSettings.saveFailed')); }
+    finally { setSaving(false); }
+  }, [ready, revision, saving, resetValue, ownerKey, t]);
 
   const counter = useMemo(
     () => `${length.toLocaleString()} / ${USER_PROMPT_MAX_LENGTH.toLocaleString()}`,
@@ -61,8 +81,13 @@ export function UserPromptSection() {
         </div>
 
         <textarea
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
+          value={draft.ownerKey === ownerKey ? draft.value : ''}
+          disabled={!ready || saving}
+          onChange={(e) => setDraft(current => ({
+            value: e.target.value,
+            revision: current.value === value ? revision : current.revision,
+            ownerKey,
+          }))}
           placeholder={t('settings.personalization.placeholder')}
           aria-label={t('settings.personalization.ariaLabel')}
           rows={7}
@@ -79,6 +104,11 @@ export function UserPromptSection() {
           style={{ userSelect: 'text', WebkitUserSelect: 'text' }}
         />
 
+        {(unavailable || conflicted) && (
+          <p role="status" className="text-13 text-[var(--settings-section-desc)]">
+            {t(unavailable ? 'hostSettings.loadFailed' : 'hostSettings.changed')}
+          </p>
+        )}
         <div className="flex items-center justify-between gap-3">
           <p
             className={cn(
@@ -94,16 +124,14 @@ export function UserPromptSection() {
             {overLimit ? t('settings.personalization.overLimit') : ''}
           </p>
 
-          <Button
-            variant="cta"
-            size="md"
-            compact
-            type="button"
-            onClick={handleSave}
-            disabled={!canSave}
-          >
-            {t('settings.personalization.save')}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="secondary" onClick={handleReset} disabled={!ready || !customized || saving || conflicted}>
+              {t('hostSettings.reset')}
+            </Button>
+            <Button onClick={handleSave} disabled={!canSave} loading={saving}>
+              {t('settings.personalization.save')}
+            </Button>
+          </div>
         </div>
       </div>
     </div>

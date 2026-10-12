@@ -1967,14 +1967,17 @@ function forwardPush(channel: string, payload: unknown, ownerStamp?: PushOwnerSt
   if (channel === MAKER_PUSH.INTERACTION_DISMISSED) {
     remotePayload = projectInteractionDismissedForRemote(remotePayload);
   }
+  const settingsRequest = channel === MAKER_PUSH.INTERACTION_REQUEST && remotePayload && typeof remotePayload === 'object'
+    && 'request' in remotePayload && (remotePayload.request as { toolName?: string })?.toolName === 'cindy_host_settings';
+  const supportsSettings = (dst: string) => !settingsRequest || subscriptions.controllerSupports(dst, 'host-settings-confirmation-v1');
   const sharedTaskTopic = sharedTaskMetadataTopic(channel, remotePayload);
   const listMessage = isListMessagePush(channel, remotePayload);
   const targetsFor = (known: boolean): string[] => {
     const lookup = known ? subscriptions.getKnownControllersForTopic : subscriptions.getControllersForTopic;
     const ordinary = [...new Set([...lookup(topic), ...(listMessage
-      ? lookup('sessions').filter(receivesListMessages) : [])])];
+      ? lookup('sessions').filter(receivesListMessages) : [])])].filter(supportsSettings);
     if (!sharedTaskTopic) return ordinary;
-    const shared = lookup(sharedTaskTopic).filter((dst) => isSharedTaskPeer(dst)
+    const shared = lookup(sharedTaskTopic).filter((dst) => supportsSettings(dst) && isSharedTaskPeer(dst)
       && captureSharedTaskPush(dst, channel, remotePayload)?.() === true);
     return [...new Set([...ordinary, ...shared])];
   };

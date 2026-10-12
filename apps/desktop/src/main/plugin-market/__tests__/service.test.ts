@@ -452,6 +452,35 @@ function mockUninstallDropsGhost(failFor?: string): void {
 }
 
 describe('PluginMarketService migration and defaultInstall', () => {
+  it.each(['ledger', 'builtin'])('Agent installation cannot undo an existing %s removal without user consent', async (source) => {
+    const item = summary();
+    const h = harness([item]);
+    if (source === 'ledger') {
+      h.ledger.upsertInstallation(recordForTest(item));
+      h.ledger.markRemoved(item.ghostId, 'user-1');
+    } else runtime.builtinRemoved.add(item.ghostId);
+    await expect(h.service.install(item.id, {
+      expectedReleaseId: item.currentRelease.id,
+    }, { consent: { initiator: 'agent', prompt: async () => false } })).rejects.toThrow('MUTATION_CANCELLED');
+    expect(runtime.install).not.toHaveBeenCalled();
+  });
+
+  it('Agent install rechecks the caller under the package commit lock', async () => {
+    const item = summary();
+    const h = harness([item]);
+    let valid = true;
+    runtime.install.mockImplementation(async (_file, options) => {
+      valid = false;
+      options.beforeCommitInLock();
+      throw new Error('unreachable');
+    });
+    await expect(h.service.install(item.id, {
+      expectedReleaseId: item.currentRelease.id,
+    }, { consent: { initiator: 'agent', prompt: async () => true },
+      assertCurrent: () => { if (!valid) throw new Error('caller changed'); },
+    })).rejects.toThrow('caller changed');
+  });
+
   it('backfills the exact raw identity for an unchanged v0.1.61 v2 card record', async () => {
     const rawManifest = {
       schemaVersion: 2 as const,

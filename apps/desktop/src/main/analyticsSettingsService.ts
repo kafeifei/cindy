@@ -91,7 +91,7 @@ export function analyticsSettingsPayload(): AnalyticsSettingsPayload {
   };
 }
 
-function broadcastSettingsChange(): void {
+export function broadcastAnalyticsSettingsChange(): void {
   const payload = analyticsSettingsPayload();
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed()) continue;
@@ -136,7 +136,7 @@ function broadcastSettingsChange(): void {
  */
 function migrateOrLog(): void {
   try {
-    if (migrateExistingLoginAsConsented(true)) broadcastSettingsChange();
+    if (migrateExistingLoginAsConsented(true)) broadcastAnalyticsSettingsChange();
   } catch (err) {
     log.warn('existing-login consent migration failed (non-fatal)', err);
   }
@@ -251,7 +251,7 @@ export function initAnalyticsSettingsService(): void {
     // 那道闸在密钥链暂不可用时会保守地拒绝关窗,而此处的确定性不依赖任何探测。
     // 幂等(closeLegacyConsentMigration 自带 no-op 早返回),不写用户偏好。
     if (authManager.isLocalMode()) sealMigrationWindowOrLog();
-    broadcastSettingsChange();
+    broadcastAnalyticsSettingsChange();
   });
 
   ipcMain.handle('analytics:settings-get', (event) => {
@@ -264,7 +264,7 @@ export function initAnalyticsSettingsService(): void {
     // payload 只信运行时校验过的布尔;非布尔一律当关闭处理(fail closed)。
     const enabled = rawEnabled === true;
     writeOrThrowIpcError(() => setAnalyticsEnabled(enabled), 'write analytics setting failed');
-    broadcastSettingsChange();
+    broadcastAnalyticsSettingsChange();
     return analyticsSettingsPayload();
   });
 
@@ -276,14 +276,14 @@ export function initAnalyticsSettingsService(): void {
       () => clearAnalyticsEnabledOverride(),
       'clear analytics enabled override failed',
     );
-    broadcastSettingsChange();
+    broadcastAnalyticsSettingsChange();
     return analyticsSettingsPayload();
   });
 
   ipcMain.handle('analytics:consent-accept', (event) => {
     assertTrustedAppRendererEvent(event);
     writeOrThrowIpcError(() => acceptPrivacyConsent(), 'record privacy consent failed');
-    broadcastSettingsChange();
+    broadcastAnalyticsSettingsChange();
     return analyticsSettingsPayload();
   });
 
@@ -301,5 +301,5 @@ export const __testing = {
     unsubscribeAuthState?.();
     unsubscribeAuthState = null;
   },
-  broadcastSettingsChange,
+  broadcastSettingsChange: broadcastAnalyticsSettingsChange,
 };

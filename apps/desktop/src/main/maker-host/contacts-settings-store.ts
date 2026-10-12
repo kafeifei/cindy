@@ -1,3 +1,4 @@
+import { validateAdditionalSettingsOverrides } from '../../shared/settingsEditableCatalog.js';
 /**
  * contacts-settings-store —— 智能通讯录开关的 main 端持久化 source of truth。
  *
@@ -22,6 +23,8 @@ import { desktopMakerLogger } from './logger-adapter.js';
 import {
   createOverrideSettingsFile,
   type OverrideSettingsState,
+  type OverrideSettingsCommitOptions,
+  type OverrideSettingsSnapshot,
 } from './override-settings-file.js';
 import {
   activeOwnerScopeKey,
@@ -30,7 +33,16 @@ import {
 } from '../appSessionState.js';
 import { withCrossProcessLock } from '../device-link/crossProcessLock.js';
 
+import { inspectSettingsFile, isSettingBoolean, validateOptionalSettingsFields } from './settings-inspection.js';
+
 const log = desktopMakerLogger.child('contacts-settings-store');
+
+/** 不读取通讯录内容、同步意图、设备或权限/凭据层。 */
+export function inspectContactsSettings(ownerRoot: string) {
+  return inspectSettingsFile({ filePath: () => settingsFilePath(ownerRoot), defaults: DEFAULTS, normalize,
+    validate: (raw) => validateOptionalSettingsFields(raw, { enabled: isSettingBoolean, deviceSyncEnabled: isSettingBoolean }),
+  });
+}
 const DEVICE_SYNC_INTENT_FILE_NAME = 'contacts-device-sync-setting-intent.v1.json';
 
 export interface ContactsSettings {
@@ -90,9 +102,15 @@ export interface ContactsDeviceSyncSettingIntent {
   enabled: boolean;
 }
 
+export interface HostContactsSyncCommitOptions extends OverrideSettingsCommitOptions {
+  clearOverride?: boolean;
+  onCommitted(state: OverrideSettingsSnapshot<ContactsSettings> & { status: 'ready' }): void;
+}
+
 /** 跨进程可见的开关意图；长耗时 enable 在提交前用 token 判断是否已被后发操作取代。 */
 export async function writeContactsDeviceSyncSettingIntent(
   enabled: boolean,
+  options?: Pick<OverrideSettingsCommitOptions, 'assertCurrent'>,
 ): Promise<ContactsDeviceSyncSettingIntent> {
   const file = deviceSyncIntentFilePath();
   const scopeKey = activeOwnerScopeKey();
@@ -103,6 +121,7 @@ export async function writeContactsDeviceSyncSettingIntent(
     { label: 'contacts-device-sync-intent', waitMs: 12_000 },
     async (status) => {
       if (!status.held) throw new Error(`contacts device sync intent lock ${status.reason}`);
+      options?.assertCurrent?.();
       if (activeOwnerScopeKey() !== scopeKey || deviceSyncIntentFilePath() !== file) {
         throw new Error('contacts device sync intent scope changed while waiting');
       }
@@ -124,6 +143,7 @@ export async function writeContactsDeviceSyncSettingIntent(
  */
 export async function commitContactsDeviceSyncSettingIntent(
   intent: ContactsDeviceSyncSettingIntent,
+  options?: HostContactsSyncCommitOptions,
 ): Promise<boolean> {
   const file = deviceSyncIntentFilePath();
   const scopeKey = activeOwnerScopeKey();
@@ -134,6 +154,7 @@ export async function commitContactsDeviceSyncSettingIntent(
     { label: 'contacts-device-sync-intent', waitMs: 12_000 },
     async (status) => {
       if (!status.held) throw new Error(`contacts device sync intent lock ${status.reason}`);
+      options?.assertCurrent?.();
       if (activeOwnerScopeKey() !== scopeKey || deviceSyncIntentFilePath() !== file) {
         throw new Error('contacts device sync intent scope changed while committing');
       }
@@ -143,9 +164,12 @@ export async function commitContactsDeviceSyncSettingIntent(
         // 开启必须精确匹配 token；读坏/缺失一律 fail closed。
         if (intent.enabled || currentIntent !== null) return false;
       }
-      await enqueueSettingsWrite(scopeKey, () =>
-        store.writePatchAtomic({ deviceSyncEnabled: intent.enabled }),
-      );
+      await enqueueSettingsWrite(scopeKey, async () => {
+        if (options) {
+          const committed = await store.commitAtomic(options.clearOverride ? { clear: ['deviceSyncEnabled'] } : { set: { deviceSyncEnabled: intent.enabled } }, options);
+          options.onCommitted(committed);
+        } else await store.writePatchAtomic({ deviceSyncEnabled: intent.enabled });
+      });
       log.info('contacts device sync setting written', { deviceSyncEnabled: intent.enabled });
       return true;
     },
@@ -187,6 +211,7 @@ function currentStore() {
   let store = stores.get(key);
   if (!store) {
     store = createOverrideSettingsFile<ContactsSettings>({
+  validateOverrides: raw => { validateAdditionalSettingsOverrides('contacts', raw); validateAdditionalSettingsOverrides('contactsSync', raw); },
       filePath: () => settingsFilePath(ownerRoot ?? undefined),
       defaults: DEFAULTS,
       normalize,
@@ -236,3 +261,6 @@ export function resetContactsSettings(): Promise<ContactsSettings> {
   const store = currentStore();
   return enqueueSettingsWrite(scopeKey, () => store.resetAtomic());
 }
+
+/** Internal Host settings adapter; no new IPC or persistence location. */
+export function getContactsSettingsStore() { return currentStore(); }

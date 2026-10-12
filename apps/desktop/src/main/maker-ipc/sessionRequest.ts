@@ -26,7 +26,7 @@ export interface MakerSessionCreateOpts extends CreateSessionOptions {
    */
   codexHistoryHasProductPrompt?: boolean;
   /**
-   * 用户级 system prompt 末段；renderer 的 userPromptStore 来源，不写 DB。
+   * 用户级 system prompt 末段；由执行 Host 启动装配读取，不接受 Renderer 副本、不写任务 DB。
    * 仅 lazy-create 那一次生效，已 spawn 的 session 走 maker.getSession 直送，
    * 自然忽略此字段。
    */

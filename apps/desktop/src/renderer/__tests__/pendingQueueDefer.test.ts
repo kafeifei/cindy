@@ -1,3 +1,4 @@
+import { getUserPrompt } from '@/lib/userPromptStore';
 /**
  * pendingQueueDefer.test.ts
  * ---------------------------------------------------------------------------
@@ -48,7 +49,7 @@ vi.mock('@/lib/sessionsBus', () => ({
 }));
 
 vi.mock('@/lib/userPromptStore', () => ({
-  getUserPrompt: () => 'test user prompt',
+  getUserPrompt: vi.fn(() => 'test user prompt'),
 }));
 
 vi.mock('@/lib/memorySettingsStore', () => ({
@@ -303,12 +304,14 @@ describe('renderer input queue facade', () => {
         model: MODEL,
         effort: EFFORT,
         permissionMode: PERM,
-        userPrompt: 'test user prompt',
         makerMemoryEnabled: true,
         displayReasoning: 'summarized',
         vendorOptions: { temperature: 0.2 },
       },
     });
+    // 个性化正文由执行 Host 装配，控制端缓存不得进入新入队请求。
+    expect(item.createOpts).not.toHaveProperty('userPrompt');
+    expect(getUserPrompt).not.toHaveBeenCalled();
     expect(item.chatMessage.clientId).toBe(item.clientId);
     expect(item.persistedContent).toContain('"hello"');
     expect(legacySend).not.toHaveBeenCalled();

@@ -161,6 +161,7 @@ async function startPlanSession(
         systemPrompt?: { append?: string };
         hooks?: {
           PreToolUse?: Array<{
+            matcher?: string;
             hooks: Array<(input: Record<string, unknown>) => Promise<Record<string, unknown>>>;
           }>;
         };
@@ -592,6 +593,43 @@ describe('ClaudeCodeAgent plan mode', () => {
     await handle.setPermissionMode?.('ask');
     expect(fakeQuery.setPermissionMode).toHaveBeenCalledWith('default');
     await handle.close();
+  });
+
+  it.each<PermissionMode>(['ask', 'auto', 'bypassPermissions'])('实际 SDK options 在 %s 下拦截子代理设置分派，保留根任务和其它 helper', async (mode) => {
+    const { handle, queryOptions } = await startPlanSession(false, {
+      mcpProviders: [{ name: 'cindy_helper', toClaudeSdkConfig: () => ({ type: 'stdio', command: 'true' }) }],
+      claudeAllowedTools: ['mcp__cindy_helper__list_tools', 'mcp__cindy_helper__call_tool'],
+    }, mode);
+    const helperDispatch = vi.fn(async () => 'dispatched');
+    const dispatch = async (toolName: string, toolInput: Record<string, unknown>, agentId?: string) => {
+      for (const group of queryOptions.hooks?.PreToolUse ?? []) {
+        if (group.matcher && !new RegExp(group.matcher).test(toolName)) continue;
+        for (const hook of group.hooks) {
+          const decision = await hook({
+            hook_event_name: 'PreToolUse', tool_name: toolName, tool_input: toolInput,
+            tool_use_id: 'helper-call', session_id: 'sdk-plan-mode',
+            ...(agentId ? { agent_id: agentId } : {}),
+          });
+          if ((decision.hookSpecificOutput as { permissionDecision?: string } | undefined)?.permissionDecision === 'deny') return 'denied';
+        }
+      }
+      return helperDispatch();
+    };
+    try {
+      expect(queryOptions.hooks?.PreToolUse?.some(group => group.matcher === '^mcp__cindy_helper__(list_tools|call_tool)$')).toBe(true);
+      for (const name of ['list_settings', 'get_settings', 'update_settings', 'get_settings_operation']) {
+        expect(await dispatch('mcp__cindy_helper__call_tool', { name, args: {}, caller: 'root' }, 'native-child')).toBe('denied');
+      }
+      expect(await dispatch('mcp__cindy_helper__list_tools', { category: 'settings' }, 'native-child')).toBe('denied');
+      expect(await dispatch('mcp__cindy_helper__list_tools', {}, 'native-child')).toBe('denied');
+      expect(helperDispatch).not.toHaveBeenCalled();
+      expect(await dispatch('mcp__cindy_helper__call_tool', { name: 'get_settings', args: {} })).toBe('dispatched');
+      expect(await dispatch('mcp__cindy_helper__list_tools', { category: 'control' }, 'native-child')).toBe('dispatched');
+      expect(await dispatch('mcp__cindy_helper__call_tool', { name: 'get_session_runtime', args: {} }, 'native-child')).toBe('dispatched');
+      expect(helperDispatch).toHaveBeenCalledTimes(3);
+    } finally {
+      await handle.close();
+    }
   });
 
   it('passes the same allowedTools snapshot to remote cc-manager start params', async () => {

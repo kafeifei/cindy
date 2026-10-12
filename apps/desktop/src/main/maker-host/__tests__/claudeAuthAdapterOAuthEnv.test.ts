@@ -8,7 +8,10 @@
  *   - 独立 Claude 账号已停用,不递凭证;
  *   - gateway-key / provider-oauth 形态保持原样。
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildClaudeEnv } from '../../../../../../packages/maker-core/src/agents/claude-code/env-builder.js';
 
 const h = vi.hoisted(() => ({
@@ -100,7 +103,10 @@ vi.mock('../../secrets/providerSecretStore.js', () => ({
   }),
 }));
 
-// getAuthEnv 前置的共享 skills 预热会碰真实文件系统 —— 剪断(与本测试无关)。
+// getAuthEnv 前置的 Skills 预热会碰真实文件系统 —— 两条准备入口都剪断(与本测试无关)。
+vi.mock('../../host-settings/cindy-settings-skill.js', () => ({
+  prepareHostSettingsSkill: async () => ({ status: 'unavailable', changed: false }),
+}));
 vi.mock('../shared-global-skills.js', () => ({
   prepareSharedGlobalSkillLinks: async () => ({ warnings: [] }),
   prepareSharedProjectSkillLinks: async () => ({ warnings: [] }),
@@ -143,6 +149,9 @@ describe('DesktopClaudeAuthAdapter — Claude 订阅只经 CLI 自己的登录',
     h.retainPresentation.mockReset();
     h.readLoginCalls = [];
     h.legacyMigrations = 0;
+  });
+  afterEach(() => {
+    vi.restoreAllMocks(); vi.unstubAllEnvs();
   });
 
   it('keeps the owner-scoped BYOK key readable when Cindy gateway access is disabled', async () => {

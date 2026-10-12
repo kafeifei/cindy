@@ -42,6 +42,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { getInstanceConfig } from './instance-runtime/config.js';
 
 import { app, clipboard, dialog, ipcMain, net, netLog } from 'electron';
 
@@ -153,6 +154,8 @@ export interface ResolveEndpointSourceInput {
  * XDT_ENDPOINTS_CDN='1' 切回完整 CDN 链路。
  */
 export function resolveEndpointSource(input: ResolveEndpointSourceInput): EndpointSource {
+  const instance = getInstanceConfig();
+  if (instance) return { kind: 'file', filePath: instance.endpointFile };
   if (input.isPackaged) return { kind: 'cdn' };
   if (input.env.XDT_ENDPOINTS_CDN === '1') return { kind: 'cdn' };
   const override = input.env.XDT_ENDPOINT_MANIFEST_FILE?.trim();

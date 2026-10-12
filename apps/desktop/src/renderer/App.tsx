@@ -1,5 +1,7 @@
 import { useModelFavoritesHost } from './state/useModelFavoritesHost';
 import { getDataOwnerGeneration } from './contexts/dataOwnerGeneration';
+import { connectHostNewTaskPreferences } from './state/hostNewTaskPreferences';
+import { connectHostModelPresentationPreferences } from './state/hostModelPresentationPreferences';
 import { RouterProvider } from 'react-router-dom';
 
 import { useEffect } from 'react';
@@ -44,7 +46,7 @@ import { installSystemNetworkErrorToastListener } from '@/lib/systemNetworkError
 import { installSilentInstallToastListener } from '@/lib/silentInstallToast';
 import { installProviderUpstreamErrorToastListener } from '@/lib/providerUpstreamErrorToast';
 import { installAutoPermissionFallbackToastListener } from '@/lib/autoPermissionFallbackToast';
-import { agentKindToVendor } from '@/components/sidebar/VendorIcon';
+import { applyRemoteDraftPreference } from '@/state/applyRemoteDraftPreference';
 import { installCcMgrUpgradeListener } from '@/state/ccMgrUpgradeStore';
 import {
   preloadLocalCatalogSnapshot,
@@ -56,18 +58,13 @@ import {
   getDraftForOwnerPreferenceSync,
   applyAppDefaultModelSelection,
   subscribeDraft,
-  setEffortForModel,
-  setFastModeForModel,
   setWorktreePreference,
-  patchVendorPrefs,
-  patchVendorPrefsPreservingModelChoice,
 } from '@/state/newMakerDraft';
 import {
   snapshotForSeed,
   setProviderModelChoice,
   setProviderModelEffort,
   setProviderModelFast,
-  setProviderModelThinking,
   subscribeProviderModelMemory,
 } from '@/state/providerModelMemory';
 import {
@@ -120,12 +117,16 @@ function syncNewMakerPrefs(appDefaultModelRequestId?: string) {
     // 用户供应商专有的模型（如 deepseek-v4-pro）会被网关 400 拒绝。
     providerId: cc.providerId ?? null,
   });
+  // 新 Host 只接受 CAS 偏好写入，旧整包镜像不能再反向覆盖执行端。
+  if (window.electronAPI.hostSettings) return;
   // main 缓存两用途:① collab worker spawn 读 model/effort/fastMode;② device-link 远程
   // 草稿镜像读全量(model/effort/fast/permission/source)+「是否显式选过模型」。故
   // lastByVendor 覆盖 cc/codex/pi，并带上 permissionMode + providerId(worker spawn
   // 不消费这两项,远程草稿镜像才用)。fire-and-forget。
   const selected = draft.lastByVendor[draft.vendor];
   window.electronAPI.syncNewMakerDraft({
+    vendor: draft.vendor === 'orca' ? 'cc' : draft.vendor,
+    defaultTupleCustomized: draft.defaultTupleCustomized,
     ...(appDefaultModelRequestId ? { appDefaultModelRequestId } : {}),
     ownerStamp: { dataOwnerId: owner.dataOwnerId, ownerGeneration: owner.generation },
     selectedRoute: {
@@ -172,6 +173,8 @@ function MakerBootstrap() {
   const { isAuthenticated, dataOwnerId, dataOwnerRecoveryEpoch } = useAuth();
 
   useResyncAgentIslandSettingsAfterLogin(isAuthenticated);
+  useEffect(() => connectHostNewTaskPreferences(), [dataOwnerId, dataOwnerRecoveryEpoch]);
+  useEffect(() => connectHostModelPresentationPreferences(), [dataOwnerId, dataOwnerRecoveryEpoch]);
 
   useEffect(() => {
     setPromptRecommendationOwner(`${dataOwnerId ?? 'signed-out'}:${dataOwnerRecoveryEpoch}`);
@@ -270,7 +273,7 @@ export function App() {
   // 启动推一次 + 变化增量推,fire-and-forget;无控制者订阅时 main 端转发近似 no-op。
   useEffect(() => {
     const sync = () => {
-      window.electronAPI.syncProviderModelMemory(snapshotForSeed());
+      if (!window.electronAPI.hostSettings) window.electronAPI.syncProviderModelMemory(snapshotForSeed());
       syncNewMakerPrefs();
     };
     sync();
@@ -307,38 +310,9 @@ export function App() {
           }
           return;
         }
-        const vendor = agentKindToVendor(agent);
-        if (active) {
-          const patch =
-            markModelChoice === false ? patchVendorPrefsPreservingModelChoice : patchVendorPrefs;
-          const shouldPatchActiveModel = markModelChoice !== false || effort !== undefined;
-          if (shouldPatchActiveModel) {
-            patch(vendor, {
-              // markModelChoice=false 仍要写回当前活动模型:远程新建草稿
-              // pushActiveDraftPref、以及旧控制端换模都走这条 wire。丢掉 model
-              // 会让被控端 lastByVendor 停在旧模型。选模标记由 store 的
-              // preserving 路径单独守住,这里只负责同步当前活动值。
-              model: modelId,
-              providerId: providerId || null,
-              ...(effort !== undefined ? { effort: effort as Effort } : {}),
-            });
-          }
-        }
-        if (effort !== undefined) {
-          if (markModelChoice === true || (active && markModelChoice !== false)) {
-            setProviderModelChoice(agent, providerId, modelId, effort as Effort);
-          } else {
-            setProviderModelEffort(agent, providerId, modelId, effort as Effort);
-          }
-          if (active) setEffortForModel(modelId, effort as Effort); // 旧层兜底保持一致
-        }
-        if (fast !== undefined) {
-          setProviderModelFast(agent, providerId, modelId, fast);
-          if (active) setFastModeForModel(modelId, fast); // 旧层兜底保持一致
-        }
-        if (thinking !== undefined) {
-          setProviderModelThinking(agent, providerId, modelId, thinking);
-        }
+        applyRemoteDraftPreference({
+          agent, providerId, modelId, active, effort, fast, thinking, markModelChoice,
+        });
       },
     );
     const offSession = window.electronAPI.onMakerSessionPrefApply(

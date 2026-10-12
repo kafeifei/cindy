@@ -1,4 +1,4 @@
-import os from 'node:os';
+import { cindyManagedHomeDir } from '../cloudPilotDistribution.js';
 import path from 'node:path';
 import fs, { promises as fsp } from 'node:fs';
 
@@ -117,7 +117,7 @@ async function hasSkillFile(dirPath: string): Promise<boolean> {
   return false;
 }
 
-export function sharedGlobalSkillsPaths(homeDir = os.homedir()) {
+export function sharedGlobalSkillsPaths(homeDir = cindyManagedHomeDir()) {
   return {
     homeDir,
     sharedSkillsDir: path.join(homeDir, '.agents', 'skills'),

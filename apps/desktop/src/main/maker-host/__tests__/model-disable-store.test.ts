@@ -21,7 +21,7 @@ vi.mock('../../appSessionState.js', () => ({
   ownerScopedUserDataPath: (name: string) => path.join(tmpDir, name),
 }));
 
-const { __testing, migrateLegacyNamespacedModelDisableOverrides, setModelsDisabled } =
+const { __testing, readModelDisableOverrides, migrateLegacyNamespacedModelDisableOverrides, setModelsDisabled } =
   await import('../model-disable-store.js');
 
 function readPrefsFile(): { disabledModels: Record<string, unknown> } {
@@ -29,6 +29,15 @@ function readPrefsFile(): { disabledModels: Record<string, unknown> } {
     fs.readFileSync(path.join(tmpDir, 'model-disable-prefs.json'), 'utf8'),
   ) as { disabledModels: Record<string, unknown> };
 }
+
+it('纯读发现坏准入配置时报告不可读，不删除/重写文件或返回全启用', () => {
+  const file = path.join(tmpDir, 'model-disable-prefs.json');
+  fs.writeFileSync(file, '{invalid');
+  try {
+    expect(() => readModelDisableOverrides({ allowSideEffects: false })).toThrow('MODEL_ACCESS_UNREADABLE');
+    expect(fs.readFileSync(file, 'utf8')).toBe('{invalid');
+  } finally { fs.rmSync(file, { force: true }); }
+});
 
 describe('normalize(坏形态清洗)', () => {
   it('只保留 value === true 的条目;false / 非布尔 / 空 key 一律丢弃 = 启用', () => {

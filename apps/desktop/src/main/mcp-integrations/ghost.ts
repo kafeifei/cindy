@@ -88,6 +88,7 @@ import { withCardToken } from '../cindy-brain/cardService.js';
 import { drainGhostCallMedia } from '../cindy-brain/ghostMediaLedger.js';
 import {
   getGhostCardService,
+  connectGhostGithubAccount,
   getGhostManager,
   getGhostPipeDispatcher,
   getGhostSetupAssessment,
@@ -1738,6 +1739,16 @@ export function getCindyGhostsMcpDeps(
       const workingDir = context?.workingDir ?? null;
       const visible = classifyGhostVisibility(target.id, workingDir, ghostVisibilityDeps);
       if (!visible.ok) return visible;
+      if (target.id === 'cindy-github') {
+        const result = await connectGhostGithubAccount({ sessionId, signal,
+          ...(target.reauthorize ? { reauthorize: true } : {}),
+          assertCurrent: () => {
+            if (signal?.aborted
+              || !classifyGhostVisibility(target.id, workingDir, ghostVisibilityDeps).ok)
+              throw new Error('AUTH_FAILED');
+          } });
+        if (result) return result;
+      }
       const assessment = getGhostSetupAssessment(target.id);
       if (assessment.state === 'ready' && assessment.groups.length === 0) {
         // gh-cli and other Host-derived sources deliberately have no synchronous

@@ -1,3 +1,5 @@
+import os from 'node:os';
+import { cindyManagedHomeDir } from '../cloudPilotDistribution.js';
 /**
  * skillhub/installService.ts — Market install / uninstall 链路（Hub + registry 版）。
  *
@@ -24,7 +26,6 @@
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { app, shell } from 'electron';
 import { download, DownloadError } from '../downloader/index.js';
@@ -205,7 +206,7 @@ function projectWorkingDirForSkillPaths(...skillPaths: string[]): string | undef
   const projectWorkingDir = skillPaths
     .map((skillPath) => projectWorkingDirFromSkillPath(skillPath))
     .find((workingDir): workingDir is string => Boolean(workingDir));
-  if (!projectWorkingDir || path.resolve(projectWorkingDir) === path.resolve(os.homedir())) {
+  if (!projectWorkingDir || path.resolve(projectWorkingDir) === path.resolve(cindyManagedHomeDir())) {
     return undefined;
   }
   return projectWorkingDir;
@@ -308,7 +309,7 @@ function isSubPathOrSame(parent: string, child: string): boolean {
 
 /** 安装目标目录：`~/.agents/skills/`，双引擎共享。 */
 function globalSkillsDir(): string {
-  return path.join(os.homedir(), '.agents', 'skills');
+  return path.join(cindyManagedHomeDir(), '.agents', 'skills');
 }
 
 /** Structural metadata for a direct project/global Skill discovery path. */
@@ -939,7 +940,7 @@ export async function install(p: InstallParams, onProgress: ProgressCb): Promise
 
     // best-effort:让同一份 Skill 同时出现在两个 Agent 的 discovery root。
     if (!p.installPath) {
-      const claudeLink = path.join(os.homedir(), '.claude', 'skills', p.name);
+      const claudeLink = path.join(cindyManagedHomeDir(), '.claude', 'skills', p.name);
       try {
         await ensureSymlinkToShared(claudeLink, finalDir);
       } catch (err) {

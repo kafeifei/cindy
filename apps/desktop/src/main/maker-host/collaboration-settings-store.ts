@@ -1,3 +1,4 @@
+import { validateAdditionalSettingsOverrides } from '../../shared/settingsEditableCatalog.js';
 /**
  * collaboration-settings-store —— multi-worker 协同模式的 main 端持久化设置。
  *
@@ -18,7 +19,18 @@ import {
   type OverrideSettingsState,
 } from './override-settings-file.js';
 
+import { inspectSettingsFile, isSettingNumber, validateOptionalSettingsFields } from './settings-inspection.js';
+
 const log = desktopMakerLogger.child('collaboration-settings-store');
+
+/** 只观察持久偏好，绕开普通 getter 对损坏文件的修复。 */
+export function inspectCollaborationSettings() {
+  return inspectSettingsFile({ filePath: settingsFilePath, defaults: DEFAULTS, normalize,
+    validate: (raw) => validateOptionalSettingsFields(raw, {
+      workerSoftLimit: isSettingNumber, workerHardLimit: isSettingNumber, workerIdleReleaseMinutes: isSettingNumber,
+    }),
+  });
+}
 
 export interface CollaborationSettings {
   workerSoftLimit: number;
@@ -58,6 +70,7 @@ function clamp(v: number, min: number, max: number): number {
 }
 
 const store = createOverrideSettingsFile<CollaborationSettings>({
+  validateOverrides: raw => validateAdditionalSettingsOverrides('collaboration', raw),
   filePath: settingsFilePath,
   defaults: DEFAULTS,
   normalize,
@@ -86,3 +99,6 @@ export function resetCollaborationSettings(): CollaborationSettings {
 }
 
 export const __testing = { normalize };
+
+/** Internal Host settings adapter; no new IPC or persistence location. */
+export function getCollaborationSettingsStore() { return store; }
