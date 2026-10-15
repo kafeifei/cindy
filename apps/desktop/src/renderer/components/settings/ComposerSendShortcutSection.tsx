@@ -11,13 +11,13 @@ import { DefaultOverrideControls } from './DefaultOverrideControls';
 
 export function ComposerSendShortcutSection() {
   const { t } = useTranslation();
-  const { preference, isCustomized, setPreference } = useComposerSendShortcutPreference();
+  const { preference, isCustomized, setPreference, resetPreference } = useComposerSendShortcutPreference();
   const shortcut = getComposerModifierShortcutLabel(window.electronAPI?.platform);
 
-  const onReset = useCallback(() => {
-    setPreference('enter');
-    toast.success(t('settings.defaults.restored'));
-  }, [setPreference, t]);
+  const onReset = useCallback(async () => {
+    if (await resetPreference()) toast.success(t('settings.defaults.restored'));
+    else toast.error(t('hostSettings.saveFailed'));
+  }, [resetPreference, t]);
 
   return (
     <div className="flex flex-col gap-[14px]">

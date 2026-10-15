@@ -3,8 +3,9 @@
  *
  * 设计：
  * - 每个 feature 一个 boolean，默认全 off（实验功能必须显式 opt-in）
- * - localStorage key = 'experimental.<feature>'
- * - 跨组件实例同步走 storage 事件（同 useNotificationSettings 模式）
+ * - 持久化 debug-network 使用 Host profile 正本与已确认快照。
+ * - 其余未迁移 feature 仍使用 'experimental.<feature>' 和 storage 事件。
+ * - 开发期 forceManagedTools 不纳入本次迁移。
  *
  * 新增 experimental feature 只需要：
  * 1. 在 EXPERIMENTAL_FEATURES 加一项
@@ -12,6 +13,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
+import { getDesktopPreference, setDesktopPreference, subscribeDesktopPreferences } from '../state/hostDesktopPreferences';
 
 export interface ExperimentalFeatureMeta {
   /** localStorage key 后缀，最终 key = 'experimental.<key>' */
@@ -45,6 +47,7 @@ function storageKey(featureKey: string): string {
 
 /** 同步读：给非 hook 路径用（例如条件渲染 sidebar 入口）。坏数据当默认值 false。 */
 export function getExperimentalFlag(featureKey: string): boolean {
+  if (featureKey === 'debug-network') return getDesktopPreference('networkDebugEnabled');
   try {
     const raw = localStorage.getItem(storageKey(featureKey));
     return raw === 'true';
@@ -61,6 +64,7 @@ export function useExperimentalFlag(featureKey: string): {
   const [enabled, setEnabledState] = useState<boolean>(() => getExperimentalFlag(featureKey));
 
   const setEnabled = useCallback((next: boolean) => {
+    if (featureKey === 'debug-network') { void setDesktopPreference('networkDebugEnabled', next); return; }
     setEnabledState(next);
     try {
       localStorage.setItem(storageKey(featureKey), String(next));
@@ -70,6 +74,11 @@ export function useExperimentalFlag(featureKey: string): {
   }, [featureKey]);
 
   useEffect(() => {
+    if (featureKey === 'debug-network') {
+      const sync = () => setEnabledState(getExperimentalFlag(featureKey));
+      sync();
+      return subscribeDesktopPreferences(sync);
+    }
     const handler = (e: StorageEvent) => {
       if (e.key !== storageKey(featureKey)) return;
       setEnabledState(getExperimentalFlag(featureKey));

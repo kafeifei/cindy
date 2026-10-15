@@ -1,4 +1,6 @@
 import { cindyManagedSkillRoots, listCindyManagedSkills } from './managed-skills.js';
+import { cindyManagedHomeDir, cloudPilotClaudeCliEnv } from '../cloudPilotDistribution.js';
+import { prepareHostSettingsSkill } from '../host-settings/cindy-settings-skill.js';
 import { retainInvalidatedProviderPresentation, retainProviderPresentationAfterAuthChange } from './provider-presentation-store.js';
 import { subscriptionAccountKind, subscriptionAccountState } from './subscription-account-auth.js';
 /**
@@ -19,7 +21,6 @@ import { subscriptionAccountKind, subscriptionAccountState } from './subscriptio
 import { app, safeStorage } from 'electron';
 import { isCodexAccountProvider, codexAccountState, codexAccountHome, prepareCodexAccountHome, parseCodexAccountIdentity } from './codex-account-auth.js';
 import { createHash, timingSafeEqual } from 'node:crypto';
-import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import { promises as fsp, existsSync } from 'node:fs';
@@ -332,7 +333,7 @@ export function isCodexAuthInheritedFromSystemCli(): boolean {
     const codexHome = getCodexHome();
     const localAuth = path.join(codexHome, 'auth.json');
     if (shouldSuppressLocalCodexAuth(codexHome, localAuth)) return false;
-    const systemAuth = path.join(os.homedir(), '.codex', 'auth.json');
+    const systemAuth = path.join(cindyManagedHomeDir(), '.codex', 'auth.json');
     if (!existsSync(localAuth) || !existsSync(systemAuth)) return false;
     return pathsReferToSameFileSync(localAuth, systemAuth);
   } catch {
@@ -617,6 +618,7 @@ export class DesktopClaudeAuthAdapter implements AuthAdapter {
   }
 
   private async runEnsureSharedGlobalSkills(ownerId: string | null): Promise<boolean> {
+    await prepareHostSettingsSkill();
     try {
       const result = await withSharedGlobalSkillProjectionMutation(ownerId, async () => {
         // Bundle publication keeps every managed Agent link on one stable
@@ -741,7 +743,8 @@ export class DesktopClaudeAuthAdapter implements AuthAdapter {
         else env.ANTHROPIC_API_KEY = CLAUDE_PROVIDER_AUTH_PLACEHOLDER_KEY;
       }
     }
-    // 所有来源都用 CLI 默认配置目录(dev 多实例与正式版一致,不设 CLAUDE_CONFIG_DIR):
+    Object.assign(env, cloudPilotClaudeCliEnv());
+    // 普通发行版所有来源都用 CLI 默认配置目录(dev 多实例与正式版一致,不设 CLAUDE_CONFIG_DIR):
     // 订阅会话的凭证库按配置目录区分,隔离会看不到本机已有的 Claude Code 登录。
     // 旧版 dev 隔离在 <userData>/claude-home 的转录,拉起 CLI 前补拷到默认目录供 resume。
     await ensureLegacyClaudeConfigMigrated();
@@ -1372,6 +1375,7 @@ export class DesktopCodexAuthAdapter implements AuthAdapter {
   private async runEnsureGlobalCodexSkills(ownerId: string | null): Promise<boolean> {
     // Prepare the private built-in roots before Codex snapshots discovery.
     await desktopClaudeAuthAdapter.ensureSharedGlobalSkills();
+    await prepareHostSettingsSkill();
     const sharedOutcome = await withSharedGlobalSkillProjectionMutation(ownerId, () =>
       prepareSharedGlobalSkillLinks({
         assertOwnerStable: () => assertGhostSkillProjectionBoundaryStableForOwner(ownerId),

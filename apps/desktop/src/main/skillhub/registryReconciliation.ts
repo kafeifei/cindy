@@ -1,6 +1,6 @@
+import { cindyManagedHomeDir } from '../cloudPilotDistribution.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { createLogger } from '../logger';
 import { registryService, type StoredInstall } from './registry';
 import { withSkillMutation } from './sharedMutationLease';
@@ -30,7 +30,7 @@ export async function reconcileScannedInstall(
       const index = record.installPath.replace(/\\/g, '/').lastIndexOf('/.agents/skills/');
       if (index < 0) return;
       const base = record.installPath.slice(0, index);
-      const link = path.join(base || os.homedir(), '.claude', 'skills', record.skillName);
+      const link = path.join(base || cindyManagedHomeDir(), '.claude', 'skills', record.skillName);
       // Existing entries belong to their current owner, including external links.
       if (fileIdentity(link) !== null) return;
       // Keep final validation and link creation synchronous inside the lease.

@@ -9,8 +9,10 @@ import './browser-runtime-env.js';
 import fs from 'node:fs';
 import nodePath from 'node:path';
 import { app, ipcMain } from 'electron';
+import { configureManagedBrowserText, ownedManagedBrowserEndpoint } from './browser-focused-text.js';
 import {
   createBrowserControlRuntime,
+  insertFocusedBrowserText,
   setBrowserControlRuntimeConfig,
   type BrowserProxyRoute,
   type BrowserControlRuntime,
@@ -318,6 +320,21 @@ const backendController = new BrowserBackendController({
 });
 const browserBackendHealthService = new BrowserBackendHealthService(backendController, logger);
 
+configureManagedBrowserText(async (request) => {
+  if (process.platform !== 'linux' || backendController.kind !== 'external' || readBrowserBackendSettings().useRealProfile)
+    throw new Error('Text requires the owned managed browser');
+  const status = await backendController.call({ action: 'status' });
+  const cdpUrl = ownedManagedBrowserEndpoint(status, process.env.XDT_BROWSER_RUNTIME_DIR, MANAGED_PROFILE, request.pid);
+  await insertFocusedBrowserText({
+    ...request, cdpUrl,
+    validate: async () => {
+      if (process.platform !== 'linux' || backendController.kind !== 'external' || readBrowserBackendSettings().useRealProfile)
+        throw new Error('Managed browser changed');
+      await request.validate();
+    },
+  });
+});
+
 /**
  * Main-window webContents accessor — populated by bootstrap-electron via
  * `setMainWindowAccessorForBackend`. Without this the RsbWebviewBackend has
@@ -380,6 +397,11 @@ export async function setActiveBrowserBackendKind(kind: BackendKind): Promise<vo
   // kind could return early while an earlier queued request is about to switch
   // away from it.
   await backendController.setKind(kind);
+}
+
+/** Internal settings transaction: keep CAS persistence inside the native switch queue. */
+export function commitHostBrowserBackendKind(kind: BackendKind, persist: () => Promise<void>): Promise<boolean> {
+  return backendController.setKind(kind, persist);
 }
 
 async function stopExternalRuntimeIfUsed(): Promise<void> {

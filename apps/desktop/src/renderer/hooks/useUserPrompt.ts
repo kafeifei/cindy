@@ -1,32 +1,9 @@
-/**
- * useUserPrompt — React 包装，订阅 userPromptStore 的变化。
- *
- * 真正的 storage 实现在 lib/userPromptStore.ts，本 hook 只负责把它接入 React 状态。
- * 非 React 路径（如 ChatInput 启 session 时透传）应直接用 store 的 getUserPrompt()，
- * 避免无谓的 hook context 依赖。
- */
+/** 个性化设置的只读显示缓存；持久化与启动消费均由 Host 负责。 */
+import { useEffect, useSyncExternalStore } from 'react';
+import { getUserPromptView, refreshUserPrompt, setUserPrompt, resetUserPrompt, subscribeUserPrompt } from '@/lib/userPromptStore';
 
-import { useCallback, useEffect, useState } from 'react';
-
-import {
-  getUserPrompt,
-  setUserPrompt,
-  subscribeUserPrompt,
-} from '@/lib/userPromptStore';
-
-export function useUserPrompt(): {
-  value: string;
-  setValue: (next: string) => void;
-} {
-  const [value, setValueState] = useState<string>(getUserPrompt);
-
-  const setValue = useCallback((next: string) => {
-    setUserPrompt(next);
-    // 走 store.setUserPrompt 之后，subscribe 回调会更新本地 state，
-    // 这里不重复 setValueState。
-  }, []);
-
-  useEffect(() => subscribeUserPrompt(setValueState), []);
-
-  return { value, setValue };
+export function useUserPrompt() {
+  const state = useSyncExternalStore(subscribeUserPrompt, getUserPromptView);
+  useEffect(() => { void refreshUserPrompt(); }, []);
+  return { ...state, setValue: setUserPrompt, resetValue: resetUserPrompt };
 }

@@ -2743,6 +2743,7 @@ describe('codex proxy host', () => {
           expect.objectContaining({ id: 'responses_item_id_prefix' }),
           expect.objectContaining({ id: 'responses_item_id_length' }),
           expect.objectContaining({ id: 'xai_model_input' }),
+          expect.objectContaining({ id: 'bedrock_unsupported_web_search' }),
         ]),
       }),
     );
@@ -2859,14 +2860,21 @@ describe('codex proxy host', () => {
       additionalDetails: "Invalid 'input[74].id': string too long. Expected a string with maximum length 64, but got a string with length 84 instead.",
     })).toBe('responses_item_id_length');
 
+    expect(host.armCodexHttpRecovery({
+      sessionId: 'session-search', threadId: 'thread-search',
+      message: "litellm.BadRequestError: BedrockException - tool type 'web_search_20250305' is not supported for this model",
+    })).toBe('bedrock_unsupported_web_search');
+
     expect(proxyOpts.resolveWebSocketUpstream(ctxForThread('thread-encrypted'))).toBeNull();
     expect(proxyOpts.resolveWebSocketUpstream(ctxForThread('thread-id-length'))).toBeNull();
     expect(proxyOpts.resolveWebSocketUpstream(ctxForThread('thread-image'))).toBeNull();
+    expect(proxyOpts.resolveWebSocketUpstream(ctxForThread('thread-search'))).toBeNull();
     expect(proxyOpts.resolveWebSocketUpstream(ctxForThread('thread-safe'))).toBe(
       'https://chatgpt.com/backend-api/codex',
     );
     expect(disconnectWebSocketsForThread).toHaveBeenCalledWith('thread-encrypted');
     expect(disconnectWebSocketsForThread).toHaveBeenCalledWith('thread-image');
+    expect(disconnectWebSocketsForThread).toHaveBeenCalledWith('thread-search');
   });
 
   it.each(['shared', 'custom-context', 'control-plane'] as const)(

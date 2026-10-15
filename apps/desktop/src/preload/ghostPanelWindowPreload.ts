@@ -16,6 +16,7 @@
  */
 
 import { contextBridge, ipcRenderer } from 'electron';
+import { createDesktopPreferencesReadApi } from './desktopPreferences';
 
 import { createAppearanceSnapshotBridge } from './appearanceSnapshot';
 import type { LocalThemesResult } from '../shared/local-themes';
@@ -121,6 +122,7 @@ const fanOutFullscreenChange = (cb: (isFullscreen: boolean) => void): Unsub =>
   onPayload('fullscreen-change', cb);
 
 contextBridge.exposeInMainWorld('electronAPI', {
+  desktopPreferences: createDesktopPreferencesReadApi(ipcRenderer),
   platform: process.platform,
   preferredSystemLocale: readPreferredSystemLocale(),
   windowMinimize: (): void => ipcRenderer.send('window-minimize'),

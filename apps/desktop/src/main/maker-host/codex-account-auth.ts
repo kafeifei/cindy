@@ -1,4 +1,7 @@
+import { openManagementAuthorization, attachManagementAuthorization } from '../host-settings/managementAuthorization.js';
+import { cloudManagementExecution } from '../host-settings/managementCalls.js';
 import { app } from 'electron';
+import { prepareHostSettingsSkill } from '../host-settings/cindy-settings-skill.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
@@ -128,6 +131,7 @@ export function codexAccountState(providerId: string): AuthState {
 export async function prepareCodexAccountHome(providerId: string, managedRoots: readonly string[], managedSkills: Awaited<ReturnType<NonNullable<AgentDeps['getManagedSkills']>>>): Promise<string> {
   if (!codexAccountState(providerId).authenticated) throw new Error('Codex account requires login');
   const home = codexAccountHome(providerId);
+  await prepareHostSettingsSkill();
   await Promise.all([prepareCodexGlobalSkillsLinks(home, { managedRoots, managedSkills }), prepareCodexGlobalRulesCopy(home)]);
   const plugins = await prepareCodexGlobalPluginsBridge(home, {
     capabilityRouting: DESKTOP_CAPABILITY_ROUTING_POLICY,
@@ -179,6 +183,7 @@ export async function loginCodexAccount(
     },
   };
   logins.set(home, operation);
+  attachManagementAuthorization(operation.cancel);
   const current = () =>
     !cancelled && isCurrent() && getActiveAppSession().generation === owner.generation;
   const staging = path.join(home, `login-${randomUUID()}`);
@@ -220,6 +225,7 @@ export async function loginCodexAccount(
                     !url.username && !url.password && !url.hash) {
                   published = true;
                   onBrowserUrl?.(url.href);
+                  if (cloudManagementExecution()) void openManagementAuthorization(url.href, async () => {}).catch(operation.cancel);
                 }
               }
             }

@@ -11,6 +11,8 @@ import {
 } from '../../main/maker-host/active-catalog';
 import { UnifiedModelList } from '../components/settings/UnifiedModelList';
 import { __resetForTest, isModelEnabled, migrateModelVisibilityDefaults, setModelVisibilityOwner } from '../state/modelVisibilityPrefs';
+import { createModelPresentationTestHost } from './modelPresentationTestHost';
+import { __testing as ownerTesting } from '../contexts/dataOwnerGeneration';
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('../components/ui/confirm-dialog-provider', () => ({
@@ -28,6 +30,9 @@ afterEach(() => {
   setXdGatewayModels([]);
   setActiveCatalog(BUNDLED_CATALOG);
   __resetForTest();
+  ownerTesting.reset();
+  window.localStorage.clear();
+  Reflect.deleteProperty(window, 'electronAPI');
 });
 
 it.each(['google/gemini-3.8-flash', 'google/gemini-99-pro-preview'])(
@@ -58,13 +63,13 @@ it.each(['google/gemini-3.8-flash', 'google/gemini-99-pro-preview'])(
 );
 
 it('lists downloaded Gateway models in settings and follows catalog defaults until the user switches them', async () => {
-  Object.defineProperty(window, 'electronAPI', { configurable: true, value: { maker: {
-    claimLegacyModelVisibilityOwner: () => ({ dataOwnerId: 'arrival-test', ownerGeneration: 1,
-      canWriteOwnerScoped: true, claimed: true, canInitialize: true, profileOrigin: 'new' }),
-    syncModelVisibility: vi.fn(async () => undefined),
-  } } });
   __resetForTest();
+  window.localStorage.clear();
+  const host = createModelPresentationTestHost(window.localStorage);
+  host.select('arrival-test', 1);
+  host.install();
   await setModelVisibilityOwner('arrival-test', 1, 'cloud');
+  expect(host.snapshot().status).toBe('ready');
   setActiveCatalog(BUNDLED_CATALOG);
   const raw = (id: string, name: string) => ({
     id,

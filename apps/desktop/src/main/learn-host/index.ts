@@ -1,3 +1,4 @@
+import { cindyManagedHomeDir } from '../cloudPilotDistribution.js';
 /**
  * learn-host 单例 + 启停 —— 镜像 goal-host/index.ts。
  *
@@ -9,7 +10,6 @@
 
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 
 import type { Effort, Maker } from '@cindy/maker-core';
@@ -258,8 +258,8 @@ export function startLearnHost(deps: StartLearnHostDeps): LearnController {
     // 无 diff 基线、apply 后 .agents 与 Codex 原目录双副本并存(Codex review P2)。
     resolveInstalledSkillDirs: (name) => [
       resolveInstalledSkillDir(name),
-      path.join(os.homedir(), '.claude', 'skills', name),
-      path.join(os.homedir(), '.codex', 'skills', name),
+      path.join(cindyManagedHomeDir(), '.claude', 'skills', name),
+      path.join(cindyManagedHomeDir(), '.codex', 'skills', name),
     ],
     dirExists: async (dir) => {
       try {

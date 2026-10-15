@@ -155,7 +155,7 @@ export function FontSettingsProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  const patch = useCallback((next: Partial<FontSettings>) => {
+  const patch = useCallback((next: Partial<FontSettings>, clear?: Array<keyof FontSettings>) => {
     const previous = settingsRef.current;
     const merged = { ...previous, ...next };
     const bridge = getBridge();
@@ -173,7 +173,8 @@ export function FontSettingsProvider({ children }: { children: ReactNode }) {
       .catch(() => undefined)
       .then(async () => {
         try {
-          await bridge.setPatch(next);
+          if (clear) await bridge.clearFields(clear);
+          else await bridge.setPatch(next);
           pendingWritesRef.current = pendingWritesRef.current.filter(
             (pending) => pending.id !== requestId,
           );
@@ -212,10 +213,10 @@ export function FontSettingsProvider({ children }: { children: ReactNode }) {
     (size: number) => patch({ codeSize: clampAppearanceCodeSize(size) }),
     [patch],
   );
-  const resetUiFamily = useCallback(() => setUiFamily(''), [setUiFamily]);
-  const resetCodeFamily = useCallback(() => setCodeFamily(''), [setCodeFamily]);
-  const resetUiSize = useCallback(() => setUiSize(DEFAULT_UI_FONT_SIZE), [setUiSize]);
-  const resetCodeSize = useCallback(() => setCodeSize(DEFAULT_CODE_FONT_SIZE), [setCodeSize]);
+  const resetUiFamily = useCallback(() => patch({ uiFamily: '' }, ['uiFamily']), [patch]);
+  const resetCodeFamily = useCallback(() => patch({ codeFamily: '' }, ['codeFamily']), [patch]);
+  const resetUiSize = useCallback(() => patch({ uiSize: DEFAULT_UI_FONT_SIZE }, ['uiSize']), [patch]);
+  const resetCodeSize = useCallback(() => patch({ codeSize: DEFAULT_CODE_FONT_SIZE }, ['codeSize']), [patch]);
 
   const value = useMemo<FontSettingsContextValue>(
     () => ({

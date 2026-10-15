@@ -1,4 +1,7 @@
 // @vitest-environment jsdom
+import { installDesktopPreferencesHarness, settleDesktopPreferences } from '../../__tests__/desktopPreferencesHarness';
+let host: ReturnType<typeof installDesktopPreferencesHarness>;
+
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
@@ -34,6 +37,7 @@ describe('useComposerSendShortcutPreference', () => {
         },
       },
     });
+    host = installDesktopPreferencesHarness();
   });
 
   it.each([
@@ -45,7 +49,7 @@ describe('useComposerSendShortcutPreference', () => {
     expect(getComposerSendShortcutLabel(preference, platform)).toBe(expected);
   });
 
-  it('defaults to Enter and treats the default as not customized', () => {
+  it('defaults to Enter and treats the default as not customized', async () => {
     expect(getComposerSendShortcutPreference()).toBe('enter');
 
     const { result } = renderHook(() => useComposerSendShortcutPreference());
@@ -54,7 +58,7 @@ describe('useComposerSendShortcutPreference', () => {
     expect(result.current.isCustomized).toBe(false);
   });
 
-  it('only accepts the modifier-enter override from storage', () => {
+  it('only accepts the modifier-enter override from storage', async () => {
     localStorage.setItem(KEY, 'modifier-enter');
     expect(getComposerSendShortcutPreference()).toBe('modifier-enter');
 
@@ -67,21 +71,22 @@ describe('useComposerSendShortcutPreference', () => {
     expect(getComposerSendShortcutPreference()).toBe('enter');
   });
 
-  it('persists the non-default override and removes it when reset', () => {
+  it('persists the non-default override and removes it when reset', async () => {
     const { result } = renderHook(() => useComposerSendShortcutPreference());
 
-    act(() => result.current.setPreference('modifier-enter'));
-    expect(localStorage.getItem(KEY)).toBe('modifier-enter');
+    await act(async () => { result.current.setPreference('modifier-enter'); await settleDesktopPreferences(); });
+    expect(host.snapshot()).toMatchObject({ status: 'ready', value: { composerSendShortcut: 'modifier-enter' }, customizedKeys: ['composerSendShortcut'] });
+    expect(localStorage.getItem(KEY)).toBeNull();
     expect(getComposerSendShortcutPreference()).toBe('modifier-enter');
     expect(result.current.isCustomized).toBe(true);
 
-    act(() => result.current.setPreference('enter'));
+    await act(async () => { await result.current.resetPreference(); await settleDesktopPreferences(); });
     expect(localStorage.getItem(KEY)).toBeNull();
     expect(getComposerSendShortcutPreference()).toBe('enter');
     expect(result.current.isCustomized).toBe(false);
   });
 
-  it('keeps the Composer preference unchanged when Voice Input owns Cmd+Enter', () => {
+  it('keeps the Composer preference unchanged when Voice Input owns Cmd+Enter', async () => {
     const settings = {
       ...getDefaultVoiceInputSettings('darwin'),
       shortcut: {
@@ -111,16 +116,13 @@ describe('useComposerSendShortcutPreference', () => {
     expect(localStorage.getItem(KEY)).toBeNull();
   });
 
-  it('updates mounted hooks when another renderer changes the preference', () => {
+  it('updates mounted hooks when another renderer changes the preference', async () => {
     const { result } = renderHook(() => useComposerSendShortcutPreference());
 
-    act(() => {
-      window.dispatchEvent(
-        new StorageEvent('storage', {
-          key: KEY,
-          newValue: 'modifier-enter',
-        }),
-      );
+    await act(async () => {
+      await settleDesktopPreferences();
+      host.external({ composerSendShortcut: 'modifier-enter' });
+      await settleDesktopPreferences();
     });
 
     expect(result.current.preference).toBe('modifier-enter');

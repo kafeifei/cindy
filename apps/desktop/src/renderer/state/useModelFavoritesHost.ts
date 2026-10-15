@@ -10,13 +10,15 @@ export function useModelFavoritesHost(): void {
   useEffect(() => {
     const api = window.electronAPI.modelFavoritesHost;
     if (!api) return;
-    const off = api.onRequest((request) => {
+    const off = api.onRequest(async (request) => {
       try {
+        const assertCurrent = () => {
         if (Date.now() > request.expiresAt || !isDataOwnerPushStampCurrent(request.ownerStamp))
           throw new Error('Expired favorite request');
-        const items = accessHostModelFavorites(request.ownerStamp.dataOwnerId, request.mutation);
-        // Long local composite sources cannot be represented by the existing wire
-        // protocol. Keep them on disk without breaking older readers' entire list.
+        };
+        assertCurrent();
+        const items = await accessHostModelFavorites(request.ownerStamp.dataOwnerId, request.mutation, assertCurrent);
+        assertCurrent();
         api.reply({ requestId: request.requestId, items: items.filter((item) => item.providerId.length <= MODEL_FAVORITE_TEXT_MAX_LENGTH) });
       } catch {
         api.reply({ requestId: request.requestId, failed: true });

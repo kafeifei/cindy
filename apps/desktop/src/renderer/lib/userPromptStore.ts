@@ -1,85 +1,130 @@
-/**
- * userPromptStore — 用户级 system prompt 的本地持久化层（纯 TS，0 React 依赖）。
- * ---------------------------------------------------------------------------
- * 设计取舍：
- *   - 不上服务器（隐私 + server 端没有 push 同步能力）。
- *   - 用 localStorage 落 `userData/Local Storage/`，重启不丢；跟 useTheme/
- *     useNotificationSettings 同源存储位置。
- *   - **不绑 React** —— 任何 renderer 路径都可以 `getUserPrompt()` 同步取值
- *     （例如 ChatInput 启 session 时透传），不需要 hook context。
- *   - hook (`useUserPrompt`) 是上层薄包装，订阅本 store 的变化。
- *
- * 跨进程：localStorage 仅 renderer 可达，main 进程的 maker-host 拿不到。
- * Agent 注入走「renderer 启 session 时透传 userPrompt 到 IPC」 ——
- * 跟 model/effort 完全同模式，main 不需要知道 storage 实现。
- */
+/** 个性化正文只由 Host 持久化；Renderer 仅保留 owner/generation 绑定的显示缓存。 */
+import { getDataOwnerGeneration, isDataOwnerGenerationCurrent, isDataOwnerPushStampCurrent } from '../contexts/dataOwnerGeneration';
+import type { NativeHostSettingsSnapshot, HostSettingsUpdate } from '../../shared/hostSettings';
+import { USER_PROMPT_MAX_LENGTH } from './userPrompt.constants';
 
+export interface UserPromptView {
+  value: string;
+  ready: boolean;
+  unavailable: boolean;
+  customized: boolean;
+  revision: string | null;
+  ownerKey: string;
+}
 const STORAGE_KEY_PREFIX = 'userPrompt.value';
-const LEGACY_STORAGE_KEY = STORAGE_KEY_PREFIX;
 let activeOwnerId: string | null = null;
-
-function storageKey(): string {
-  return `${STORAGE_KEY_PREFIX}.${activeOwnerId ?? 'signed-out'}`;
+let ownerKey = '';
+let epoch = 0;
+let requestVersion = 0;
+let snapshot: NativeHostSettingsSnapshot | null = null;
+let view: UserPromptView = { value: '', ready: false, unavailable: false, customized: false, revision: null, ownerKey };
+let loading: Promise<void> = Promise.resolve();
+let off: (() => void) | null = null;
+const subscribers = new Set<(value: string) => void>();
+const publish = () => subscribers.forEach(cb => cb(view.value));
+function accept(next: NativeHostSettingsSnapshot): void {
+  if (!next.ownerStamp || !isDataOwnerPushStampCurrent(next.ownerStamp) || next.ownerStamp.dataOwnerId !== activeOwnerId) return;
+  snapshot = next;
+  const state = next.userPrompt;
+  view = state.status === 'ready'
+    ? { value: state.value.userPrompt, ready: true, unavailable: false, customized: state.isCustomized, revision: state.revision, ownerKey }
+    : { ...view, ready: false, unavailable: true, revision: null };
+  publish();
 }
-
-function migrateLegacyPrompt(ownerId: string): void {
+async function load(importLegacy: boolean): Promise<void> {
+  const owner = getDataOwnerGeneration();
+  const ownerEpoch = epoch;
+  const version = ++requestVersion;
+  const current = () => ownerEpoch === epoch && version === requestVersion && isDataOwnerGenerationCurrent(owner);
+  const api = window.electronAPI?.hostSettings;
+  if (!api || !activeOwnerId || activeOwnerId !== owner.dataOwnerId) return;
   try {
-    const scopedKey = `${STORAGE_KEY_PREFIX}.${ownerId}`;
-    if (localStorage.getItem(scopedKey) !== null) return;
-    const legacyValue = localStorage.getItem(LEGACY_STORAGE_KEY);
-    if (legacyValue === null) return;
-    localStorage.setItem(scopedKey, legacyValue);
-    localStorage.removeItem(LEGACY_STORAGE_KEY);
-  } catch {
-    // localStorage 不可用时保留现有的空值回退语义。
+    let next = await api.get();
+    if (!current() || !next.ownerStamp || !isDataOwnerPushStampCurrent(next.ownerStamp)) return;
+    if (importLegacy && next.userPrompt.status === 'ready') {
+      let legacy: string | null = null;
+      try {
+        legacy = localStorage.getItem(`${STORAGE_KEY_PREFIX}.${activeOwnerId}`);
+        const claimed = localStorage.getItem('userPrompt.hostMigrationOwner');
+        if (legacy === null && (!claimed || claimed === activeOwnerId)) legacy = localStorage.getItem(STORAGE_KEY_PREFIX);
+      } catch { /* 本地旧值不可读时不伪造迁移数据。 */ }
+      if (legacy !== null) {
+        next = await api.importPrompt({ ownerStamp: next.ownerStamp, expectedRevision: next.userPrompt.revision, userPrompt: legacy });
+        if (ownerEpoch !== epoch || !isDataOwnerGenerationCurrent(owner)) return;
+        // 保留旧正文供冲突恢复；只登记首位 owner，防止其他账号再次认领无作用域的旧值。
+        try { if (!localStorage.getItem('userPrompt.hostMigrationOwner')) localStorage.setItem('userPrompt.hostMigrationOwner', activeOwnerId); } catch {}
+      }
+    }
+    if (current()) accept(next);
+  } catch (error) {
+    if (current()) {
+      snapshot = null;
+      view = { ...view, ready: false, unavailable: true, revision: null };
+      publish();
+    }
+    throw error;
   }
 }
-
-/** Select the owner namespace used by this renderer's personal prompt cache. */
 export function setUserPromptOwner(ownerId: string | null): void {
-  if (activeOwnerId === ownerId) return;
+  const key = JSON.stringify([ownerId, getDataOwnerGeneration().generation]);
+  if (ownerKey === key) return;
+  epoch += 1;
+  requestVersion += 1;
   activeOwnerId = ownerId;
-  if (ownerId) migrateLegacyPrompt(ownerId);
-  const value = getUserPrompt();
-  subscribers.forEach((cb) => cb(value));
+  ownerKey = key;
+  snapshot = null;
+  view = { value: '', ready: false, unavailable: false, customized: false, revision: null, ownerKey };
+  publish();
+  off?.();
+  off = ownerId ? window.electronAPI?.hostSettings?.onChanged(stamp => {
+    if (!stamp || !isDataOwnerPushStampCurrent(stamp)) return;
+    loading = load(false).catch(() => {});
+  }) ?? null : null;
+  loading = load(true).catch(() => {});
+}
+export function getUserPrompt(): string { return view.value; }
+export function getUserPromptView(): UserPromptView { return view; }
+/** 重新打开设置时回读；先完成当前导入，避免查询抢跑使一次性迁移被跳过。 */
+export function refreshUserPrompt(): Promise<void> {
+  loading = loading.then(() => load(false)).catch(() => {});
+  return loading;
 }
 
-type Subscriber = (value: string) => void;
-const subscribers = new Set<Subscriber>();
-
-/** 同步读 —— 给 hook 之外路径用（ChatInput 启 session 时透传等）。坏数据兜底空串。 */
-export function getUserPrompt(): string {
-  try {
-    const raw = localStorage.getItem(storageKey());
-    return typeof raw === 'string' ? raw : '';
-  } catch {
-    return '';
+/** 成功回执之前不更新缓存；回读失败也不能把已确认保存说成未保存。 */
+async function save(change: Pick<HostSettingsUpdate, 'set' | 'clear'>, expectedRevision?: string): Promise<void> {
+  const owner = getDataOwnerGeneration();
+  const ownerEpoch = epoch;
+  await loading;
+  if (ownerEpoch !== epoch || !isDataOwnerGenerationCurrent(owner)) throw new Error('OWNER_CHANGED');
+  const current = snapshot;
+  const api = window.electronAPI?.hostSettings;
+  if (!api || !current?.ownerStamp || current.userPrompt.status !== 'ready' || !isDataOwnerPushStampCurrent(current.ownerStamp)) throw new Error('SETTINGS_NOT_READY');
+  if (expectedRevision !== undefined && expectedRevision !== current.userPrompt.revision) throw new Error('CONFLICT');
+  const operationId = current.operationIds.personalization;
+  if (!operationId) throw new Error('SETTINGS_NOT_READY');
+  const receipt = await api.update({ domain: 'personalization', ownerStamp: current.ownerStamp, operationId, expectedRevision: current.userPrompt.revision, ...change });
+  if (ownerEpoch !== epoch || !isDataOwnerGenerationCurrent(owner)) throw new Error('OWNER_CHANGED');
+  if (!receipt.saved) {
+    loading = load(false).catch(() => {});
+    throw new Error(receipt.code ?? 'SAVE_FAILED');
   }
+  requestVersion += 1;
+  const customized = !change.clear;
+  const value = customized ? change.set!.userPrompt as string : '';
+  // 这里只投影 Host 明确确认的本次写入，不乐观更新，也不复用已经消费的 operationId。
+  snapshot = null;
+  view = { value, customized, ready: false, unavailable: false, revision: receipt.revision ?? null, ownerKey };
+  publish();
+  loading = load(false).catch(() => {});
 }
-
-/** 同步写 —— 落盘 + 通知本 tab 内所有 subscriber（storage 事件本身不会触发当前 tab）。 */
-export function setUserPrompt(next: string): void {
-  try {
-    localStorage.setItem(storageKey(), next);
-  } catch {
-    // localStorage 不可用 —— 忽略，调用方应自行处理 UI 反馈。
-  }
-  subscribers.forEach((cb) => cb(next));
+export async function setUserPrompt(next: string, expectedRevision?: string): Promise<void> {
+  if (typeof next !== 'string' || next.length > USER_PROMPT_MAX_LENGTH) throw new Error('INVALID_PARAMS');
+  await save({ set: { userPrompt: next } }, expectedRevision);
 }
-
-/** 订阅变化 —— hook 用，也可以给非 React 路径用。返回 unsubscribe。 */
-export function subscribeUserPrompt(cb: Subscriber): () => void {
+export async function resetUserPrompt(expectedRevision?: string): Promise<void> {
+  await save({ clear: ['userPrompt'] }, expectedRevision);
+}
+export function subscribeUserPrompt(cb: (value: string) => void): () => void {
   subscribers.add(cb);
-
-  // 监听跨实例 storage 事件（多窗口兜底；Electron 单窗口下几乎不触发）。
-  const storageHandler = (e: StorageEvent) => {
-    if (e.key !== storageKey()) return;
-    cb(getUserPrompt());
-  };
-  window.addEventListener('storage', storageHandler);
-
-  return () => {
-    subscribers.delete(cb);
-    window.removeEventListener('storage', storageHandler);
-  };
+  return () => { subscribers.delete(cb); };
 }

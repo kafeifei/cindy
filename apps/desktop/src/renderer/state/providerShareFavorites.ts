@@ -53,28 +53,36 @@ const subscribe = (listener: () => void) => {
 const getSnapshot = () => snapshot;
 
 /** 原收藏就是未完成清理的持久线索，不依赖另写一份可能同样失败的清理队列。 */
-export function getProviderShareFavoriteRegions(ownerId: string | null): Source['region'][] {
-  return [...new Set(accessHostModelFavorites(ownerId).flatMap((item) => {
+export async function getProviderShareFavoriteRegions(ownerId: string | null): Promise<Source['region'][]> {
+  return [...new Set((await accessHostModelFavorites(ownerId)).flatMap((item) => {
     const source = parseProviderShareFavoriteSource(item.providerId);
     return source ? [source.region] : [];
   }))];
 }
 
 /** 可用来源立即发布；仅清理 Main 已确认完整名单的区域，未知区域的收藏保留。 */
-export function reconcileProviderShareFavorites(next: ProviderShareReceivedSnapshot): boolean {
+export async function reconcileProviderShareFavorites(next: ProviderShareReceivedSnapshot): Promise<boolean> {
   if (!next || !isDataOwnerPushStampCurrent(next.ownerStamp)) return false;
+  snapshot = { membership: next, cleanupFailed: false };
+  const currentSnapshot = snapshot;
+  for (const listener of listeners) listener();
+  const assertCurrent = () => {
+    if (snapshot !== currentSnapshot || !isDataOwnerPushStampCurrent(next.ownerStamp))
+      throw new Error('Shared favorite membership changed');
+  };
   let cleanupFailed = false;
   try {
-    const items = accessHostModelFavorites(next.ownerStamp.dataOwnerId);
+    const items = await accessHostModelFavorites(next.ownerStamp.dataOwnerId, undefined, assertCurrent);
     const sources = new Set(next.received.map(providerShareFavoriteSource));
     for (const item of items) {
       const source = parseProviderShareFavoriteSource(item.providerId);
       if (!source || !next.confirmedRegions.includes(source.region) || sources.has(item.providerId)) continue;
-      accessHostModelFavorites(next.ownerStamp.dataOwnerId, { kind: 'remove', expected: item });
+      await accessHostModelFavorites(next.ownerStamp.dataOwnerId, { kind: 'remove', expected: item }, assertCurrent);
     }
   } catch {
     cleanupFailed = true;
   }
+  if (snapshot !== currentSnapshot || !isDataOwnerPushStampCurrent(next.ownerStamp)) return false;
   snapshot = { membership: next, cleanupFailed };
   for (const listener of listeners) listener();
   return !cleanupFailed;
@@ -103,9 +111,9 @@ export function useProviderShareFavorites(
         !current.received.some((item) => providerShareFavoriteSource(item) === source))
       throw new Error('Shared favorite source unavailable');
   };
-  const expected = (uid: string) => {
+  const expected = async (uid: string) => {
     assertCurrent();
-    const item = accessHostModelFavorites(owner.dataOwnerId).find((item) => item.uid === uid && item.providerId === source);
+    const item = (await accessHostModelFavorites(owner.dataOwnerId, undefined, assertCurrent)).find((item) => item.uid === uid && item.providerId === source);
     if (!item) throw new Error('Shared favorite unavailable');
     return item;
   };
@@ -114,21 +122,21 @@ export function useProviderShareFavorites(
       const item = stored.find((item) => item.uid === uid && item.providerId === source);
       return item ? project(item) : undefined;
     },
-    add: (config: ModelFavoriteConfig) => {
+    add: async (config: ModelFavoriteConfig) => {
       assertCurrent();
       if (config.providerId !== share!.providerId) throw new Error('Shared provider changed');
-      accessHostModelFavorites(owner.dataOwnerId, { kind: 'add', item: { ...config, providerId: source! } });
+      await accessHostModelFavorites(owner.dataOwnerId, { kind: 'add', item: { ...config, providerId: source! } }, assertCurrent);
     },
-    update: (uid, patch) => {
-      const before = expected(uid);
+    update: async (uid, patch) => {
+      const before = await expected(uid);
       const item = { ...before, ...patch };
-      accessHostModelFavorites(owner.dataOwnerId, {
+      await accessHostModelFavorites(owner.dataOwnerId, {
         kind: 'update', expected: before,
         item: { ...item, effort: item.effort ?? undefined, fast: item.fast ? true : undefined },
-      });
+      }, assertCurrent);
     },
-    remove: (uid) => {
-      accessHostModelFavorites(owner.dataOwnerId, { kind: 'remove', expected: expected(uid) });
+    remove: async (uid) => {
+      await accessHostModelFavorites(owner.dataOwnerId, { kind: 'remove', expected: await expected(uid) }, assertCurrent);
     },
   };
   const items = useMemo(() => source && share

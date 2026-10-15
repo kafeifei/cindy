@@ -1,3 +1,4 @@
+import { cindyManagedHomeDir } from '../cloudPilotDistribution.js';
 import path from 'node:path';
 import os from 'node:os';
 import { constants as fsConstants, promises as fsp } from 'node:fs';
@@ -327,7 +328,7 @@ async function inspectCodexBrowserCompanion(
 ): Promise<CodexBrowserCompanionResult> {
   const platform = opts.platform ?? process.platform;
   const arch = opts.arch ?? process.arch;
-  const homeDir = opts.homeDir ?? os.homedir();
+  const homeDir = opts.homeDir ?? cindyManagedHomeDir();
   if (platform !== 'darwin') {
     return unavailable(
       'platform_unsupported',

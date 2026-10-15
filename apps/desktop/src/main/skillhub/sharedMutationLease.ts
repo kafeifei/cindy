@@ -1,3 +1,4 @@
+import { isCloudPilotDistribution } from '../cloudPilotDistribution.js';
 import { createHash } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import fs from 'node:fs';
@@ -95,7 +96,11 @@ export async function acquireSharedSkillMutationLease(
 ): Promise<SkillMutationRelease | null> {
   let root: string;
   try {
-    root = path.join(app.getPath('appData'), 'Cindy', 'shared-skill-mutation-locks');
+    // Pilot owns separate native Skill roots; it must not acquire or leave
+    // mutation barriers in the formal client's shared namespace.
+    root = isCloudPilotDistribution()
+      ? path.join(app.getPath('userData'), 'shared-skill-mutation-locks')
+      : path.join(app.getPath('appData'), 'Cindy', 'shared-skill-mutation-locks');
     fs.mkdirSync(root, { recursive: true });
   } catch {
     log.warn('Skill mutation lock directory is unavailable');

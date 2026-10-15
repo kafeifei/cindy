@@ -14,6 +14,8 @@ const h = vi.hoisted(() => ({
   wayland: false,
   hyprland: false,
   linuxInput: false,
+  cloudInstance: false,
+  cloudInput: vi.fn(async () => true),
   linuxAudio: false,
   unlocked: vi.fn(async () => true),
   powerHandlers: new Map<string, () => void>(),
@@ -57,6 +59,10 @@ vi.mock('../waylandCapture', async (original) => ({
   isWaylandDesktop: () => h.wayland,
 }));
 vi.mock('../linuxInput', () => ({ readLinuxDesktopInputSupport: async () => h.linuxInput }));
+vi.mock('../linuxInputHost', () => ({ readLinuxInputSupport: h.cloudInput }));
+vi.mock('../../instance-runtime/config.js', () => ({
+  getInstanceConfig: () => (h.cloudInstance ? {} : null),
+}));
 vi.mock('../linuxDesktop', () => ({
   supportsLinuxDisplay: () => h.hyprland,
   supportsLinuxLock: () => false,
@@ -262,6 +268,9 @@ beforeEach(() => {
   h.background = false;
   h.hyprland = false;
   h.linuxInput = false;
+  h.cloudInstance = false;
+  h.cloudInput.mockReset().mockResolvedValue(true);
+  h.startInput.mockClear();
   h.linuxAudio = false;
   h.unlocked.mockReset().mockResolvedValue(true);
   h.audioRead.mockClear();
@@ -1067,6 +1076,40 @@ it.each([false, true])(
     }
   },
 );
+
+it.each([
+  { cloud: true, wayland: false, supported: true, allowed: true },
+  { cloud: true, wayland: false, supported: false, allowed: false },
+  { cloud: false, wayland: false, supported: true, allowed: false },
+  { cloud: true, wayland: true, supported: true, allowed: false },
+])('keeps cloud X11 capability and input admission aligned: %j', async (scenario) => {
+  Object.defineProperty(process, 'platform', { value: 'linux' });
+  h.cloudInstance = scenario.cloud;
+  h.wayland = scenario.wayland;
+  h.cloudInput.mockResolvedValue(scenario.supported);
+  const { screen } = await import('electron');
+  vi.spyOn(screen, 'getAllDisplays').mockReturnValue([
+    { id: 1, size: { width: 1280, height: 800 } },
+  ] as any);
+  const settings = await import('../../device-link/settings-store');
+  vi.spyOn(settings, 'readDeviceLinkSettings').mockReturnValue({
+    remoteDesktopEnabled: true,
+    remoteControlEnabled: true,
+  } as any);
+  expect((await h.deps.capabilities()).canControl).toBe(scenario.allowed);
+  if (scenario.allowed) {
+    await h.deps.startInput('1');
+    expect(h.startInput).toHaveBeenCalledExactlyOnceWith('1');
+    // Capability discovery is not a lasting grant: recheck the real input helper.
+    h.cloudInput.mockResolvedValue(false);
+    await expect(h.deps.startInput('1')).rejects.toThrow('DESKTOP_INPUT_UNSUPPORTED');
+    expect(h.startInput).toHaveBeenCalledTimes(1);
+  } else {
+    await expect(h.deps.startInput('1')).rejects.toThrow('DESKTOP_INPUT_UNSUPPORTED');
+    expect(h.startInput).not.toHaveBeenCalled();
+  }
+  if (scenario.wayland || !scenario.cloud) expect(h.cloudInput).not.toHaveBeenCalled();
+});
 
 it('binds Linux audio to the exact capture window, opted-in video lease and stop', async () => {
   h.wayland = h.hyprland = h.linuxAudio = true;

@@ -1,3 +1,4 @@
+import { validateAdditionalSettingsOverrides } from '../../shared/settingsEditableCatalog.js';
 /**
  * Main-process source of truth for the shared auxiliary-model chain.
  *
@@ -39,7 +40,66 @@ import {
   type OverrideSettingsState,
 } from '../maker-host/override-settings-file.js';
 
+import { isLegacyOwnerNamespaceClaimedByOtherOwner } from '../ownerNamespaceMigration.js';
+import { inspectSettingsJson } from '../maker-host/inspect-settings-json.js';
+import { validateOptionalSettingsFields, type SettingsFileInspection } from '../maker-host/settings-inspection.js';
+
 const log = desktopMakerLogger.child('auxiliary-model-settings-store');
+
+/** 只观察保存事实：不自动迁移，不加载环境 override、动态目录或凭据。 */
+export function inspectAuxiliaryModelSettings(options: {
+  ownerRoot: string;
+  userDataPath: string;
+  ownerId: string;
+}): SettingsFileInspection<AuxiliaryModelSettings> {
+  const current = inspectSettingsJson(path.join(options.ownerRoot, 'auxiliary-model-settings.json'), (raw) => {
+    const ref = (value: unknown) => typeof value === 'string' && normalizeAuxiliaryModelRef(value) !== null;
+    validateOptionalSettingsFields(raw, {
+      models: (value) => Array.isArray(value) && value.every(ref),
+      sessionTitleModel: (value) => value === null || value === '' || ref(value),
+      promptRecommendationModel: (value) => value === null || value === '' || ref(value),
+    });
+    return normalize(raw);
+  }, 4 * 1024);
+  if (current.status !== 'ready') return current;
+  if (Object.hasOwn(current.raw, 'models')) {
+    return { status: 'ready', value: current.value, sources: { models: 'override' } };
+  }
+  if (Object.hasOwn(current.raw, 'sessionTitleModel') || Object.hasOwn(current.raw, 'promptRecommendationModel')) {
+    return { status: 'ready', value: current.value,
+      sources: { models: current.value.models.length > 0 ? 'override' : 'unknown' } };
+  }
+  const marker = inspectSettingsJson(path.join(options.ownerRoot, AUXILIARY_MODEL_MIGRATION_FILE), (raw) => {
+    validateOptionalSettingsFields(raw, { legacyVoiceMigrationCompleted: (value) => typeof value === 'boolean' });
+    return raw;
+  }, 4 * 1024);
+  if (marker.status !== 'ready') return marker;
+  if (marker.raw.legacyVoiceMigrationCompleted !== true) {
+    const inspectVoice = (file: string) => inspectSettingsJson(file, (raw) => {
+      const string = (value: unknown) => value === null || typeof value === 'string';
+      const list = (value: unknown) => value === null || (Array.isArray(value) && value.every((item) => typeof item === 'string'));
+      validateOptionalSettingsFields(raw, {
+        utilityModelProvider: string, utilityModel: string, refinerProvider: string, refinerModel: string,
+        utilityModelProviderChain: list, refinerProviderChain: list,
+      });
+      return raw;
+    });
+    const ownerVoice = inspectVoice(path.join(options.ownerRoot, VOICE_INPUT_MODELS_FILE));
+    if (ownerVoice.status !== 'ready') return ownerVoice;
+    if (hasLegacyVoiceFileOverride(ownerVoice.raw)) return { status: 'migrationPending' };
+    // 只观察旧数据的现有归属；不得调用会探测独占状态的迁移判据。
+    if (!isLegacyOwnerNamespaceClaimedByOtherOwner(options.ownerId, options.userDataPath)) {
+      const unscoped = inspectVoice(path.join(options.userDataPath, VOICE_INPUT_MODELS_FILE));
+      if (unscoped.status !== 'ready') return unscoped;
+      if (hasLegacyVoiceFileOverride(unscoped.raw)) {
+        // 即使已归属当前 owner，旧语音链仍须完成显式领域迁移才能成为新设置正本。
+        // 未归属或属于其他 owner 的值不能冒充当前 owner 的设置。
+        return { status: 'migrationPending' };
+      }
+    }
+  }
+  return { status: 'ready', value: current.value, sources: { models: 'default' } };
+}
 const VOICE_INPUT_MODELS_FILE = 'voice-input-models.json';
 const AUXILIARY_MODEL_MIGRATION_FILE = 'auxiliary-model-settings-migration.json';
 
@@ -400,6 +460,7 @@ function normalize(raw: unknown): AuxiliaryModelSettings {
 const store = createOverrideSettingsFile<AuxiliaryModelSettings>({
   filePath: settingsFilePath,
   defaults: AUXILIARY_MODEL_SETTINGS_DEFAULTS,
+  validateOverrides: raw => validateAdditionalSettingsOverrides('auxiliaryModel', raw),
   normalize,
   log,
   label: 'auxiliary model',
@@ -497,3 +558,22 @@ export const __testing = {
     await pendingLegacyMigration;
   },
 };
+
+/** Internal Host settings adapter; uses the native persistence and revision lock. */
+export function getAuxiliaryModelSettingsStore() { return store; }
+
+/** CAS wrapper around the native store, retaining the native reset migration seal. */
+export async function commitAuxiliaryModelSettings(
+  mutation: import('../maker-host/override-settings-file.js').OverrideSettingsMutation<AuxiliaryModelSettings>,
+  options: import('../maker-host/override-settings-file.js').OverrideSettingsCommitOptions,
+) {
+  return store.commitAtomic(() => {
+    if (mutation.clear?.includes('models')) {
+      const legacyVoice = hasLegacyVoiceMigrationMarker()
+        || legacyVoiceOverrideRefs(readJsonObject(ownerVoiceModelsPath())).length > 0
+        || legacyVoiceOverrideRefs(readClaimedUnscopedVoiceModels()).length > 0;
+      if (legacyVoice) markLegacyVoiceMigrationComplete();
+    }
+    return { ...mutation, clear: [...mutation.clear ?? [], 'sessionTitleModel', 'promptRecommendationModel'] as Array<keyof AuxiliaryModelSettings> };
+  }, options);
+}

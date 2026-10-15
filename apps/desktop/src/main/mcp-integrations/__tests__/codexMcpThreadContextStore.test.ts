@@ -55,6 +55,25 @@ describe('createCodexMcpThreadContextStore', () => {
     expect(store.getContextForSessionInstanceId('instance-1')).toBe(first);
   });
 
+  it.each([
+    { mcpCallerKind: 'descendant' as const, mcpCallerAttested: true },
+    { mcpCallerKind: 'root' as const, mcpCallerAttested: false },
+    { mcpCallerKind: 'root' as const, mcpCallerAttested: undefined },
+    { mcpCallerKind: undefined, mcpCallerAttested: true },
+  ])('fail-closes aliases with different caller provenance: %j', provenance => {
+    const root = {
+      ...ctx('session-1'), sessionInstanceId: 'instance-1',
+      mcpCallerKind: 'root' as const, mcpCallerAttested: true,
+    };
+    const alias = { ...root, ...provenance };
+    for (const contexts of [[root, alias], [alias, root]]) {
+      const store = createCodexMcpThreadContextStore();
+      contexts.forEach((context, index) => store.registerThreadContext(`thread-${index}`, context));
+      expect(store.getContextForSessionInstanceId('instance-1')).toBeUndefined();
+      contexts.forEach((context, index) => expect(store.getContextForThreadId(`thread-${index}`)).toBe(context));
+    }
+  });
+
   it('fail-closes aliases whose vendor options differ', () => {
     const store = createCodexMcpThreadContextStore();
     const first = {

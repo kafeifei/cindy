@@ -100,14 +100,16 @@ function refreshFavoriteMembership(api: ProviderShareApi): void {
   void (async () => {
     try {
       let regions: ProviderShareReceived['owner']['region'][] = [];
-      try { regions = getProviderShareFavoriteRegions(owner.dataOwnerId); }
+      try { regions = await getProviderShareFavoriteRegions(owner.dataOwnerId); }
       catch { /* 清理器会报告存储错误并安排重试；读取恢复后再补齐区域线索。 */ }
+      if (!current()) return;
       const snapshot = await api.command({
         action: 'received-snapshot',
         favoriteRecovery: { ownerStamp: { dataOwnerId: owner.dataOwnerId, ownerGeneration: owner.generation }, regions },
       });
       if (!current()) return;
-      const cleaned = reconcileProviderShareFavorites(snapshot);
+      const cleaned = await reconcileProviderShareFavorites(snapshot);
+      if (!current()) return;
       if (!cleaned || regions.some((region) => !snapshot.confirmedRegions.includes(region))) retry();
       else membershipFailures = 0;
     } catch { retry(); } // 读失败不是撤权，重取最新名单而不是重放旧删除。

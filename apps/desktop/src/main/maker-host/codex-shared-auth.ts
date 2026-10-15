@@ -1,6 +1,6 @@
+import { cindyManagedHomeDir } from '../cloudPilotDistribution.js';
 import { app } from 'electron';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 
 import { brandUserDataDirName } from '@cindy/maker-shared/brand-identity';
@@ -9,7 +9,7 @@ import { shouldSuppressLocalCodexAuth } from './codex-auth-invalidation.js';
 
 /** 本机 Codex CLI 默认维护的 OpenAI 登录态。 */
 export function getCodexCliAuthPath(): string {
-  return path.join(os.homedir(), '.codex', 'auth.json');
+  return path.join(cindyManagedHomeDir(), '.codex', 'auth.json');
 }
 
 /** 当前区域 Release 维护的 OpenAI 登录态。 */

@@ -7,6 +7,7 @@ const h = vi.hoisted(() => ({ dir: '', owner: 'a', pending: false }));
 vi.mock('electron', () => ({ app: { getPath: () => h.dir } }));
 vi.mock('../appSessionState.js', () => ({
   getActiveAppSession: () => ({ dataOwnerId: h.owner }),
+  peekCommittedAppSession: () => ({ dataOwnerId: h.owner, generation: 1 }),
   isAppSessionBoundaryPending: () => h.pending,
   ownerScopedUserDataPath: (name: string) => path.join(h.dir, h.owner, name),
 }));
@@ -67,7 +68,9 @@ describe('profile-wide wallpaper preference', () => {
     await writeAppearanceSettingsPatch({ wallpaperVisibility: null, wallpaperOverlay: 0.2 });
     const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
     expect(saved).not.toHaveProperty('wallpaperVisibility');
-    expect(saved).not.toHaveProperty('wallpaperOverlay');
+    // Appearance writes preserve explicit defaults (Host settings customization);
+    // the reset still lands on the default veil.
+    expect(saved.wallpaperOverlay).toBe(0.2);
     expect(saved.uiSize).toBe(18);
   });
   it('shares selection, replacement and reset across accounts, including sign-out', async () => {

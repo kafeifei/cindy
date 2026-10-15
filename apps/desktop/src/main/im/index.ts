@@ -1,3 +1,4 @@
+import { configureCloudWechatManagement } from '../host-settings/managementBots.js';
 /**
  * main/im/index.ts
  * ---------------------------------------------------------------------------
@@ -235,6 +236,11 @@ export function startImOrchestrators(): void {
   wireWechatOrchestrator(wechatIm, WECHAT_CONFIG);
   wireWecomOrchestrator(wecomIm, WECOM_CONFIG);
 
+  configureCloudWechatManagement({
+    state: () => wechatIm.getState(),
+    authorize: signal => connectionLifecycle.runWhileStarted(() => wechatIm.authorize(signal)),
+    unbind: () => connectionLifecycle.runWhileStarted(() => wechatIm.unbind()),
+  });
   ipcMain.handle('wechatBot:get-state', (event) => {
     assertTrustedAppRendererEvent(event);
     return wechatIm.getState();

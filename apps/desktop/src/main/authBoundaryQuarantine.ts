@@ -1,3 +1,4 @@
+import { cindyManagedHomeDir } from './cloudPilotDistribution.js';
 /**
  * Durable owner boundary for this instance's skill projections, plus the
  * machine-wide lock for the shared home-level skill roots.
@@ -19,7 +20,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import os from 'node:os';
 
 import { app } from 'electron';
 
@@ -102,7 +102,7 @@ function lockPath(): string {
 function sharedSkillRootsLockPath(): string {
   // Same path as the former machine-wide marker lock, so builds that still use
   // the home-level marker keep serializing their shared-root writes with ours.
-  return path.join(os.homedir(), '.cindy', `${FILE_NAME}.lock`);
+  return path.join(cindyManagedHomeDir(), '.cindy', `${FILE_NAME}.lock`);
 }
 
 function normalizeOwnerId(value: unknown): string | null | undefined {

@@ -137,7 +137,8 @@ describe('ChatInput steer shortcut contract', () => {
   it('wires Settings preference updates to ChatInput copy while preserving row-level steer', () => {
     expect(composerSettingsSource).toContain('useComposerSendShortcutPreference()');
     expect(composerSettingsSource).toContain("setPreference(enabled ? 'modifier-enter' : 'enter')");
-    expect(composerSettingsSource).toContain("setPreference('enter');");
+    expect(composerSettingsSource).toContain('await resetPreference()');
+    expect(composerSettingsSource).not.toContain("setPreference('enter');");
     expect(chatInputSource).toContain('useComposerSendShortcutPreference()');
     expect(chatInputSource).toContain('getComposerSendShortcutLabel(');
     expect(chatInputSource).toContain("composerSendShortcutPreference === 'modifier-enter'");

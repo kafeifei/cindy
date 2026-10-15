@@ -1,3 +1,5 @@
+import { readLinuxInputSupport } from './linuxInputHost';
+import { getInstanceConfig } from '../instance-runtime/config.js';
 import {
   desktopCapturer,
   ipcMain,
@@ -173,6 +175,12 @@ let privacyExcluded: number[] = [];
 let overlayExcluded: number[] = [];
 const applyExcludedWindows = () =>
   nativeCapture.setExcludedWindows([...privacyExcluded, ...overlayExcluded]);
+async function linuxInputSupported(): Promise<boolean> {
+  if (nativeWayland()) return readLinuxDesktopInputSupport();
+  // Only the managed cloud X11 desktop has the guarded X11 input adapter.
+  // Portal-selected Wayland surfaces must remain view-only.
+  return !wayland() && !!getInstanceConfig() && (await readLinuxInputSupport());
+}
 const privacyScreen = new PrivacyScreen(
   (ids) => {
     privacyExcluded = ids;
@@ -694,7 +702,7 @@ export const remoteDesktop: RemoteDesktopController = new RemoteDesktopControlle
       canControl:
         process.platform === 'darwin' ||
         process.platform === 'win32' ||
-        (enabled && nativeWayland() && (await readLinuxDesktopInputSupport())),
+        (enabled && (await linuxInputSupported())),
       platform: process.platform,
       ...(enabled ? { permissions: await permissions.read() } : {}),
       displays:
@@ -846,10 +854,7 @@ export const remoteDesktop: RemoteDesktopController = new RemoteDesktopControlle
   startInput: async (displayId) => {
     // A portal-selected window is not the whole compositor coordinate space.
     // Never allow a forged control request to drive that view-only fallback.
-    if (
-      process.platform === 'linux' &&
-      (!nativeWayland() || !(await readLinuxDesktopInputSupport()))
-    )
+    if (process.platform === 'linux' && !(await linuxInputSupported()))
       throw new Error('DESKTOP_INPUT_UNSUPPORTED');
     await input.start(displayId);
   },

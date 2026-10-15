@@ -675,6 +675,8 @@ export interface AgentDeps {
   }>>;
   /** Refresh host-owned Skill links in the actual local Codex home before each thread, including reused servers. */
   prepareCodexSkills?: (codexHome: string) => Promise<void>;
+  /** Single-entry Host-owned Skills. Local discovery/startup only, never SSH or live-runtime refresh. */
+  prepareHostOwnedSkills?: () => Promise<{ paths: readonly string[]; revision: string; changed?: boolean }>;
   /** Optional low-I/O, provider-neutral turn change recorder supplied by the host. */
   turnChangeCapture?: TurnChangeCaptureHooks;
   auth: AuthAdapter;

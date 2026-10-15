@@ -2561,6 +2561,19 @@ describe('被控端订阅 registry + topic 转发', () => {
     ]);
   });
 
+  it('routes cloud settings confirmations only to controllers that negotiated support', () => {
+    const { client, calls, feed } = makeFakeClient();
+    wireInboundDispatch(client);
+    feed(subFrame('ctrl-old', SUB, ['session:s1']));
+    feed(subFrame('ctrl-ready', SUB, ['session:s1'], 'Ready', ['host-settings-confirmation-v1']));
+    const payload = { sessionId: 's1', request: {
+      requestId: 'settings-test', toolName: 'cindy_host_settings', kind: 'confirmation',
+    } };
+    tapWindowBroadcast(MAKER_PUSH.INTERACTION_REQUEST, payload);
+    expect(calls.push.map(push => push.dst)).toEqual(['ctrl-ready']);
+    expect(payload.request.toolName).toBe('cindy_host_settings');
+  });
+
   it('device-link strips Desktop-only plugin setup helpers without mutating local push', () => {
     remoteControlEnabled = true;
     const { client, calls, feed } = makeFakeClient();

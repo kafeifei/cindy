@@ -1,3 +1,5 @@
+import { openManagementAuthorization } from '../host-settings/managementAuthorization.js';
+import { registerCloudImCall } from '../host-settings/managementCalls.js';
 /**
  * main/im/host.ts
  * ---------------------------------------------------------------------------
@@ -154,6 +156,7 @@ const host: IMHost = {
   ipc: {
     throwIpcError,
     handle(channel, handler) {
+      registerCloudImCall(channel, handler);
       // IM 凭证/配置通道(set-config/get-status/disconnect 等)全部是敏感面:
       // 统一在适配器入口验可信 app renderer, 包侧 handler 拿不到 event 也
       // 不会漏鉴权(review P1 — 不受信 WebContents 不得读 owner id/换 token)。
@@ -211,6 +214,7 @@ export const wecomIm = createWecomIM(host);
  * payload 在 store 内白名单校验, 未知字段/非法值一律丢弃。
  */
 export function registerTelegramBotConfigIpc(): void {
+  registerCloudImCall('feishuBot:reconnect', () => feishuIm.reconnect());
   // 每个 handler 先验事件来自可信 app renderer(与 bootstrap 内敏感通道同口径):
   // 共享的 host.ipc.handle 适配器会丢弃 event, 所以这组通道直接走 ipcMain。
   ipcMain.handle('telegramBot:get-behavior', (e) => {
@@ -295,7 +299,7 @@ export const wechatIm = new WechatIM({
           }
         : {}),
     }),
-  openAuthorizationUrl: (url) => shell.openExternal(url),
+  openAuthorizationUrl: (url) => openManagementAuthorization(url, (target) => shell.openExternal(target)),
   captureAccountGeneration: captureImAccountGeneration,
   isAccountGenerationCurrent: isImAccountGenerationCurrent,
   isCompatibilityDisabled: () => wechatCompatibilityPolicy.isDisabled(),

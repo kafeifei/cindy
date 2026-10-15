@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { getDesktopPreference, setDesktopPreference, clearDesktopPreference, useDesktopPreference, useDesktopPreferenceCustomized, __resetDesktopPreferencesForTests } from '../state/hostDesktopPreferences';
 
+import { desktopPreferenceDefaults } from '../../shared/desktopPreferences';
 import { getVoiceInputSettings } from './useVoiceInputSettings';
 import { findComposerVoiceInputConflict } from '@/voice-input/composerVoiceInputConflict';
 import { hasComposerModifier } from '@/voice-input/composerShortcut';
@@ -20,7 +21,7 @@ export type ComposerSendShortcutUpdateResult =
   | { ok: false; conflict: 'composer-voice-input' };
 
 export const COMPOSER_SEND_SHORTCUT_STORAGE_KEY = 'chat.sendShortcutPreference';
-export const DEFAULT_COMPOSER_SEND_SHORTCUT: ComposerSendShortcutPreference = 'enter';
+export const DEFAULT_COMPOSER_SEND_SHORTCUT: ComposerSendShortcutPreference = desktopPreferenceDefaults().composerSendShortcut;
 
 export function getComposerModifierShortcutLabel(platform: string | undefined): string {
   return platform === 'darwin' ? '⌘+Enter' : 'Ctrl+Enter';
@@ -31,10 +32,6 @@ export function getComposerSendShortcutLabel(
   platform: string | undefined,
 ): string {
   return preference === 'modifier-enter' ? getComposerModifierShortcutLabel(platform) : 'Enter';
-}
-
-function parsePreference(raw: string | null): ComposerSendShortcutPreference | null {
-  return raw === 'modifier-enter' ? raw : null;
 }
 
 /**
@@ -66,81 +63,17 @@ export function resolveComposerEnterIntent(
   return options.turnRunning ? 'steer' : 'queue';
 }
 
-/** Module-level memory is the synchronous source of truth for event handlers. */
-let memoryValue: ComposerSendShortcutPreference | null = null;
-
-const listeners = new Set<() => void>();
-
-export function getComposerSendShortcutPreference(): ComposerSendShortcutPreference {
-  if (memoryValue !== null) return memoryValue;
-  try {
-    const parsed = parsePreference(localStorage.getItem(COMPOSER_SEND_SHORTCUT_STORAGE_KEY));
-    if (parsed) return (memoryValue = parsed);
-  } catch {
-    // localStorage may be unavailable in a restricted renderer.
-  }
-  return DEFAULT_COMPOSER_SEND_SHORTCUT;
-}
-
-export function useComposerSendShortcutPreference(): {
-  preference: ComposerSendShortcutPreference;
-  isCustomized: boolean;
-  setPreference: (next: ComposerSendShortcutPreference) => ComposerSendShortcutUpdateResult;
-} {
-  const [preference, setState] = useState<ComposerSendShortcutPreference>(
-    getComposerSendShortcutPreference,
-  );
-
-  const setPreference = useCallback((next: ComposerSendShortcutPreference): ComposerSendShortcutUpdateResult => {
-    if (
-      findComposerVoiceInputConflict(
-        next,
-        getVoiceInputSettings().shortcut,
-        window.electronAPI?.platform,
-      )
-    ) {
-      return { ok: false, conflict: 'composer-voice-input' };
-    }
-
-    memoryValue = next;
-    setState(next);
-    try {
-      if (next === DEFAULT_COMPOSER_SEND_SHORTCUT) {
-        localStorage.removeItem(COMPOSER_SEND_SHORTCUT_STORAGE_KEY);
-      } else {
-        localStorage.setItem(COMPOSER_SEND_SHORTCUT_STORAGE_KEY, next);
+export function getComposerSendShortcutPreference(): ComposerSendShortcutPreference { return getDesktopPreference('composerSendShortcut'); }
+export function useComposerSendShortcutPreference() {
+  return { preference: useDesktopPreference('composerSendShortcut'), isCustomized: useDesktopPreferenceCustomized('composerSendShortcut'),
+    setPreference: (next: ComposerSendShortcutPreference): ComposerSendShortcutUpdateResult => {
+      if (findComposerVoiceInputConflict(next, getVoiceInputSettings().shortcut, window.electronAPI?.platform)) {
+        return { ok: false, conflict: 'composer-voice-input' };
       }
-    } catch {
-      // The in-memory value still applies for this renderer.
-    }
-    listeners.forEach((fn) => fn());
-    return { ok: true };
-  }, []);
-
-  useEffect(() => {
-    const sync = () => setState(getComposerSendShortcutPreference());
-    listeners.add(sync);
-    const onStorage = (event: StorageEvent) => {
-      if (event.key !== COMPOSER_SEND_SHORTCUT_STORAGE_KEY) return;
-      memoryValue = parsePreference(event.newValue) ?? DEFAULT_COMPOSER_SEND_SHORTCUT;
-      sync();
-    };
-    window.addEventListener('storage', onStorage);
-    return () => {
-      listeners.delete(sync);
-      window.removeEventListener('storage', onStorage);
-    };
-  }, []);
-
-  return {
-    preference,
-    isCustomized: preference !== DEFAULT_COMPOSER_SEND_SHORTCUT,
-    setPreference,
+      void setDesktopPreference('composerSendShortcut', next);
+      return { ok: true };
+    },
+    resetPreference: () => clearDesktopPreference('composerSendShortcut'),
   };
 }
-
-/** Test-only reset for the module-level source of truth. */
-export function _resetComposerSendShortcutPreferenceForTests(): void {
-  memoryValue = null;
-  listeners.clear();
-}
+export const _resetComposerSendShortcutPreferenceForTests = __resetDesktopPreferencesForTests;

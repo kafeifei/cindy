@@ -1511,6 +1511,26 @@ describe('PluginMarketService 自定义市场 detail/install', () => {
     runtime.session = { mode: 'cloud', dataOwnerId: 'user-1', generation: 1 };
   });
 
+  it.each(['before-start', 'before-placement'])('Agent custom installation requires user consent with removal %s', async (when) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-custom-fixture-'));
+    roots.push(root);
+    const dir = writeLocalMarket(root, 'team-lib', [{ rel: 'plugins/alpha', id: 'alpha' }]);
+    const h = harness([], [{ name: 'team-lib', dir }]);
+    const pluginId = customMarketPluginId('team-lib', 'alpha');
+    const detail = await h.service.detail(pluginId);
+    if (when === 'before-start') runtime.builtinRemoved.add('alpha');
+    let checks = 0;
+    const guard = () => {
+      // Public admission, discovered package, then its final placement boundary.
+      if (when === 'before-placement' && ++checks === 3) runtime.builtinRemoved.add('alpha');
+    };
+    await expect(h.service.install(pluginId, {
+      expectedReleaseId: detail.releaseId,
+      expectedManifest: detail.manifest,
+    }, { consent: { initiator: 'agent', prompt: async () => false }, assertCurrent: guard })).rejects.toThrow('MUTATION_CANCELLED');
+    expect(runtime.install).not.toHaveBeenCalled();
+  });
+
   it('commits custom provenance to the captured ledger after a terminal switch timeout', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-custom-fixture-'));
     roots.push(root);

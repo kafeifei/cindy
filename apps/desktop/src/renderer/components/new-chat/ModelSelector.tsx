@@ -1853,7 +1853,8 @@ function ModelSelectorContentView({
       const markedAgent = markedAgents.includes(entry.recommended)
         ? entry.recommended
         : markedAgents[0]!;
-      seedDefaultFavorite({
+      // 不乐观更新列表或种子状态，仅 Host 回执更新订阅者。
+      void seedDefaultFavorite({
         providerId: entry.providerId,
         modelId: entry.modelId,
         agent: markedAgent === 'claude-code' ? 'cc' : markedAgent === 'codex' ? 'codex' : 'pi',

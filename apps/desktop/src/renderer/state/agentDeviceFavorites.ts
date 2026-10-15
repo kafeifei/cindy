@@ -27,11 +27,15 @@ import type { FavoriteStore } from './useRemoteModelFavorites';
 /** 本机那一份收藏的读写口(与 useUnifiedRowActions 缺省的本机 store 同一组函数)。 */
 export const LOCAL_MODEL_FAVORITE_STORE: FavoriteStore = {
   get: getModelFavorite,
-  add: (config) => {
-    addModelFavorite(config);
+  add: async (config) => {
+    if (!await addModelFavorite(config)) throw new Error('Favorite save failed');
   },
-  update: updateModelFavorite,
-  remove: removeModelFavorite,
+  update: async (uid, patch) => {
+    if (!await updateModelFavorite(uid, patch)) throw new Error('Favorite save failed');
+  },
+  remove: async (uid) => {
+    if (!await removeModelFavorite(uid)) throw new Error('Favorite save failed');
+  },
 };
 
 /**

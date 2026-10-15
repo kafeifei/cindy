@@ -20,6 +20,7 @@ import {
 } from '../../hooks/useGhostPanelRestoreMode';
 import { __resetInstalledGhostsStoreForTest } from '../useInstalledGhosts';
 import { GhostPanelBubbleLayer } from '../GhostPanelBubbleLayer';
+import { installDesktopPreferencesHarness, settleDesktopPreferences } from '../../__tests__/desktopPreferencesHarness';
 
 // 仓库同款 i18n mock:t 返回 key(带参拼上,便于断言)。
 vi.mock('react-i18next', () => ({
@@ -47,13 +48,14 @@ function ghost(id: string, enabled = true): InstalledGhost {
   };
 }
 
-function stubGhostsBridge(ghosts: InstalledGhost[]): void {
+function stubGhostsBridge(ghosts: InstalledGhost[]) {
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     ghosts: {
       listSync: () => ({ ghosts }),
       onChanged: () => () => undefined,
     },
   };
+  return installDesktopPreferencesHarness({});
 }
 
 afterEach(() => {
@@ -86,11 +88,13 @@ describe('GhostPanelBubbleLayer', () => {
     expect(screen.queryByTestId('ghost-panel-bubble-stack')).toBeNull();
   });
 
-  it('选择侧栏恢复入口时不渲染浮动幽灵球', () => {
-    stubGhostsBridge([ghost('a')]);
+  it('选择侧栏恢复入口并收到 Host 回执后移除已挂载的浮动幽灵球', async () => {
+    const host = stubGhostsBridge([ghost('a')]);
     minimizeGhostPanel('a');
-    setGhostPanelRestoreMode('sidebar');
     render(<GhostPanelBubbleLayer />);
+    expect(screen.getByTestId('ghost-panel-bubble-stack')).toBeTruthy();
+    await act(async () => { setGhostPanelRestoreMode('sidebar'); await settleDesktopPreferences(); });
+    expect(host.snapshot()).toMatchObject({ value: { ghostPanelRestoreMode: 'sidebar' }, customizedKeys: ['ghostPanelRestoreMode'] });
     expect(screen.queryByTestId('ghost-panel-bubble-stack')).toBeNull();
   });
 

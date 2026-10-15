@@ -1,3 +1,4 @@
+import { isCloudPilotDistribution } from './cloudPilotDistribution.js';
 /**
  * deepLink — cindy:// (+ 历史 xdt-maker://) custom URL scheme + folder-context-menu handoff
  * ---------------------------------------------------------------------------
@@ -614,6 +615,7 @@ function isWindowsSlashSwitch(value: string): boolean {
  * 必须在 app.whenReady 之前调用一次(Electron 文档要求)。重复调用幂等。
  */
 export function registerDeepLinkProtocol(): void {
+  if (isCloudPilotDistribution()) return;
   for (const scheme of DEEP_LINK_SCHEMES) {
     let registered: boolean;
     if (process.defaultApp) {

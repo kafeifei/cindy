@@ -10,12 +10,15 @@ const mocks = vi.hoisted(() => {
     webContents: { send: vi.fn() },
   };
   return {
+    pilot: false,
     dataDir: '',
     window,
     onHandlers,
     appGetPath: vi.fn(() => mocks.dataDir),
   };
 });
+
+vi.mock('../../cloudPilotDistribution.js', () => ({ isCloudPilotDistribution: () => mocks.pilot }));
 
 vi.mock('electron', () => ({
   app: { getPath: mocks.appGetPath },
@@ -46,12 +49,25 @@ describe('VoiceInputDataStore persistence', () => {
   beforeEach(() => {
     dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'voice-input-data-store-'));
     mocks.dataDir = dataDir;
+    mocks.pilot = false;
     mocks.window.webContents.send.mockClear();
   });
 
   afterEach(() => {
     fs.rmSync(dataDir, { recursive: true, force: true });
     vi.restoreAllMocks();
+  });
+
+  it('pilot starts without a global shortcut and retains an explicit profile choice', () => {
+    mocks.pilot = true;
+    const store = new VoiceInputDataStore();
+    expect(store.getSettings().shortcut).toBeNull();
+    store.updateSettings({ language: 'en' });
+    expect(new VoiceInputDataStore().getSettings().shortcut).toBeNull();
+    const chosen = { key: 'F8', code: 'F8', trigger: 'keyboard' as const,
+      modifiers: { ctrl: false, alt: false, shift: false, meta: false, fn: false } };
+    store.updateSettings({ shortcut: chosen });
+    expect(new VoiceInputDataStore().getSettings().shortcut).toMatchObject({ code: 'F8' });
   });
 
   it('关闭同步开关也会立刻广播,让在线手机清掉旧词典', () => {

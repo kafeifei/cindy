@@ -1,3 +1,4 @@
+import { cindyManagedHomeDir } from '../cloudPilotDistribution.js';
 /**
  * apply.ts —— 用户确认后把蒸馏提案从 staging 落盘到 ~/.agents/skills/<name>/。
  *
@@ -9,7 +10,6 @@
  */
 
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
@@ -32,7 +32,7 @@ const log = createLogger('learn-host:apply');
 const rand = (): string => crypto.randomBytes(4).toString('hex');
 
 function globalSkillsDir(): string {
-  return path.join(os.homedir(), '.agents', 'skills');
+  return path.join(cindyManagedHomeDir(), '.agents', 'skills');
 }
 
 function learnBackupsRoot(): string {
@@ -113,8 +113,8 @@ export interface ApplyProposalResult {
 export async function applyProposal(params: ApplyProposalParams): Promise<ApplyProposalResult> {
   const { proposalDir, skillName, provenance } = params;
   const finalDir = path.join(globalSkillsDir(), skillName);
-  const claudeLink = path.join(os.homedir(), '.claude', 'skills', skillName);
-  const codexLink = path.join(os.homedir(), '.codex', 'skills', skillName);
+  const claudeLink = path.join(cindyManagedHomeDir(), '.claude', 'skills', skillName);
+  const codexLink = path.join(cindyManagedHomeDir(), '.codex', 'skills', skillName);
   await fs.promises.mkdir(globalSkillsDir(), { recursive: true });
 
   // ── final switch(带回滚) ────────────────────────────────────────────────

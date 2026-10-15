@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { isHostSettingsSkillSource } from '../host-settings/cindy-settings-skill.js';
 
 /** Main-owned scan snapshot. Renderer never chooses the physical deletion target. */
 export interface LocalSkillTarget {
@@ -55,7 +56,7 @@ export function isPluginManagedSkillPath(source: string, managedRoots: readonly 
 export function inspectLocalSkillTarget(source: string, discoveryPaths: readonly string[], managedRoots: readonly string[] = []): LocalSkillTarget | null {
   try {
     const sourcePath = fs.realpathSync.native(source);
-    if (isPluginManagedSkillPath(sourcePath, managedRoots)) return null;
+    if (isPluginManagedSkillPath(sourcePath, managedRoots) || isHostSettingsSkillSource(sourcePath)) return null;
     const stat = fs.statSync(sourcePath);
     if (stat.isDirectory()) {
       if (!['SKILL.md', 'skill.md'].some((name) => fs.statSync(path.join(sourcePath, name), { throwIfNoEntry: false })?.isFile())) return null;
@@ -80,6 +81,6 @@ export function inspectLocalSkillTarget(source: string, discoveryPaths: readonly
 }
 
 export function isLocalSkillTargetCurrent(target: LocalSkillTarget): boolean {
-  try { return targetIdentity(target.operationPath) === target.identity; }
+  try { return !isHostSettingsSkillSource(target.sourcePath) && targetIdentity(target.operationPath) === target.identity; }
   catch { return false; }
 }

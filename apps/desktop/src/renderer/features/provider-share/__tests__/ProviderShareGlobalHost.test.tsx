@@ -1,3 +1,12 @@
+import { createModelPresentationTestHost } from '../../../__tests__/modelPresentationTestHost';
+import { ensureHostModelPresentationLoaded } from '@/state/hostModelPresentationPreferences';
+import { getDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
+let favoriteHost: ReturnType<typeof createModelPresentationTestHost>;
+async function selectFavoritesOwner(id: string | null) {
+  favoriteHost.select(id, getDataOwnerGeneration().generation);
+  setModelFavoritesOwner(id);
+  await ensureHostModelPresentationLoaded();
+}
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
@@ -76,14 +85,16 @@ const membership = (): ProviderShareReceivedSnapshot => ({
   confirmedRegions: ['global'], received: bus.received,
 });
 
-beforeEach(() => {
+beforeEach(async () => {
   resetProviderShareStoreForTests();
   __resetForTest();
   window.localStorage.clear();
+  favoriteHost = createModelPresentationTestHost(window.localStorage);
+  favoriteHost.install();
   bus.auth = { dataOwnerId: 'recipient', dataOwnerGeneration: 1 };
   bus.received = [receivedShare];
   setDataOwnerGeneration('recipient', 1);
-  setModelFavoritesOwner('recipient');
+  await selectFavoritesOwner('recipient');
   bus.command.mockReset();
   bus.requested.clear();
   bus.settled.clear();
@@ -101,6 +112,7 @@ beforeEach(() => {
   });
   Object.assign(window, {
     electronAPI: {
+      ...window.electronAPI,
       providerShare: {
         command: bus.command,
         onOwnedChanged: () => () => undefined,
@@ -134,14 +146,16 @@ describe('ProviderShareGlobalHost', () => {
   it('resumes failed favorite cleanup after same-owner repair without a share push', async () => {
     currentOwner = ownerState([]);
     bus.received = [];
-    addModelFavorite({ providerId: providerShareFavoriteSource(receivedShare), modelId: 'opus', agent: 'cc' });
-    const writes = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('storage unavailable'); });
+    await addModelFavorite({ providerId: providerShareFavoriteSource(receivedShare), modelId: 'opus', agent: 'cc' });
+    favoriteHost.options.failWrite = true;
+    const writes = vi.spyOn(favoriteHost.api, 'mutate');
     const view = renderHost();
     await waitFor(() => expect(writes).toHaveBeenCalled());
     expect(listModelFavorites()).toHaveLength(1);
-    writes.mockRestore();
+    writes.mockRestore(); favoriteHost.options.failWrite = false;
     bus.auth = { ...bus.auth, dataOwnerGeneration: 2 };
     setDataOwnerGeneration('recipient', 2);
+    await selectFavoritesOwner('recipient');
     view.rerender(<MemoryRouter><ProviderShareGlobalHost /><LocationProbe /></MemoryRouter>);
     await waitFor(() => expect(listModelFavorites()).toEqual([]));
     expect(bus.command).toHaveBeenCalledWith(expect.objectContaining({
@@ -152,7 +166,7 @@ describe('ProviderShareGlobalHost', () => {
 
   it('refetches membership on same-owner repair and ignores an earlier generation reply', async () => {
     currentOwner = ownerState([]);
-    addModelFavorite({ providerId: providerShareFavoriteSource(receivedShare), modelId: 'opus', agent: 'cc' });
+    await addModelFavorite({ providerId: providerShareFavoriteSource(receivedShare), modelId: 'opus', agent: 'cc' });
     let finish!: (snapshot: ProviderShareReceivedSnapshot) => void;
     bus.command.mockImplementation(async (command: { action: string }) => {
       if (command.action === 'owned') return currentOwner;
@@ -165,6 +179,7 @@ describe('ProviderShareGlobalHost', () => {
     const old = { ...membership(), received: [] };
     bus.auth = { ...bus.auth, dataOwnerGeneration: 2 };
     setDataOwnerGeneration('recipient', 2);
+    await selectFavoritesOwner('recipient');
     view.rerender(<MemoryRouter><ProviderShareGlobalHost /><LocationProbe /></MemoryRouter>);
     await waitFor(() => expect(bus.command).toHaveBeenCalledWith(expect.objectContaining({
       action: 'received-snapshot',

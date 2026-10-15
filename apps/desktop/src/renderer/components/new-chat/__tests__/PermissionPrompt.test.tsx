@@ -63,6 +63,35 @@ describe('PermissionPrompt 的会话级授权按钮', () => {
       decisionClassification: 'user_permanent',
     });
   });
+  it('shows settings as a simple change with save/cancel, without JSON or tool identifiers', () => {
+    const onRespond = vi.fn();
+    const view = render(<PermissionPrompt permission={{
+      requestId: 'settings-1', toolName: 'cindy_host_settings',
+      input: { preview: { version: 1, title: '修改设置', description: '仅影响这台 Cindy，立即生效。',
+        confirmLabel: '保存修改', cancelLabel: '取消',
+        changes: [{ label: '数据库提醒阈值', previous: '10 GiB', value: '5 GiB' }],
+      } }, suggestions: [bashRule],
+    }} onRespond={onRespond} />);
+    expect(screen.getByText('数据库提醒阈值')).toBeTruthy();
+    expect(view.container.textContent).toContain('10 GiB → 5 GiB');
+    expect(view.container.textContent).not.toContain('cindy_host_settings');
+    expect(view.container.textContent).not.toContain('"changes"');
+    expect(view.container.querySelector('pre')).toBeNull();
+    expect(screen.getAllByRole('button')).toHaveLength(2);
+    fireEvent.click(screen.getByRole('button', { name: /保存修改/ }));
+    expect(onRespond).toHaveBeenCalledExactlyOnceWith({ behavior: 'allow' });
+  });
+
+  it('does not approve an unreadable settings preview via a button or keyboard', () => {
+    const onRespond = vi.fn();
+    render(<PermissionPrompt permission={{ requestId: 'settings-1', toolName: 'cindy_host_settings', input: {} }} onRespond={onRespond} />);
+    fireEvent.keyDown(window, { key: 'Enter' });
+    fireEvent.keyDown(window, { key: 'Enter', ctrlKey: true });
+    expect(onRespond).not.toHaveBeenCalled();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(onRespond).toHaveBeenCalledWith(expect.objectContaining({ behavior: 'deny' }));
+  });
+
   it('提交中禁用按钮和快捷键，失败后允许重试', () => {
     const onRespond = vi.fn();
     const request = permission([bashRule]);

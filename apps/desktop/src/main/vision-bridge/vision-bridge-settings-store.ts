@@ -1,3 +1,4 @@
+import { validateAdditionalSettingsOverrides } from '../../shared/settingsEditableCatalog.js';
 /**
  * vision-bridge-settings-store —— 视觉桥配置（层 B/A/C 共用）。
  *
@@ -23,7 +24,21 @@ import {
   type OverrideSettingsState,
 } from '../maker-host/override-settings-file.js';
 
+import { inspectSettingsFile, isSettingBoolean, isSettingStringList, isSettingsObject, validateOptionalSettingsFields } from '../maker-host/settings-inspection.js';
+
 const log = desktopMakerLogger.child('vision-bridge-settings-store');
+
+/** 只校验结构；保存的路由不需要通过当前模型目录的动态准入。 */
+export function inspectVisionBridgeSettings() {
+  const backend = (value: unknown) => value === null || (isSettingsObject(value)
+    && typeof value.providerId === 'string' && typeof value.modelId === 'string'
+    && normalizeBackendRef(value) !== null);
+  return inspectSettingsFile({ filePath: settingsFilePath, defaults: DEFAULTS, normalize,
+    validate: (raw) => validateOptionalSettingsFields(raw, {
+      enabled: isSettingBoolean, targetModels: isSettingStringList, primary: backend, fallback: backend,
+    }),
+  });
+}
 
 export type { VisionBackendRef, VisionBridgeSettings };
 
@@ -67,6 +82,7 @@ function normalize(raw: unknown): VisionBridgeSettings {
 const store = createOverrideSettingsFile<VisionBridgeSettings>({
   filePath: settingsFilePath,
   defaults: DEFAULTS,
+  validateOverrides: raw => validateAdditionalSettingsOverrides('visionBridge', raw),
   normalize,
   log,
   label: 'vision bridge',
@@ -101,6 +117,7 @@ interface CachedSnapshot {
   createdAt: number;
 }
 let cachedSnapshot: CachedSnapshot | null = null;
+store.onChanged(() => { cachedSnapshot = null; });
 /** 快照 TTL：hot-path（proxy shouldBridge 每请求）在 TTL 内零 I/O；外部改文件在 TTL 后感知。 */
 const CACHE_TTL_MS = 2000;
 
@@ -140,3 +157,6 @@ export function resetVisionBridgeSettings(): VisionBridgeSettings {
   cachedSnapshot = null;
   return value;
 }
+
+/** Internal Host settings adapter; uses the native persistence and revision lock. */
+export function getVisionBridgeSettingsStore() { return store; }

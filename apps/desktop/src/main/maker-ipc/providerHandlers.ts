@@ -264,6 +264,7 @@ function withoutProviderHeaderCredentials(provider: ProviderView): ProviderView 
 }
 
 export interface ProviderHandlerDeps {
+  registerCloudCredentialReplacement?(handler: import('./ipcHandlerRegistry.js').IpcHandler): void;
   /**
    * 当前供应商视图（含实时连接状态）；见 createDesktopProviderService。
    *
@@ -2150,6 +2151,17 @@ export function registerProviderHandlers(
       }
     });
   }
+  // Credential-only cloud edits retain the latest configuration inside the native queue.
+  deps.registerCloudCredentialReplacement?.(async (event, providerId, keys) => {
+    assertTrustedProviderMutationSender(event);
+    const id = storedCustomProviderId(requireProviderId(providerId));
+    const current = await getCustomProvider(id);
+    if (!current || current.auth?.method === 'oauth') throwIpcError('INVALID_PARAMS', 'API-key connection required');
+    return updateProviderFromInput(event, current, keys, { source: 'manual-settings' }, latest => {
+      if (latest.auth?.method === 'oauth') throwIpcError('INVALID_PARAMS', 'connection changed');
+      return latest;
+    });
+  });
   registry.handle(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, (event, input, keys, options) =>
     updateProviderFromInput(event, input, keys, options),
   );

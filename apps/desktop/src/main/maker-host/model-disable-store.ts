@@ -1,3 +1,4 @@
+import path from 'node:path';
 /**
  * model-disable-store —— 「模型 / 供应商停用」override 的持久化(main 侧唯一真源)。
  *
@@ -24,6 +25,7 @@ import {
 import { desktopMakerLogger } from './logger-adapter.js';
 import { createOverrideSettingsFile } from './override-settings-file.js';
 import { ownerScopedUserDataPath } from '../appSessionState.js';
+import { inspectSettingsJson, isSettingsRecord } from './inspect-settings-json.js';
 
 const log = desktopMakerLogger.child('model-disable-store');
 
@@ -84,8 +86,31 @@ const store = createOverrideSettingsFile<ModelAccessPrefs>({
   label: 'model-disable',
 });
 
+/** Inspection never invokes provider discovery, credentials or legacy repair. */
+export function inspectModelDisableOverrides(ownerRoot: string) {
+  return inspectSettingsJson(path.join(ownerRoot, 'model-disable-prefs.json'), (raw) => {
+    for (const key of ['disabledModels', 'disabledProviders']) {
+      const section = raw[key];
+      if (section === undefined) continue;
+      if (!isSettingsRecord(section) || Object.keys(section).length > MAX_ENTRIES_PER_SECTION ||
+        Object.entries(section).some(([id, value]) => !id || value !== true)) throw new Error('invalid disable overrides');
+    }
+    const value = normalize(raw);
+    for (const key of ['disabledModels', 'disabledProviders'] as const) {
+      if (isSettingsRecord(raw[key]) && Object.keys(raw[key]).length !== Object.keys(value[key]).length) throw new Error('unrepresentable disable key');
+    }
+    return value;
+  });
+}
+
 /** 当前停用 override 快照(注入 provider-service → buildRegistry)。 */
-export function readModelDisableOverrides(): ModelDisableOverrides {
+export function readModelDisableOverrides(options?: { allowSideEffects?: boolean }): ModelDisableOverrides {
+  if (options?.allowSideEffects === false) {
+    // 设置查询不得通过旧 read() 的坏文件自愈删除配置，也不能把坏准入表当成全启用。
+    const state = store.inspect();
+    if (state.status !== 'ready') throw new Error('MODEL_ACCESS_UNREADABLE');
+    return state.value;
+  }
   // 隐藏配置层级的文件也是正式契约:mtime 守卫让「直接手改文件」在下一次读取生效。
   store.invalidateIfChanged();
   return store.read();
@@ -248,3 +273,6 @@ export function clearProviderDisableOverrides(providerId: string): void {
   store.writePatch({ disabledProviders, disabledModels });
   log.info('provider disable overrides cleared on delete', { providerId });
 }
+
+/** Internal adapter; the native readers and this editor share persistence. */
+export function getHostModelAccessStore() { return store; }

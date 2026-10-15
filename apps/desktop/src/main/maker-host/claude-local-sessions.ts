@@ -1,3 +1,4 @@
+import { cindyManagedHomeDir } from '../cloudPilotDistribution.js';
 /**
  * Claude Code local session bridge.
  *
@@ -11,7 +12,6 @@ import { projectNativeSessionMetadata, type NativeSessionScope } from './native-
 import fs from 'node:fs';
 import { promises as fsp } from 'node:fs';
 import { createReadStream } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 
@@ -302,7 +302,7 @@ export async function importExternalClaudeCodeMessagesForSession(sessionId: stri
 }
 
 async function discoverClaudeProjectsRoots(): Promise<string[]> {
-  const defaultRoot = path.join(os.homedir(), '.claude', 'projects');
+  const defaultRoot = path.join(cindyManagedHomeDir(), '.claude', 'projects');
   const real = await realpathOrNull(defaultRoot);
   if (!real || !(await hasClaudeJsonlFiles(real))) return [];
   return [real];
@@ -462,7 +462,7 @@ async function readScanSummaryFromHead(file: string, mtimeMs: number): Promise<C
   return {
     sdkSessionId,
     title: title || 'Claude Code Session',
-    cwd: cwd || os.homedir(),
+    cwd: cwd || cindyManagedHomeDir(),
     updatedAt: Math.floor(mtimeMs),
   };
 }
@@ -520,7 +520,7 @@ export async function readClaudeCodeSessionSummary(file: string): Promise<Claude
   return {
     sdkSessionId,
     title: title || 'Claude Code Session',
-    cwd: cwd || os.homedir(),
+    cwd: cwd || cindyManagedHomeDir(),
     model: model || 'claude-sonnet-4-6',
     permissionMode,
     tokensUsed,
@@ -1079,7 +1079,7 @@ function projectDirFromClaudeStorageDir(storageName: string): string | null {
 function readClaudeProjectDirByStorageName(): Map<string, string> {
   if (claudeProjectDirByStorageName) return claudeProjectDirByStorageName;
   const out = new Map<string, string>();
-  const configPath = path.join(os.homedir(), '.claude.json');
+  const configPath = path.join(cindyManagedHomeDir(), '.claude.json');
   try {
     const parsed = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as unknown;
     if (isRecord(parsed) && isRecord(parsed.projects)) {
