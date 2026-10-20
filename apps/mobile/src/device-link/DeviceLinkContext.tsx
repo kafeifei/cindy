@@ -562,6 +562,23 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
     );
   }, []);
 
+  const recoverLinkBeforeSend = useCallback(async (
+    client: DeviceLinkClient, deviceId: string, preSend: () => void,
+  ) => {
+    preSend();
+    if (clientRef.current !== client) throw new DeviceLinkError('NOT_CONNECTED', 'link changed');
+    if (!client.needsLinkRecovery(deviceId)) return;
+    // Reuse the peer's handshake single flight, but not a settled pre-fault ACK.
+    // This sends no business request and does not restart the shared relay.
+    const tracked = sendOpenLinkOnce(client, deviceId, false, true);
+    await tracked.request;
+    preSend();
+    if (clientRef.current !== client || openLinkInFlightRef.current.get(deviceId) !== tracked
+      || client.isOutboundExplicitlyClosed(deviceId)) {
+      throw new DeviceLinkError('LINK_NOT_OPEN', 'recovery was superseded');
+    }
+  }, [sendOpenLinkOnce]);
+
   const restorePendingReplyLinks = useCallback((client: DeviceLinkClient, refreshSettled = false) => {
     // A running business probe owns the breaker/scheduler slot until its reply
     // arrives. Restore only its transport: queuing this handshake behind that
@@ -588,16 +605,17 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
       generation: () => `${connectionEpochRef.current}:${remoteSubscribedTopicsRef.current.generation(deviceId)}`,
       missing: () => topicsMissingRemoteAck(remoteSubscribedTopicsRef.current, deviceId, topics)
         .filter((topic) => registryRef.current.hasTopic(deviceId, topic)),
-      send: (toSend) => sendSubscribeWithAccessHandling(
-        client,
-        deviceId,
-        toSend,
-        () => (
-          presenceAvailableByDeviceRef.current.get(deviceId) !== false
+      send: async (toSend) => {
+        const current = () => clientRef.current === client
+          && presenceAvailableByDeviceRef.current.get(deviceId) !== false
           && !backgroundReleaseInFlightRef.current
-          && toSend.every((topic) => registryRef.current.hasTopic(deviceId, topic))
-        ),
-      ),
+          && backgroundReleaseGenerationRef.current === releaseGeneration
+          && toSend.every((topic) => registryRef.current.hasTopic(deviceId, topic));
+        await recoverLinkBeforeSend(client, deviceId, () => {
+          if (!current()) throw new DeviceLinkError('NOT_CONNECTED', 'subscription was superseded');
+        });
+        return sendSubscribeWithAccessHandling(client, deviceId, toSend, current);
+      },
       acknowledge: (toSend) => {
         // 只有仍被持有、真正记进 ACK 表的 topic 才算订阅生效(中途被释放的那些不算)。
         const held = markHeldRemoteTopicsSubscribed(remoteSubscribedTopicsRef.current, registryRef.current, deviceId, toSend);
@@ -606,7 +624,7 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
         mobileDebugLog('debug', 'recovery', 'subscription acknowledged', { topicCount: held.length });
       },
     });
-  }, []);
+  }, [recoverLinkBeforeSend]);
 
   // 熔断 open 设备的显式代表性探测:openLink 建链(成功按不定论,不关熔断),
   // 再发一条真正穿过被控端 runInvoke → dispatchLocalInvoke → local-db 的最小读,
@@ -1537,10 +1555,11 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
             return withAccessRevokedHandling(deviceId, async () => unwrapInvoke<T>(result));
           }
         }
+        await recoverLinkBeforeSend(client, deviceId, preSend);
         return sendInvokeWithAccessHandling<T>(client, deviceId, channel, args, { preSend });
       },
     );
-  }, [sendOpenLinkOnce]);
+  }, [sendOpenLinkOnce, recoverLinkBeforeSend]);
 
   const subscribe = useCallback(async (owner: string, deviceId: string, topics: string[]) => {
     topics = sharedTaskTopics(deviceId, topics);

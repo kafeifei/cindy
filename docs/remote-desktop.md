@@ -435,6 +435,29 @@ does not guarantee focus isolation: the driver may temporarily change applicatio
 or window focus. Cindy does not currently verify restoration of the original
 focused window or text field, and does not force focus back after an action.
 
+## Managed X11 clipboard and relay recovery
+
+Managed cloud Xfce uses Electron's native X11 CLIPBOARD and PRIMARY selections.
+The existing peer-bound control lease, opt-in synchronization, transfer limits,
+version/conflict checks and file-flavor exclusions still apply. The display must
+be local, authenticated and unchanged across each operation. This path is only
+for managed Xvfb instances, which have no OS login/locker; it does not advertise
+lock-on-exit or bypass the Hyprland lock checks for ordinary Linux desktops.
+Explicit paste uses Shift+Insert so terminal input is not mistaken for Ctrl+V's
+literal-input binding. Typing remains native XTest and never writes the clipboard.
+
+After a relay connection recovers, Desktop and Mobile reopen a previously
+negotiated reliable peer link before admitting new invokes or subscription replay,
+including listing-only subscriptions. First-use legacy listing subscriptions need
+no handshake. Recovery reuses the existing peer-scoped single flight and original
+pending frame IDs; it does not restart the shared relay or retry an already-sent
+business write. Close, revocation, subscription ownership and account changes are
+rechecked before sending. Wire messages and server requirements are unchanged.
+The automated recovery test uses two controllers sharing one host; loss of one
+controller's connection leaves the healthy controller's link and requests intact.
+Physical iPhone keyboard and system clipboard acceptance remain separate from
+these automated tests.
+
 ## X11 native input
 
 The managed cloud X11 receiver delivers pointer events, physical keys and committed

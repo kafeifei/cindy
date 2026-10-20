@@ -1,3 +1,4 @@
+import { supportsManagedX11Clipboard } from './linuxX11Clipboard';
 import { readLinuxInputSupport } from './linuxInputHost';
 import { getInstanceConfig } from '../instance-runtime/config.js';
 import {
@@ -650,6 +651,7 @@ export const remoteDesktop: RemoteDesktopController = new RemoteDesktopControlle
     const settings = readDeviceLinkSettings();
     const enabled = settings.remoteDesktopEnabled && settings.remoteControlEnabled;
     const viewerDisplay = enabled && (await viewerDisplaySupported());
+    const x11Clipboard = enabled && await supportsManagedX11Clipboard();
     const linuxDisplays =
       enabled && nativeWayland() && supportsLinuxDisplay()
         ? (await linuxMonitors()).map(linuxDisplay)
@@ -667,15 +669,15 @@ export const remoteDesktop: RemoteDesktopController = new RemoteDesktopControlle
       clipboardContent:
         process.platform === 'darwin' ||
         process.platform === 'win32' ||
-        (supportsLinuxLock() && supportsLinuxClipboard()),
+        (supportsLinuxLock() && supportsLinuxClipboard()) || x11Clipboard,
       clipboardSync:
         process.platform === 'darwin' ||
         process.platform === 'win32' ||
-        (supportsLinuxLock() && supportsLinuxClipboard()),
+        (supportsLinuxLock() && supportsLinuxClipboard()) || x11Clipboard,
       clipboardInline:
         process.platform === 'darwin' ||
         process.platform === 'win32' ||
-        (supportsLinuxLock() && supportsLinuxClipboard()),
+        (supportsLinuxLock() && supportsLinuxClipboard()) || x11Clipboard,
       privacyScreen:
         supportsPrivacyScreen || (enabled && nativeWayland() && (await supportsLinuxPrivacy())),
       hostMute:
@@ -683,7 +685,7 @@ export const remoteDesktop: RemoteDesktopController = new RemoteDesktopControlle
       clipboardText:
         process.platform === 'darwin' ||
         process.platform === 'win32' ||
-        (supportsLinuxLock() && supportsLinuxClipboard()),
+        (supportsLinuxLock() && supportsLinuxClipboard()) || x11Clipboard,
       videoSettings: true,
       trickleIce: true,
       backgroundViewing: true,

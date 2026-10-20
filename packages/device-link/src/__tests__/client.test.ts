@@ -10269,3 +10269,54 @@ describe('confirmed duplicate-open gap repair', () => {
     } finally { f.h.client.stop(); vi.useRealTimers(); }
   });
 });
+
+describe('host-triggered recovery of previously reliable links', () => {
+  it('recovers listing-only and desktop requests after a relay loss without restarting the healthy controller', async () => {
+    vi.useFakeTimers();
+    const relay = new MemoryRelay();
+    const sockets = vi.spyOn(relay, 'makeWebSocket');
+    const host = makeRelayClient(relay, 'host');
+    const phone = makeRelayClient(relay, 'phone');
+    const healthy = makeRelayClient(relay, 'healthy');
+    const pump = () => relay.settle(async () => { await vi.advanceTimersByTimeAsync(1); });
+    const executed: string[] = [];
+    host.onFrame(env => {
+      if (!env.src || !env.id) return;
+      if (env.kind === 'link-open') host.sendLinkAccept(env.src, env.id, { appVersion: '1', allowlistHash: 'hash' });
+      if (env.kind === 'invoke') {
+        executed.push(env.src + ':' + (env.payload as InvokePayload).channel);
+        host.sendInvokeResult(env.src, env.id, { ok: true, result: 'ready' });
+      }
+    });
+    const open = (c: DeviceLinkClient) => c.openLink('host', { controllerName: 'Viewer', protocolVersion: 1, appVersion: '1' });
+    try {
+      for (const c of [host, phone, healthy]) c.start();
+      await vi.advanceTimersByTimeAsync(1); await pump();
+      expect(phone.needsLinkRecovery('host')).toBe(false);
+      const opened = Promise.all([open(phone), open(healthy)]); await pump(); await opened;
+      relay.disconnect('phone');
+      const other = healthy.invoke('host', { channel: 'local-db:sessions:list', args: [] });
+      await vi.advanceTimersByTimeAsync(30); await pump();
+      expect(phone.getStatus()).toBe('online');
+      expect(phone.needsLinkRecovery('host')).toBe(true);
+      await expect(other).resolves.toEqual({ ok: true, result: 'ready' });
+      // The adapters use this query before admitting fresh work, including a
+      // listing-only subscription which previously never reopened its old link.
+      const send = async (channel: string) => {
+        if (phone.needsLinkRecovery('host')) await open(phone);
+        return phone.invoke('host', { channel, args: [] });
+      };
+      const listing = send('device-link:subscribe'); await pump();
+      await expect(listing).resolves.toEqual({ ok: true, result: 'ready' });
+      const input = send('remote-desktop'); await pump();
+      await expect(input).resolves.toEqual({ ok: true, result: 'ready' });
+      expect(executed.filter(x => x === 'phone:remote-desktop')).toHaveLength(1);
+      expect(phone.needsLinkRecovery('host')).toBe(false);
+      expect(host.isLinkReady('healthy')).toBe(true);
+      expect(sockets.mock.calls.filter(x => x[0] === 'host')).toHaveLength(1);
+      expect(sockets.mock.calls.filter(x => x[0] === 'healthy')).toHaveLength(1);
+      phone.closeLink('host', 'user');
+      expect(phone.needsLinkRecovery('host')).toBe(false);
+    } finally { for (const c of [host, phone, healthy]) c.stop(); sockets.mockRestore(); vi.useRealTimers(); }
+  });
+});

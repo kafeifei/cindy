@@ -1835,6 +1835,11 @@ export async function remoteInvoke(
       preSend();
       if (accelerated) return accelerated;
     }
+    if (client.needsLinkRecovery(deviceId)) {
+      await openRemoteLink(deviceId, { observed: false });
+      preSend();
+      if (!client) throw new Error('[DEVICE_LINK_NOT_CONNECTED] device-link client not initialized');
+    }
     return client.invoke(deviceId, { channel, args }, resolveRemoteInvokeTimeoutMs(channel, args, 'desktop'), { preSend });
   };
   const run = (): Promise<InvokeResultPayload> =>
@@ -1946,7 +1951,7 @@ export async function remoteSubscribe(
     let liveTopics = liveTopicsNow();
     if (liveTopics.length === 0) return { ok: true, result: null };
     if (!client) throw new Error('[DEVICE_LINK_NOT_CONNECTED] device-link client not initialized');
-    if (requiresSessionLink(liveTopics) && !client.isLinkReady(deviceId)) {
+    if ((requiresSessionLink(liveTopics) && !client.isLinkReady(deviceId)) || client.needsLinkRecovery(deviceId)) {
       if ((openLinkCloseEpochs.get(deviceId) ?? 0) !== closeEpoch) {
         throw new DeviceLinkError('LINK_NOT_OPEN', 'link closed while waiting to reconnect');
       }
@@ -1955,6 +1960,9 @@ export async function remoteSubscribe(
       // 建链是新的 await 边界:引用可能又变了,发送前按最新快照重取。
       liveTopics = liveTopicsNow();
       if (liveTopics.length === 0) return { ok: true, result: null };
+    }
+    if ((openLinkCloseEpochs.get(deviceId) ?? 0) !== closeEpoch) {
+      throw new DeviceLinkError('LINK_NOT_OPEN', 'link closed while waiting to reconnect');
     }
     assertRemoteControlTargetEnabledAfterReopen(deviceId);
     if (!client) throw new Error('[DEVICE_LINK_NOT_CONNECTED] device-link client not initialized');

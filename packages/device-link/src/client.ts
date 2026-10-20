@@ -1087,6 +1087,14 @@ export class DeviceLinkClient {
     return !!peer && this.isPeerSendReady(peer) && peer.receiveReady;
   }
 
+  /** A previously negotiated reliable link lost its transport. The host may
+   * reopen this peer before admitting new work, retaining old frames/IDs. Never
+   * treat an explicit close or a never-linked legacy peer as recovery intent. */
+  needsLinkRecovery(dst: string): boolean {
+    const peer = this.peerTransport.get(dst);
+    return !!peer?.reliable && !peer.explicitlyClosed && !this.isLinkReady(dst);
+  }
+
   /** Mirror admission only: listing-only/legacy peers need no bidirectional link. */
   canSendPush(dst: string): boolean {
     if (this.status !== 'online') return false;

@@ -22,7 +22,7 @@ function loadRemoteInvoke(overrides: Record<string, unknown>) {
     assertRemoteControlTargetEnabled: () => {},
     openLinkCloseEpochs: new Map<string, number>(),
     ensureOnlineForRequest: async () => {},
-    client: { invoke: vi.fn() },
+    client: { needsLinkRecovery: () => false, invoke: vi.fn() },
     isScopedPeer: () => false,
     tryPeerInvoke: async () => null,
     resolveRemoteInvokeTimeoutMs: () => undefined,
@@ -65,7 +65,7 @@ it.each(['target resolution', 'link opening', 'online wait'])(
       return { ok: true, result: null };
     });
     const remoteInvoke = loadRemoteInvoke({
-      client: { invoke },
+      client: { needsLinkRecovery: () => false, invoke },
       ensureOnlineForRequest: stage === 'online wait' ? pause : async () => {},
     });
     const remoteBackgroundInvoke = loadBackgroundInvoke({
@@ -106,7 +106,7 @@ it.each(['caller cancelled', 'target disabled', 'link closed', 'still valid'])(
     const remoteInvoke = loadRemoteInvoke({
       assertRemoteControlTargetEnabled: () => { if (!enabled) throw new DeviceLinkError('REMOTE_DISABLED', 'disabled'); },
       openLinkCloseEpochs: epochs,
-      client: { invoke },
+      client: { needsLinkRecovery: () => false, invoke },
       openRemoteLink: reopen,
     });
     const cancelled = new Error('caller cancelled');
@@ -136,6 +136,7 @@ it('rejects instead of throwing when a stored direct-connection invoke outlives 
   let stored!: PeerInvoke;
   const remoteInvoke = loadRemoteInvoke({
     client: {
+      needsLinkRecovery: () => false,
       invoke: vi.fn<DeviceLinkClient['invoke']>(async (_peer, _payload, _timeout, options) => {
         options?.preSend?.();
         return { ok: true, result: null };
@@ -154,4 +155,61 @@ it('rejects instead of throwing when a stored direct-connection invoke outlives 
   let closing: Promise<unknown> | undefined;
   expect(() => { closing = stored('host', 'file-peer', [{ action: 'close' }]); }).not.toThrow();
   await expect(closing).rejects.toBe(stopped);
+});
+
+it.each(['ready', 'recover', 'cancel', 'close', 'disabled'])('handles relay recovery before sending new work: %s', async mode => {
+  const epochs = new Map<string, number>();
+  let current = true, enabled = true;
+  const invoke = vi.fn(async () => ({ ok: true, result: null }));
+  const reopen = vi.fn(async () => {
+    if (mode === 'cancel') current = false;
+    if (mode === 'close') epochs.set('host', 1);
+    if (mode === 'disabled') enabled = false;
+  });
+  const remoteInvoke = loadRemoteInvoke({
+    client: { invoke, needsLinkRecovery: () => mode !== 'ready' },
+    openRemoteLink: reopen, openLinkCloseEpochs: epochs,
+    assertRemoteControlTargetEnabled: () => { if (!enabled) throw new DeviceLinkError('REMOTE_DISABLED', 'disabled'); },
+  });
+  const pending = remoteInvoke('host', 'maker:send', [], { preSend: () => { if (!current) throw new Error('cancelled'); } });
+  if (['ready', 'recover'].includes(mode)) {
+    await expect(pending).resolves.toEqual({ ok: true, result: null });
+    expect(invoke).toHaveBeenCalledOnce();
+  } else {
+    await expect(pending).rejects.toThrow();
+    expect(invoke).not.toHaveBeenCalled();
+  }
+  expect(reopen).toHaveBeenCalledTimes(mode === 'ready' ? 0 : 1);
+});
+
+it.each(['first-listing', 'recovery', 'unsubscribed', 'closed'])('replays only a still-owned listing subscription: %s', async mode => {
+  const declaration = source.statements.find((node): node is ts.FunctionDeclaration =>
+    ts.isFunctionDeclaration(node) && node.name?.text === 'remoteSubscribe')!;
+  const code = ts.transpileModule(declaration.getText(source).replace(/^export /, ''), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  let topics = ['sessions'];
+  const epochs = new Map<string, number>();
+  const invoke = vi.fn(async () => ({ ok: true, result: null }));
+  const reopen = vi.fn(async () => {
+    if (mode === 'unsubscribed') topics = [];
+    if (mode === 'closed') epochs.set('host', 1);
+  });
+  const deps = {
+    DeviceLinkError, sharedTaskTopics: (_id: string, topics: string[]) => topics,
+    assertNotStandby: () => {}, assertRemoteControlTargetEnabled: () => {},
+    assertRemoteControlTargetEnabledAfterReopen: () => {},
+    client: { invoke, isLinkReady: () => false, needsLinkRecovery: () => mode !== 'first-listing' },
+    snapshotSubscriptions: () => [{ deviceId: 'host', topics }],
+    openLinkCloseEpochs: epochs, ensureOnlineForRequest: async () => {},
+    requiresSessionLink: () => false, openRemoteLink: reopen,
+    responsivenessTracker: null, DL_SUBSCRIBE_CHANNEL: 'device-link:subscribe',
+    deviceName: () => 'test', CONTROLLER_CAPABILITIES: [],
+  };
+  const subscribe = new Function(...Object.keys(deps), code + '; return remoteSubscribe;')(...Object.values(deps));
+  const pending = subscribe('host', ['sessions']);
+  if (mode === 'closed') await expect(pending).rejects.toMatchObject({ code: 'LINK_NOT_OPEN' });
+  else await expect(pending).resolves.toEqual({ ok: true, result: null });
+  expect(invoke).toHaveBeenCalledTimes(['first-listing', 'recovery'].includes(mode) ? 1 : 0);
+  expect(reopen).toHaveBeenCalledTimes(mode === 'first-listing' ? 0 : 1);
 });
