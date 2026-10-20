@@ -189,15 +189,52 @@ executable path. An unrelated Node caller was still rejected with code 77 and no
 output. Release helper authentication and source were not modified. This local
 Dev fixture does not qualify a Developer ID-signed distribution package.
 
-The Mac's original clipboard was restored before the private Dev app quit. The
-rebuilt app's new signature triggered a new Keychain request; the follow-up is
-waiting for that system consent. Bidirectional Mac transfer, terminal paste and
-clipboard sync through the product UI remain unverified. The cloud test page is
-open and the previous Mac viewer has disconnected.
+After the second Keychain authorization, both one-shot and persistent native
+clipboard-counter requests from the Dev main process succeeded. The real R6
+DeviceLink viewer then passed:
 
-Physical iPhone keyboard composition and system clipboard still require the
-user's real-device input and copy/paste result. Mobile changes are source- and
-test-verified only; no iPhone application update was installed during this work.
+- **Mac → cloud Chrome:** the viewer's paste button delivered exact Chinese,
+  Emoji and ZWJ text; cloud-side readback recorded one native input event.
+- **Cloud Chrome → Mac:** the test page's select-all button and the viewer's
+  copy button replaced a deliberately different Mac marker with the exact
+  selected cloud text. Local inspection returned equality only.
+- **Mac → cloud terminal:** the same product paste button delivered the exact
+  UTF-8 marker to a raw terminal reader. No pasted shell command was executed.
+
+These are real Mac-client-to-cloud transfers, with direct media available. The
+Mac clipboard was restored, clipboard sync returned to its original off setting,
+and the viewer was disconnected through its confirmation dialog before handing
+the blank test page to the phone. The receiving Pod remained R6 with the same UID
+and zero restarts. This does not qualify images, files or rich-text transfers.
+
+### Automatic sync defect found during live follow-up
+
+Manual transfer passed, but foreground automatic sync did not. Initial automation
+also exposed a focus mistake: CDP focus alone left the native main window in front;
+subsequent checks explicitly verified native viewer focus. Sync still failed.
+The Linux adapter returned a hexadecimal SHA-256 clipboard generation, while the
+existing shared Desktop/Mobile sync engine accepts decimal generation strings.
+The old unit test asserted the incompatible hex format and therefore missed the
+consumer failure.
+
+The adapter now encodes all 256 fingerprint bits as a decimal string using
+`BigInt`, retaining equality-based change detection without changing the wire
+contract or either consumer's validator. A regression using the actual shared
+sync engine reproduced `CLIPBOARD_UNSUPPORTED` before the fix and passed after it,
+covering initial no-write behavior, both transfer directions and no repeated
+write on an unchanged tick. All 34 focused clipboard/viewer tests and Desktop
+typecheck passed. This is a **source fix**: the deployed R6 image still contains
+the defect, and automatic sync is not recorded as a live pass.
+
+### Physical iPhone status
+
+The user could not find the cloud remote-desktop entry on the installed phone.
+The current source provides **Home menu → Device management → Cloud Cindy →
+Remote desktop**, and the account's device list reports the own Linux instance
+online with control enabled. Guidance has been provided; the phone's actual
+screen, native keyboard composition and system clipboard transfers remain
+pending. No iPhone application update was installed during this work, and neither
+Mac input nor mobile unit tests substitute for this hardware acceptance.
 
 Raw logs, screenshots, synthetic fixtures and infrastructure receipts stay in the
 private acceptance archive. No user clipboard contents or credentials are
