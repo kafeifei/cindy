@@ -27,7 +27,9 @@
     "apps/desktop/src/main/remote-desktop/linuxX11Clipboard.ts": "5ba20585a78785c2a241da7bf4bd5ef67f229f356a2e307d29ab46aa491cd2d3",
     "apps/desktop/src/main/remote-desktop/__tests__/linuxClipboardNative.test.ts": "1bfe2d57bc474979714765768a11eee90f9d003d1b6caa423709576d93774802",
     "apps/desktop/src/main/remote-desktop/__tests__/linuxClipboardTransfer.test.ts": "b82c9a484d42b94821b53ebe1a20a70fb46048ebc8c51f86f9562c8c716b7843",
-    "apps/desktop/src/main/remote-desktop/__tests__/linuxX11Clipboard.test.ts": "91295715a2af5fd0293bd6002a23b6769c80bab21129179f19fd280eef32b445"
+    "apps/desktop/src/main/remote-desktop/__tests__/linuxX11Clipboard.test.ts": "91295715a2af5fd0293bd6002a23b6769c80bab21129179f19fd280eef32b445",
+    "apps/desktop/src/main/remote-desktop/linuxClipboard.ts": "b1bdadf1c0516ee962d5eff5bbdc06ba8d8a0cc258d02fc98e7781baf1095858",
+    "apps/desktop/src/main/remote-desktop/__tests__/linuxClipboard.test.ts": "f5db10e417fd95b792bb46a338bec3df713ffdbdd4411e82ae1339e56f6f7163"
   },
   "scope": "own-instance-input-auth-canary"
 }
