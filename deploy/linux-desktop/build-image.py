@@ -109,7 +109,7 @@ def main():
         plan = output / 'docker-bake.json'
         plan.write_text(json.dumps(bake_plan(output, args.tag, revision, entrypoint_sha, args.no_cache), indent=2) + '\n')
         run_build(output, 'full-build', ['docker', 'buildx', 'bake', '--builder', args.builder,
-                  '--allow=fs.write=' + str(output / 'records'),
+                  '--allow=fs.write=' + str(output),
                   '--progress=plain', '-f', str(plan), '--metadata-file', str(output / 'build-metadata.json'),
                   'base', 'runtime', 'records'], context)
         base = json.loads(docker('image', 'inspect', base_tag))[0]
