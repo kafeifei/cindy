@@ -16,7 +16,7 @@ credentials or business PVC mounted:
 
 | Path | Input/output |
 | --- | --- |
-| `/workspace/source` | Export `source-freeze.json.commit` with `git archive`; replace only the six `includedPatch` files from the recorded `clientRuntimeFixCommit`, verifying every SHA-256 |
+| `/workspace/source` | Export `source-freeze.json.commit` with `git archive`; replace only the explicit `includedPatch` files from the recorded `clientRuntimeFixCommit`, verifying every SHA-256 |
 | `/workspace/recipe` | Export this `deploy/linux-desktop/` directory, including all `runtime-*` directories, from one recorded client commit |
 | `/workspace/debs`, `/workspace/sysroot` | Empty temporary Debian package extraction directories |
 | `/workspace/artifact` | New application package and matching maintenance/wire bundles |
@@ -24,7 +24,7 @@ credentials or business PVC mounted:
 | `/workspace/electron-v42.11.12-linux-x64.zip` | Verified Electron distribution |
 | `/workspace/electron-v42.11.12-headers.tar.gz` | Electron headers from the same release, verified against its official checksums before staging |
 
-The source base is `d4b39020bf083d79b352fcb56ea5a4941432fb39`. The six patch
+The source base is `d4b39020bf083d79b352fcb56ea5a4941432fb39`. The recorded patch
 files can be read from `8db3e0683c3db8244ac1d39df2ac897482a95307`; their hashes
 and source/artifact mapping are also in
 [`runtime-desktop-xfce/source-manifest.json`](runtime-desktop-xfce/source-manifest.json).

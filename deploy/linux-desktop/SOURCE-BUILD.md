@@ -31,7 +31,7 @@ is mounted into build stages. Use a full clone; frozen commits must be present.
 
 ## Inputs and outputs
 
-- `source-freeze.json` selects v0.1.108 and six hash-checked fixes from the recorded
+- `source-freeze.json` selects v0.1.108 and explicit hash-checked patches from the recorded
   runtime commit. Current native-settings UI changes are a separate client output.
 - `runtime-base/Dockerfile` fixes the OS digest, snapshot dates, package versions
   and external checksums. Its `runtime-base-slim` target removes only the three
@@ -59,6 +59,7 @@ config IDs are local identifiers, not registry manifest digests.
 Use disposable data and synthetic identity/keyring material. Test normal startup,
 managed identity readiness, sandboxed renderers, Chrome authorization tab cleanup,
 terminal/browser Dock launch, minimize/restore, fullscreen, native mouse/keyboard,
+Chrome address-bar/page and terminal Unicode text, focus/cancellation boundaries,
 Emoji, legacy HOME migration and orderly maintenance shutdown. For existing homes,
 also check [legacy user launchers](runtime-desktop-xfce/README.md#existing-user-launchers)
 and prove that launched windows merge into their pinned Dock icons. Native X11 tests
