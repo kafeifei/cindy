@@ -3,8 +3,12 @@
 本分支基于上游 `v0.1.108`，客户端基线为 `d4b39020bf083d79b352fcb56ea5a4941432fb39`。
 本文记录截至 2026-10-20 的实现与验收边界。工作分支包含原生设置、隔离 Dev 发行包和
 Linux 运行时修复；已经发布的 Linux 镜像只使用构建时冻结的源码子集，不能把整个分支
-视为已经全量部署。镜像对应关系由服务端仓 `deploy/runtime-desktop-xfce/source-manifest.json`
-记录。
+视为已经全量部署。镜像构建入口及来源记录见本仓
+[`deploy/linux-desktop/README.md`](../deploy/linux-desktop/README.md)。
+
+配套服务端使用 [`zhuoshaojian/cindy-server` 的 `feat/cloud-settings-readonly`](https://github.com/zhuoshaojian/cindy-server/tree/feat/cloud-settings-readonly)，
+本分支为 [`zhuoshaojian/cindy` 的 `feat/cloud-settings-native-client`](https://github.com/zhuoshaojian/cindy/tree/feat/cloud-settings-native-client)。
+云实例镜像的配套 CI/CD 尚未实现；当前先完成独立构建与本地隔离验收，不把分支提交当作发布记录。
 
 ## 接入路径与身份
 

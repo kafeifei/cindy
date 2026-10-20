@@ -1,11 +1,17 @@
 # Linux cloud client image
 
+The current development entry is [`zhuoshaojian/cindy`,
+`feat/cloud-settings-native-client`](https://github.com/zhuoshaojian/cindy/tree/feat/cloud-settings-native-client).
+Its CIS counterpart is [`zhuoshaojian/cindy-server`,
+`feat/cloud-settings-readonly`](https://github.com/zhuoshaojian/cindy-server/tree/feat/cloud-settings-readonly).
+
 This directory belongs to the **`cindy` client repository**. It owns the Linux application
 package, cloud-only build overlays, runtime entrypoints, desktop, fonts and image
 release checks. Ordinary desktop builds do not enable these overlays.
 
 | Material | Purpose |
 | --- | --- |
+| [runtime-base/README.md](runtime-base/README.md), `runtime-base/Dockerfile`, `runtime-base/packages.lock` | Build the third-party CN dependency base from pinned OS, package and asset inputs; no Cindy application or helpers |
 | [BUILD-V0108.md](BUILD-V0108.md), `source-freeze.json` | Historical v0.1.108 application build inputs and limitations |
 | `prepare-linux.sh`, `prepare-codex.mjs`, `prepare-other-assets.mjs` | Prepare the isolated Linux builder and verify external assets |
 | `stage-cloud-overlays.mjs`, `build-runtime.sh` | Apply the cloud transforms to a disposable source export and package it |
@@ -27,12 +33,27 @@ different build outputs of this repository.
 `cindy-server` is the server repository; `cloud-instance-server` (CIS) is a
 service inside it. A checkout directory name is not a repository or service name.
 
-## Complete build requirement
+## Build status and remaining work
 
-The archived recipe is incomplete as a clean source build: `Dockerfile.r5`
-depends on an existing R4 application image, and the builder/dependency base is
-not fully defined here. Neither that repair layer nor a compacted export of an
-old image closes this gap. Do not use them as the next release build chain.
+The dependency base is now independently buildable with the committed
+[base Dockerfile](runtime-base/README.md#build). It installs the pinned third-party
+dependencies, Xfce/Plank, Chrome and fonts. Its output deliberately has no Cindy
+application, runtime helpers or startup command; it is not a runnable cloud image.
+
+The **complete client source-to-image chain is still incomplete**:
+
+- The archived application scripts require a prepared `/workspace` and Electron
+  assets; a committed builder recipe must create those inputs from the frozen
+  source, lockfile and verified downloads.
+- `cindy-seccomp`, the health probe, profile maintenance/preflight launchers and
+  their keyring/CDP helpers still need tracked source and installation rules.
+- The final runtime Dockerfile must assemble that application and those helpers
+  with the freshly built base, then pass isolated startup and shutdown checks.
+
+`runtime-desktop-xfce/Dockerfile.r5` remains a historical R4-to-R5 repair layer.
+It is not that final assembly recipe. Do not use an old application image or a
+compacted filesystem export to stand in for these missing inputs. Successful
+base builds, offline tests or CIS tests do not qualify a complete cloud image.
 
 The replacement chain must include the complete builder, dependency-base and
 runtime Dockerfiles (or named stages in one Dockerfile), with a documented
@@ -52,8 +73,10 @@ is not a registry manifest digest.
 
 ## Release pipeline ownership
 
-**ACS image cache automation is a future client image CI/CD step. It is not
-implemented by these scripts or by a workflow in this change.** The intended
+**The paired cloud image/CIS CI/CD pipeline is not implemented.** Existing
+workflows for other client/server features do not provide this release pipeline.
+ACS image cache automation is a future client image CI/CD step; it is not
+implemented by these scripts or by a workflow in this change. The intended
 client release sequence is:
 
 1. Freeze the client source, upstream version, complete Dockerfile chain,
@@ -93,6 +116,8 @@ CINDY_TEST_CLIENT_SOURCE="$PWD" CINDY_ACTIVITY_TEST_SOURCE="$PWD" \
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
   -s deploy/linux-desktop -p 'test_*.py' -v
 PYTHONDONTWRITEBYTECODE=1 python3 deploy/linux-desktop/runtime-fonts/test_stage_emoji_font.py
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+  -s deploy/linux-desktop/runtime-base -p 'test_*.py' -v
 ```
 
 The entrypoint shutdown harness needs Bash >= 5.1 and Python 3; its Node test

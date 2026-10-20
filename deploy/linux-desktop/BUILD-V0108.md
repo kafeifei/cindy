@@ -6,8 +6,9 @@ version-specific **Linux builder** programs, not commands to run on a developer'
 Mac or against an existing client checkout.
 
 This is an application build record, not a complete source-to-image entry point.
-The missing builder/base Dockerfiles must be supplied before a new release can
-be built from scratch. The current requirements are in [README.md](README.md).
+The [dependency base Dockerfile](runtime-base/README.md) is now committed. The
+application builder, remaining runtime helper sources and final assembly recipe
+are still missing. The current requirements are in [README.md](README.md).
 
 ## Source and builder layout
 
@@ -55,18 +56,20 @@ Never run it with `/workspace/source` bound to a real worktree.
 
 ## Image inputs and publication limits
 
-The application output is only one input to the runtime image. The qualified
-dependency base also provides Chrome, agent runtimes, managed keyring, supervisor,
-seccomp launcher, X11 and desktop packages. The latest desktop source and package
-versions are recorded under `runtime-desktop-xfce/`; its `Dockerfile.r5` is the
-historical R4-to-R5 repair layer, not a full base build.
+The application output is only one input to the runtime image. The new
+`runtime-base/Dockerfile` provides third-party dependencies including Chrome,
+GNOME Keyring, X11 and desktop packages. Cindy's supervisor, seccomp launcher,
+maintenance helpers and packaged agent assets belong in the application/runtime
+assembly, not in that base. The latest desktop source and package versions are
+recorded under `runtime-desktop-xfce/`; its `Dockerfile.r5` is the historical
+R4-to-R5 repair layer, not a complete runtime assembly.
 
 This archive does **not** claim a clean Debian-to-runtime reproducible build.
-The historical dependency base, prepared workspace, external binary assets and
-unpinned transitive Debian dependencies are external inputs. The old operational
+The historical prepared workspace and application assets are not supplied by the
+new dependency-base Dockerfile. The old operational
 `kubectl` builders and publication scripts contained deployment-specific paths
 and are intentionally not source dependencies. Future CI must replace that
-external setup with pinned, reproducible builder/base inputs, rather than relying
+external application-build setup with pinned, reproducible inputs, rather than relying
 on an operator's filesystem.
 
 The next release must rebuild the dependency base from its complete Dockerfile
