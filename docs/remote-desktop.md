@@ -437,8 +437,8 @@ focused window or text field, and does not force focus back after an action.
 
 ## X11 native input
 
-The X11 receiver delivers pointer events, physical keys and committed text through
-its authenticated X11/XTest helper. Text uses the system `libxdo.so.3` library
+The managed cloud X11 receiver delivers pointer events, physical keys and committed
+text through its authenticated X11/XTest helper. Text uses the system `libxdo.so.3` library
 (provided by the existing `xdotool` dependency); the capability probe verifies it
 before advertising control. Cindy, personal Chrome (including the address bar),
 managed browser windows and terminals share this path. No CDP connection,

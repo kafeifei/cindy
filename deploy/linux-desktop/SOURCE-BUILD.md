@@ -1,7 +1,9 @@
 # Complete CN source build
 
-The [2026-10-20 acceptance record](ACCEPTANCE-20261020.md) identifies the qualified
-candidate, its build inputs, environments, one-instance rollout and limitations.
+The [R4 native input acceptance record](ACCEPTANCE-NATIVE-INPUT-20261020.md) identifies
+the current qualified candidate, its build inputs, environments, one-instance
+rollout and limitations. The earlier [R2 record](ACCEPTANCE-20261020.md) includes
+the real OpenAI OAuth acceptance and the input gap that R4 resolves.
 
 Use the `feat/cloud-settings-native-client` branch of `zhuoshaojian/cindy`.
 Required host tools: Git with full branch history, Python >= 3.12, and Docker

@@ -1,5 +1,9 @@
 # CN source image acceptance — 2026-10-20
 
+This records the **R2** candidate. The later [R4 native input acceptance](ACCEPTANCE-NATIVE-INPUT-20261020.md)
+records the current one-instance candidate and resolves the personal Chrome and
+terminal input gap found below. R2 results remain scoped to their original image.
+
 The complete Dockerfile build was qualified on isolated native Linux and then
 upgraded on one authorized existing cloud instance. The other eleven instances
 and new-claim defaults were unchanged. This is a candidate acceptance record,
@@ -109,15 +113,16 @@ captures stalled while the test app was not reliably foregrounded; activating
 the existing Dev app restored updates. Background/occlusion behavior remains
 unqualified. Test text and the temporary fixture were removed; no task was sent.
 
-The personal Chrome failure is an outstanding input capability gap, so this is
+The personal Chrome failure was an input capability gap in R2, so this is
 **not an unrestricted whole-desktop DeviceLink pass**. The frozen application's
-[Linux text adapter](../../apps/desktop/src/main/remote-desktop/linuxInputHost.ts)
-accepts Cindy's focused window and delegates other processes to the
+[Linux text adapter at the R2 recipe](https://github.com/zhuoshaojian/cindy/blob/71c751a535dc164549cc48df57d239cfcd8aa707/apps/desktop/src/main/remote-desktop/linuxInputHost.ts)
+accepted Cindy's focused window and delegated other processes to the
 [owned managed-browser check](../../apps/desktop/src/main/mcp-integrations/browser-focused-text.ts).
-The separate Dock Chrome profile does not satisfy that check; input failure
-ends the control session. Its text path needs a separate implementation and
-regression check before claiming full Dock-browser remote control. No input
-ownership checks or sandbox restrictions were weakened for this acceptance.
+The separate Dock Chrome profile did not satisfy that check; input failure
+ended the control session. [R4](ACCEPTANCE-NATIVE-INPUT-20261020.md) replaces that
+text path with native X11 input and records its regression and real DeviceLink
+results. No input ownership checks or sandbox restrictions were weakened for
+this acceptance.
 Terminal text and iPhone-to-cloud input were not qualified by this run.
 
 ## Limits
