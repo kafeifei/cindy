@@ -9,10 +9,33 @@ payload, not the entire chain of earlier full application releases. A Docker
 `COPY` or `chmod` on top of an old application image retains the old bytes in
 lower layers. Deleting them in another layer does not recover that space.
 
-## Compact an already validated release
+## Build provenance comes first
+
+Build from a recorded OS image and client source using the complete committed
+Dockerfile chain. Dependency and builder stages must be reproducible from recorded
+inputs; an exported filesystem from an old Cindy image is not a source-built base.
+Record source/recipe commits, OS digest, package and asset versions/checksums,
+lockfiles, region, architecture and the build command. Docker cache reuse cannot
+be the only way the build succeeds: qualify a clean build independently of the
+operator's prepared workspace and historical application images.
+
+Layer count is a size property, not proof of provenance. A complete multi-stage
+Dockerfile does not have to produce exactly two layers to be valid. Inspect the
+final layers for old application copies and record their sizes. The exact
+two-layer checks below describe the compaction tool's own output only.
+
+## Historical filesystem compaction tool
 
 `compact-runtime.py` preserves the current merged filesystem of an immutable,
-locally available, validated Linux image. It generates a multi-stage Dockerfile:
+locally available, validated Linux image.
+
+This generated Dockerfile copies already-built files. Its `FROM scratch` stage
+does **not** compile the application or install dependencies from source inputs.
+It cannot replace the complete builder/base/runtime Dockerfiles. Use this tool
+for historical artifact analysis or optional packaging of a separately proven
+source build, not to qualify a new release from an unexplained old image.
+
+It generates a multi-stage Dockerfile:
 
 1. Use the validated image as a read-only build input.
 2. Copy its filesystem **except `/opt/cindy`** into a `FROM scratch` dependency
@@ -70,18 +93,16 @@ Filesystem equivalence does not authorize rollout or change its instance scope.
 
 ## Subsequent releases
 
-Reuse the **dependency-base** output when building the next application release;
-do not use the previous full application image as the release base. Copy the
-new packaged application once with its final ownership/permissions already set.
-Update the supervisor and its wire bundle together when they change. The base
-itself deliberately has no application command; the final release must restore
-and verify the validated runtime config.
+Rebuild from the complete Dockerfile chain. A reusable dependency image must have
+its own recorded Dockerfile, package inputs and successful clean-build evidence;
+do not substitute the dependency-base export of a historical application image.
+Copy the new packaged application once with final ownership/permissions. Build
+the supervisor and its wire bundle together and verify the final runtime config.
 
-Run compaction/equivalence as the final packaging step for every release,
-including compatibility releases still built from historical full-image inputs.
-Only its verified two-layer output is publishable. Intermediate build caches may
-still occupy disk locally; deleting shared Docker caches is unrelated to fixing
-the released image size and must not be done automatically by this tool.
+Compaction is not a required release step. If used after a source build, retain
+both the source-build provenance and compaction equivalence records, and test the
+final output again. Intermediate build caches may still occupy disk locally;
+do not delete shared Docker caches as part of this tool's cleanup.
 
 Tests:
 

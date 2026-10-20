@@ -1,9 +1,13 @@
-# Frozen v0.1.108 build recipe
+# Historical v0.1.108 application build recipe
 
 The adjacent build scripts preserve the application recipe used for
 `0.1.108-xfce-dock-r5.20261019`. They were previously held outside Git. They are
 version-specific **Linux builder** programs, not commands to run on a developer's
 Mac or against an existing client checkout.
+
+This is an application build record, not a complete source-to-image entry point.
+The missing builder/base Dockerfiles must be supplied before a new release can
+be built from scratch. The current requirements are in [README.md](README.md).
 
 ## Source and builder layout
 
@@ -65,15 +69,16 @@ and are intentionally not source dependencies. Future CI must replace that
 external setup with pinned, reproducible builder/base inputs, rather than relying
 on an operator's filesystem.
 
-Use a qualified immutable compact dependency base for the application replacement
-layer, normalize directory/executable permissions with `release_guard.py`, and
-audit hashes, runtime command, non-root user and source labels. Stage the exact
-extra agent assets and font/license files into that audit as well. Update the
-supervisor and wire bundle together. Apply the final desktop sources when
-rebuilding the dependency base; do not append another complete application.
+The next release must rebuild the dependency base from its complete Dockerfile
+and recorded OS/package inputs, then build the application and helpers from the
+recorded source. It must not reuse the historical application image or a base
+extracted from that image as a substitute. Normalize directory/executable
+permissions with `release_guard.py`; audit hashes, runtime command, non-root user,
+source labels, external agent assets and font/license files. Build the supervisor
+and wire bundle together and include the desktop sources in the base recipe.
 
-Always finish with [compaction and filesystem equivalence](IMAGE-PACKAGING.md)
-and fresh startup acceptance of the final digest. Historical intermediate layers
-are not a release packaging exemption. Registry publication, ACS cache creation
-and per-instance rollout remain separate stages as described in [README.md](README.md).
-Archiving or moving these files does not create a new image or change an instance.
+[Filesystem compaction](IMAGE-PACKAGING.md) only compares an output to its input;
+it does not prove where that input came from. A fresh build and isolated local
+acceptance must precede review of the image and its records. Registry publication,
+ACS cache creation and per-instance rollout are separate later stages described
+in [README.md](README.md). Archiving these files does not complete the build chain.

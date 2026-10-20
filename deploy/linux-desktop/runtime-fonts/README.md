@@ -1,6 +1,6 @@
 # Cloud runtime emoji font
 
-The Debian 12 runtime base includes CJK and DejaVu fonts but no color emoji font.
+The historical Debian 12 runtime base included CJK and DejaVu fonts but no color emoji font.
 Some emoji therefore render as missing-glyph boxes; a fallback family match alone
 does not prove glyph coverage. Bundle Noto Color Emoji in the cloud image.
 
@@ -15,8 +15,9 @@ python3 stage-emoji-font.py /path/to/extracted-package /path/to/image-layer
 
 The helper verifies the exact font and license, stages both with explicit modes,
 and prints entries to merge into the image's existing content/permission audit.
-Keep these files in the **same replacement application layer** as `/opt/cindy`,
-over the fixed compact base; do not append a font patch layer to each old runtime.
+Include the verified font/license inputs in the complete source-built dependency
+base or final Dockerfile stage. Do not append font patches to old runtime images
+or treat an exported historical filesystem as a reproducible dependency base.
 This adds about 10.5 MiB uncompressed. Do not install into instance data volumes.
 
 Debian's existing `60-generic.conf` already maps `emoji` to Noto Color Emoji;

@@ -40,9 +40,10 @@ Theme resources are third-party packages, not vendored binaries here. The native
 client source and its cloud packaging overlays are separate inputs: this archive
 is not a claim that the whole native-client branch was bundled into the ASAR.
 
-## R5 repair layer
+## Historical R5 repair layer
 
-`Dockerfile.r5` is the published R4 → R5 recipe with only its local FROM reference
+`Dockerfile.r5` is retained for artifact provenance, not as the next release build
+entry point. It is the published R4 → R5 recipe with only its local FROM reference
 replaced by a required build argument. Supply the R4 image by immutable digest
 from the manifest, not a mutable latest tag:
 
@@ -57,6 +58,13 @@ inputs and must be included when rebuilding that base. Rebuilding can produce a
 new image digest; use fresh publication checks and cache validation rather than
 assuming equivalence from the tag. No application binary, Debian package or
 production configuration is committed.
+
+For the next release, include these desktop files in a complete source-build
+Dockerfile chain as required by [the client image entry point](../README.md).
+Installing the packages, compiling the application/helpers and preparing the
+runtime base must be defined without an existing R4/R5 image. Local isolated
+acceptance of that rebuilt image is a new result; the historical checks below
+cannot be reused as its acceptance record.
 
 ## Checks
 

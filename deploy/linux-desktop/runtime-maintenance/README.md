@@ -21,8 +21,9 @@ This overlay supplies their precondition: it wires the desktop quit chain
 (`lifecycle.ts`) so that a fault-free, orderly quit of a sealed operation writes
 `/var/lib/cindy/user-data/.cis-maintenance/shutdown.json`. Roll this image out to
 every instance before enabling `upgradeBackup` (see the service document).
-Rebuild the application layer from the approved compact base rather than stacking another
-application payload over an earlier runtime image. Preserve native unpack flags,
+Build the dependency base and application from the complete committed Dockerfile
+chain and recorded source inputs; do not use an exported old runtime as the base.
+Preserve native unpack flags,
 preload/worker assets and the release's configured region.
 
 Run the overlay tests against the actual target client checkout using
