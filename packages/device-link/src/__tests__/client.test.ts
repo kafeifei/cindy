@@ -641,12 +641,12 @@ class MemoryRelay {
   }
 
   /** 静默掉线（无 link-close）：之后发往该设备的帧在入口处被丢弃。 */
-  disconnect(deviceId: string): void {
+  disconnect(deviceId: string, code = 1006): void {
     const member = this.members.get(deviceId);
     if (!member?.ws) return;
     const ws = member.ws;
     member.ws = null;
-    ws.emit('close', 1006, 'network lost');
+    ws.emit('close', code, code === 1012 ? 'service restart' : 'network lost');
   }
 
   dropNext(predicate: (senderId: string, env: Envelope) => boolean): void {
@@ -10271,7 +10271,7 @@ describe('confirmed duplicate-open gap repair', () => {
 });
 
 describe('host-triggered recovery of previously reliable links', () => {
-  it('recovers listing-only and desktop requests after a relay loss without restarting the healthy controller', async () => {
+  it.each([1006, 1012])('recovers from relay close %s without replaying writes or disturbing the healthy controller', async (closeCode) => {
     vi.useFakeTimers();
     const relay = new MemoryRelay();
     const sockets = vi.spyOn(relay, 'makeWebSocket');
@@ -10294,7 +10294,11 @@ describe('host-triggered recovery of previously reliable links', () => {
       await vi.advanceTimersByTimeAsync(1); await pump();
       expect(phone.needsLinkRecovery('host')).toBe(false);
       const opened = Promise.all([open(phone), open(healthy)]); await pump(); await opened;
-      relay.disconnect('phone');
+      relay.dropNext((src, env) => src === 'host' && env.dst === 'phone' && env.kind === 'invoke-result');
+      const oldWrite = phone.invoke('host', { channel: 'maker:send', args: ['synthetic'] });
+      await pump();
+      expect(executed.filter(x => x === 'phone:maker:send')).toHaveLength(1);
+      relay.disconnect('phone', closeCode);
       const other = healthy.invoke('host', { channel: 'local-db:sessions:list', args: [] });
       await vi.advanceTimersByTimeAsync(30); await pump();
       expect(phone.getStatus()).toBe('online');
@@ -10308,6 +10312,8 @@ describe('host-triggered recovery of previously reliable links', () => {
       };
       const listing = send('device-link:subscribe'); await pump();
       await expect(listing).resolves.toEqual({ ok: true, result: 'ready' });
+      await expect(oldWrite).resolves.toEqual({ ok: true, result: 'ready' });
+      expect(executed.filter(x => x === 'phone:maker:send')).toHaveLength(1);
       const input = send('remote-desktop'); await pump();
       await expect(input).resolves.toEqual({ ok: true, result: 'ready' });
       expect(executed.filter(x => x === 'phone:remote-desktop')).toHaveLength(1);
