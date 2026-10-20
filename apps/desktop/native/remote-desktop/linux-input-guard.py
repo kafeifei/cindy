@@ -41,6 +41,11 @@ class Display:
             ctypes.POINTER(unsigned), ctypes.POINTER(integer), ctypes.POINTER(unsigned),
             ctypes.POINTER(unsigned), ctypes.POINTER(pointer),
         ]
+        self.library.XQueryPointer.argtypes = [
+            pointer, unsigned, ctypes.POINTER(unsigned), ctypes.POINTER(unsigned),
+            *([ctypes.POINTER(integer)] * 4), ctypes.POINTER(ctypes.c_uint),
+        ]
+        self.library.XGetPointerMapping.argtypes = [pointer, ctypes.POINTER(ctypes.c_ubyte), integer]
         self.library.XFree.argtypes = [pointer]
         self.library.XSync.argtypes = [pointer, integer]
         self.library.XCloseDisplay.argtypes = [pointer]
@@ -89,18 +94,51 @@ class Display:
         if not down:
             self.keys.discard(keycode)
 
-    def button(self, button, down):
+    def wait_button(self, button, down, deadline):
+        # XSync only acknowledges requests. A WM's synchronous passive grab can
+        # still freeze/replay pointer events while keyboard events overtake them.
+        # Query the logical button state, which lags while input is frozen, before
+        # sending the next edge. No clipboard mutation or input replay is needed.
+        mapping = (ctypes.c_ubyte * 256)()
+        count = self.library.XGetPointerMapping(self.connection, mapping, len(mapping))
+        if button > count:
+            raise ValueError("button unavailable")
+        logical = mapping[button - 1]
+        # Core X11 exposes masks only for buttons 1..5 (not horizontal wheel 6/7).
+        if not 1 <= logical <= 5:
+            return
+        root, child = ctypes.c_ulong(), ctypes.c_ulong()
+        positions = [ctypes.c_int() for _ in range(4)]
+        state = ctypes.c_uint()
+        while True:
+            same_screen = self.library.XQueryPointer(
+                self.connection, self.root, ctypes.byref(root), ctypes.byref(child),
+                *[ctypes.byref(value) for value in positions], ctypes.byref(state),
+            )
+            if not same_screen:
+                raise ValueError("pointer unavailable")
+            if bool(state.value & (1 << (logical + 7))) == down:
+                return
+            if time.monotonic() >= deadline:
+                raise ValueError("pointer processing timeout")
+            time.sleep(0.002)
+
+    def button(self, button, down, deadline=None):
         if button not in range(1, 8):
             raise ValueError("invalid button")
         if down:
             self.buttons.add(button)
         self.test.XTestFakeButtonEvent(self.connection, button, down, 0)
+        if deadline is not None:
+            self.wait_button(button, down, deadline)
         if not down:
             self.buttons.discard(button)
 
     def command(self, args):
         if not isinstance(args, list) or len(args) > 2048 or not all(isinstance(arg, str) and len(arg) <= 32 for arg in args):
             raise ValueError("invalid command")
+        # Bound the entire batch below the host's 1.5s command timeout.
+        deadline = time.monotonic() + 1.0
         offset = 0
         output = []
         while offset < len(args):
@@ -123,7 +161,7 @@ class Display:
                 self.key(args[offset], command == "keydown")
                 offset += 1
             elif command in ("mousedown", "mouseup"):
-                self.button(int(args[offset]), command == "mousedown")
+                self.button(int(args[offset]), command == "mousedown", deadline)
                 offset += 1
             elif command == "click":
                 if args[offset] != "--repeat" or args[offset + 2:offset + 4] != ["--delay", "0"]:
@@ -132,8 +170,8 @@ class Display:
                 if not 1 <= repeat <= 16 or button not in (4, 5, 6, 7):
                     raise ValueError("invalid scroll")
                 for _ in range(repeat):
-                    self.button(button, True)
-                    self.button(button, False)
+                    self.button(button, True, deadline)
+                    self.button(button, False, deadline)
                 offset += 5
             else:
                 raise ValueError("unsupported command")

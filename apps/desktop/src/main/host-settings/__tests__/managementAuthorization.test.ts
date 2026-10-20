@@ -95,6 +95,95 @@ describe('cloud authorization presentation and callback pinning', () => {
       );
     }
   });
+  it('finishes a CLI login that exits only after its local success redirect is visited', async () => {
+    const received: string[] = [];
+    let completed = false;
+    const server = createServer((req, res) => {
+      received.push(req.url!);
+      if (req.url!.startsWith('/callback?')) {
+        res.writeHead(302, { Location: '/success?id_token=synthetic-token' });
+        res.end();
+      } else {
+        completed = true;
+        res.end('private success page');
+      }
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const callback = `http://127.0.0.1:${(server.address() as AddressInfo).port}/callback`;
+    const e = execution();
+    try {
+      await runCloudManagementExecution(e.value, () =>
+        openManagementAuthorization(
+          `https://auth.example.invalid/login?redirect_uri=${encodeURIComponent(callback)}&state=pinned`,
+          async () => {},
+        ),
+      );
+      expect(await e.respond(`${callback}?code=synthetic-code&state=pinned`)).toBeUndefined();
+      expect(completed).toBe(true);
+      expect(received).toEqual([
+        '/callback?code=synthetic-code&state=pinned',
+        '/success?id_token=synthetic-token',
+      ]);
+      expect(JSON.stringify(e.prompt.mock.calls)).not.toMatch(
+        /synthetic-token|private success page/,
+      );
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+  it.each([
+    'other-port',
+    'other-host',
+    'credentials',
+    'fragment',
+    'callback-replay',
+    'cycle',
+    'unbounded',
+    'missing-location',
+    'completion-error',
+    'cancelled',
+  ])('does not accept an unsafe or incomplete local redirect: %s', async (scenario) => {
+    const received: string[] = [];
+    const e = execution();
+    let callback = '';
+    const server = createServer((req, res) => {
+      received.push(req.url!);
+      let location = '/success';
+      if (scenario === 'other-port') location = callback.replace(/:\d+\//, ':1/');
+      if (scenario === 'other-host') location = callback.replace('127.0.0.1', 'localhost');
+      if (scenario === 'credentials')
+        location = callback.replace('http://', 'http://synthetic:secret@');
+      if (scenario === 'fragment') location = '/success#private';
+      if (scenario === 'callback-replay') location = '/callback?code=other&state=pinned';
+      if (scenario === 'unbounded') location = `/success?hop=${received.length}`;
+      if (scenario === 'completion-error' && received.length === 2) {
+        res.writeHead(500);
+        res.end();
+        return;
+      }
+      res.writeHead(302, scenario === 'missing-location' ? {} : { Location: location });
+      if (scenario === 'cancelled') e.abort.abort();
+      res.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    callback = `http://127.0.0.1:${(server.address() as AddressInfo).port}/callback`;
+    try {
+      await runCloudManagementExecution(e.value, () =>
+        openManagementAuthorization(
+          `https://auth.example.invalid/login?redirect_uri=${encodeURIComponent(callback)}&state=pinned`,
+          async () => {},
+        ),
+      );
+      await expect(e.respond(`${callback}?code=synthetic-code&state=pinned`)).rejects.toThrow();
+      expect(received.length).toBe(
+        scenario === 'unbounded' ? 4 : ['cycle', 'completion-error'].includes(scenario) ? 2 : 1,
+      );
+      await expect(e.respond(`${callback}?code=again&state=pinned`)).rejects.toThrow();
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
   it.each([
     'javascript:alert(1)',
     'http://auth.example.invalid/login',

@@ -30,6 +30,26 @@ async function waitForBrowserExit(connection: AuthorizationBrowserConnection): P
   }
 }
 
+/** A target may destroy itself between enumeration and close (including the bootstrap tab). */
+async function closeOwnedTarget(connection: AuthorizationBrowserConnection, targetId: string): Promise<void> {
+  try {
+    const result = await connection.call('Target.closeTarget', { targetId });
+    if (result.success === false) throw new Error('AUTHORIZATION_BROWSER_CLOSE_FAILED');
+  } catch (error) {
+    // Do not infer success from a CDP error code: confirm absence on the same connection.
+    // If Chromium is exiting, the caller still fences on process exit/profile lock release.
+    if (!connection.alive()) return;
+    let remaining: Target[];
+    try {
+      remaining = (await connection.call('Target.getTargets')).targetInfos as Target[];
+    } catch (inspectionError) {
+      if (!connection.alive()) return;
+      throw inspectionError;
+    }
+    if (remaining.some((target) => target.targetId === targetId)) throw error;
+  }
+}
+
 /** Private inherited pipe: no listening TCP port, renderer bridge or URL logging. */
 export async function launchAuthorizationBrowser(
   userDataDir: string,
@@ -203,8 +223,7 @@ export class AuthorizationBrowser {
         }
         for (const id of [...owned].reverse())
           if (targets.some((t) => t.targetId === id)) {
-            const result = await connection.call('Target.closeTarget', { targetId: id });
-            if (result.success === false) throw new Error('AUTHORIZATION_BROWSER_CLOSE_FAILED');
+            await closeOwnedTarget(connection, id);
           }
         this.roots.delete(targetId);
         // Last-window closure normally exits Chromium. Never close a browser with user tabs.
@@ -251,7 +270,7 @@ export class AuthorizationBrowser {
             target.url === 'about:blank' &&
             current.some((t) => t.targetId === target.targetId && t.url === 'about:blank')
           ) {
-            await connection.call('Target.closeTarget', { targetId: target.targetId });
+            await closeOwnedTarget(connection, target.targetId);
           }
       } catch (error) {
         // A window created before a bootstrap error must not lose its cleanup handle.

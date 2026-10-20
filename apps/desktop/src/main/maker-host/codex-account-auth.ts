@@ -197,14 +197,23 @@ export async function loginCodexAccount(
     if (!current()) return { ok: false, reason: 'login_cancelled' };
     const exitCode = await new Promise<number | null>((resolve, reject) => {
       proc = spawn(binary.binaryPath!, ['login'], {
-        env: { ...process.env, CODEX_HOME: staging },
+        env: {
+          ...process.env,
+          CODEX_HOME: staging,
+          // The remote client owns this login page. Codex otherwise launches an
+          // untracked Chromium in the cloud even though its URL is also relayed.
+          // Linux webbrowser honors BROWSER; scope the no-op to this child only.
+          ...(process.platform === 'linux' && cloudManagementExecution()
+            ? { BROWSER: '/bin/true' }
+            : {}),
+        },
         shell: false,
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: process.platform !== 'win32',
         windowsHide: true,
       });
-      // The CLI opens the browser itself; its manual fallback message is unconditional.
-      // Keep one validated URL for an explicit user action, never a second auto-open.
+      // Ordinary local login lets the CLI open its browser. Remote management
+      // forwards the unconditional fallback URL to the controlling client.
       let published = false;
       let outputActive = true;
       for (const stream of [proc.stdout, proc.stderr]) {

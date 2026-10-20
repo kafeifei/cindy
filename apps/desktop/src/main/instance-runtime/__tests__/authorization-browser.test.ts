@@ -38,10 +38,84 @@ function harness() {
     exited: async () => {},
   };
   const launch = vi.fn(async () => connection);
-  return { browser: new AuthorizationBrowser(launch), targets, call, launch };
+  return { browser: new AuthorizationBrowser(launch), targets, call, launch, connection };
 }
 
 describe('cloud authorization target ownership', () => {
+  it.each(['throw', 'false'])('confirms an already destroyed bootstrap on immediate cleanup: %s', async (failure) => {
+    const h = harness(), original = h.call.getMockImplementation()!;
+    let bootCloses = 0;
+    h.call.mockImplementation(async (method, params) => {
+      if (method === 'Target.closeTarget' && params?.targetId === 'boot') {
+        if (++bootCloses === 1) return { success: true }; // acknowledged, still enumerated
+        h.targets.delete('boot'); // destroyed after the cleanup snapshot
+        if (failure === 'throw') throw new Error('target disappeared');
+        return { success: false };
+      }
+      return original(method, params);
+    });
+    const close = await h.browser.open('https://login.example/');
+    await expect(close()).resolves.toBeUndefined();
+    await close();
+    expect(h.targets.size).toBe(0);
+    expect(h.call.mock.calls.filter(([method]) => method === 'Browser.close')).toHaveLength(1);
+  });
+
+  it('accepts a self-closing SSO child without touching another authorization or user tab', async () => {
+    const h = harness(), close = await h.browser.open('https://login.example/first');
+    await h.browser.open('https://login.example/second');
+    h.targets.set('sso', { targetId: 'sso', type: 'page', url: 'https://sso.example/', openerId: 'auth-1' });
+    h.targets.set('user', { targetId: 'user', type: 'page', url: 'about:blank' });
+    const original = h.call.getMockImplementation()!;
+    h.call.mockImplementation(async (method, params) => {
+      if (method === 'Target.closeTarget' && params?.targetId === 'sso') {
+        h.targets.delete('sso');
+        throw new Error('target disappeared');
+      }
+      return original(method, params);
+    });
+    await close();
+    expect([...h.targets.keys()]).toEqual(['auth-2', 'user']);
+    expect(h.call.mock.calls.some(([method]) => method === 'Browser.close')).toBe(false);
+  });
+
+  it('keeps cleanup retryable when a rejected close still has a live target', async () => {
+    const h = harness(), close = await h.browser.open('https://login.example/');
+    const original = h.call.getMockImplementation()!;
+    h.call.mockImplementationOnce(original).mockImplementationOnce(async () => ({ success: false }));
+    await expect(close()).rejects.toThrow('AUTHORIZATION_BROWSER_CLOSE_FAILED');
+    expect(h.targets.has('auth-1')).toBe(true);
+    await close();
+    expect(h.targets.size).toBe(0);
+  });
+
+  it('waits for process exit when Chromium exits during the disappearance check', async () => {
+    const h = harness(), close = await h.browser.open('https://login.example/');
+    let alive = true, confirming = false, release!: () => void;
+    const exited = new Promise<void>((resolve) => { release = resolve; });
+    h.connection.alive = () => alive;
+    h.connection.exited = vi.fn(() => exited);
+    const original = h.call.getMockImplementation()!;
+    h.call.mockImplementation(async (method, params) => {
+      if (method === 'Target.closeTarget') {
+        confirming = true;
+        throw new Error('target disappeared');
+      }
+      if (confirming && method === 'Target.getTargets') {
+        alive = false;
+        throw new Error('browser exiting');
+      }
+      return original(method, params);
+    });
+    const completed = vi.fn();
+    const cleanup = close().then(completed);
+    await vi.waitFor(() => expect(h.connection.exited).toHaveBeenCalledOnce());
+    expect(completed).not.toHaveBeenCalled();
+    release();
+    await cleanup;
+    expect(completed).toHaveBeenCalledOnce();
+  });
+
   it.each(['Target.getTargets', 'Target.closeTarget'])(
     'retries a failed %s cleanup and preserves other windows', async (method) => {
       const h = harness(), close = await h.browser.open('https://login.example/first');
