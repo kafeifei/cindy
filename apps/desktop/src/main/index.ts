@@ -25,11 +25,14 @@ const cloudPilot = resolveCloudPilotDistribution({ resourcesPath: process.resour
 if (cloudPilot) {
   app.setPath('userData', cloudPilot.userData);
   app.setName(cloudPilot.appName);
+  app.setPath('sessionData', cloudPilot.userData);
+  app.setPath('appData', cloudPilot.appData);
   process.env.XDT_USER_DATA_DIR = cloudPilot.userData;
   process.env.XDT_DEVICE_ID_OVERRIDE = cloudPilot.deviceId;
   process.env.CLAUDE_CONFIG_DIR = path.join(cloudPilot.managedHome, '.claude');
   process.env.GH_CONFIG_DIR = path.join(cloudPilot.managedHome, '.config', 'gh');
   process.env.PI_CODING_AGENT_DIR = path.join(cloudPilot.managedHome, '.pi', 'agent');
+  process.env.CODEX_HOME = path.join(cloudPilot.userData, 'codex-home');
   process.env.XDT_BROWSER_RUNTIME_DIR = path.join(cloudPilot.userData, 'browser-runtime');
 }
 

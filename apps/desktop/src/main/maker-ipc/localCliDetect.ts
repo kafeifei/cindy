@@ -7,7 +7,7 @@
  * 任一条目探测失败按「未安装」处理(fail-quiet:检测建议是增强,不是功能依赖)。
  */
 
-import { homedir } from 'node:os';
+import { cindyManagedHomeDir } from '../cloudPilotDistribution.js';
 import { join } from 'node:path';
 import { stat } from 'node:fs/promises';
 
@@ -41,7 +41,7 @@ export interface LocalCliScanDeps {
 /** 生产 deps:真实 home + fs.stat(异常一律 false)+ Claude 跨平台登录探测。 */
 export function createLocalCliScanDeps(): LocalCliScanDeps {
   return {
-    homeDir: homedir(),
+    homeDir: cindyManagedHomeDir(),
     isDirectory: async (path) => {
       try {
         return (await stat(path)).isDirectory();

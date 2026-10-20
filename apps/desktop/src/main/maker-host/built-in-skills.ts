@@ -1,9 +1,9 @@
+import { cindyManagedHomeDir } from '../cloudPilotDistribution.js';
 import { builtInSkillsRoot, sharedBuiltInSkillsRoot, validActiveBundle } from './built-in-skill-activation';
 export { builtInSkillsRoot, sharedBuiltInSkillsRoot, canonicalBuiltInSkillActivationPath } from './built-in-skill-activation';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import { promises as fsp } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import type { AgentSkillCommand } from '@cindy/maker-core';
 import {
@@ -774,7 +774,7 @@ export async function migrateBuiltInGlobalSkillLinks(options: {
   userDataDir: string; appDataDir?: string; homeDir?: string;
 }): Promise<string[]> {
   const warnings: string[] = [];
-  const home = options.homeDir ?? os.homedir();
+  const home = options.homeDir ?? cindyManagedHomeDir();
   // Descriptors here identify legacy targets, not official identity.
   const root = options.appDataDir ? sharedBuiltInSkillsRoot(options.appDataDir) : builtInSkillsRoot(options.userDataDir);
   for (const descriptor of stableBuiltInSkillDescriptors(root, options.userDataDir)) {
@@ -976,7 +976,7 @@ export async function prepareBuiltInSkills(
   const mutate = options.withSharedMutation ?? withSkillMutation;
   const locked = await mutate(BUILT_IN_SKILL_NAMES, async () => {
     await fsp.mkdir(root, { recursive: true });
-    const homeDir = options.homeDir ?? os.homedir();
+    const homeDir = options.homeDir ?? cindyManagedHomeDir();
     const stableDescriptors = stableBuiltInSkillDescriptors(root, options.userDataDir);
     // Preparation needs destinations even before a trusted bundle exists.
     // Keep these private; public readers receive only verified descriptors.

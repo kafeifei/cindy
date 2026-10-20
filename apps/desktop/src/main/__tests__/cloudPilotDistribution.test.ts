@@ -41,3 +41,41 @@ it('rejects a symlink to another profile', () => {
   expect(() => resolveCloudPilotDistribution(f)).toThrow();
   expect(fs.readdirSync(target)).toEqual([]);
 });
+
+function devFixture(version = '0.1.108-dev.cloud.20261016.1') {
+  const f = { ...fixture(false), version };
+  fs.writeFileSync(path.join(f.resourcesPath, CLOUD_PILOT_DESCRIPTOR), JSON.stringify({
+    version: 2, profile: 'CindyCloudDev-cn', region: 'cn', appVersion: version,
+  }));
+  fs.writeFileSync(path.join(f.resourcesPath, 'cloud-dev-endpoints.json'), '{}');
+  return f;
+}
+it('versioned Dev retains an independent identity across build upgrades', () => {
+  const f = devFixture();
+  const first = resolveCloudPilotDistribution(f)!;
+  expect(first.userData).toBe(path.join(f.appData, 'CindyCloudDev-cn'));
+  expect(first.appData).toBe(path.join(first.userData, 'app-data'));
+  expect(first.appName).toBe('CindyCloudDev-cn');
+  const nextVersion = '0.1.109-dev.cloud.20261017.2';
+  fs.writeFileSync(path.join(f.resourcesPath, CLOUD_PILOT_DESCRIPTOR), JSON.stringify({
+    version: 2, profile: 'CindyCloudDev-cn', region: 'cn', appVersion: nextVersion,
+  }));
+  expect(resolveCloudPilotDistribution({ ...f, version: nextVersion })).toEqual(first);
+  expect(fs.existsSync(path.join(f.appData, 'Cindy'))).toBe(false);
+});
+it('rejects mismatched or release versions and missing private endpoint resources', () => {
+  const f = devFixture();
+  expect(() => resolveCloudPilotDistribution({ ...f, version: '0.1.108-dev.cloud.20261016.2' })).toThrow();
+  expect(() => resolveCloudPilotDistribution(devFixture('0.1.108'))).toThrow();
+  fs.unlinkSync(path.join(f.resourcesPath, 'cloud-dev-endpoints.json'));
+  expect(() => resolveCloudPilotDistribution(f)).toThrow();
+  expect(fs.readdirSync(f.appData)).toEqual([]);
+});
+it('rejects a replaced shared-data directory instead of following it into Release', () => {
+  const f = devFixture(), first = resolveCloudPilotDistribution(f)!;
+  fs.rmdirSync(first.appData);
+  const formal = path.join(f.appData, 'Cindy'); fs.mkdirSync(formal);
+  fs.symlinkSync(formal, first.appData, 'dir');
+  expect(() => resolveCloudPilotDistribution(f)).toThrow();
+  expect(fs.readdirSync(formal)).toEqual([]);
+});

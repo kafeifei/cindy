@@ -43,6 +43,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getInstanceConfig } from './instance-runtime/config.js';
+import { cloudPilotEndpointManifestPath } from './cloudPilotDistribution.js';
 
 import { app, clipboard, dialog, ipcMain, net, netLog } from 'electron';
 
@@ -997,8 +998,11 @@ export async function initClientEndpoints(): Promise<boolean> {
   // A verified Make profile carries the original Dev's public service configuration.
   // Ordinary packaged apps still use CDN; ambient file/env overrides cannot enable this path.
   const versionSnapshot = getCindyVersionEndpointOverride();
+  const distributionEndpoints = cloudPilotEndpointManifestPath();
   const source: EndpointSource = versionSnapshot
     ? { kind: 'file', filePath: 'Cindy Make' }
+    : distributionEndpoints
+      ? { kind: 'file', filePath: distributionEndpoints }
     : resolveEndpointSource({
         isPackaged: app.isPackaged,
         env: {
@@ -1051,7 +1055,7 @@ export async function initClientEndpoints(): Promise<boolean> {
         : undefined,
     promptRetry: (context) => promptRetryDialog(context, sourceLabel, dialogLocale),
     exitApp: () => app.exit(1),
-    allowHttp: source.kind === 'file',
+    allowHttp: source.kind === 'file' && !distributionEndpoints,
     expectedRegionWhenPresent: BUILD_AUTH_REGION,
     // dev 本地文件:读不到就是路径/内容配置错,不自动重试、也按配置事故出文案
     // (见 BlockingResolveDeps 的 autoRetryDelaysMs / classifyFailure)。

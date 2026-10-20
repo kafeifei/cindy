@@ -32,6 +32,8 @@ const appGetPath = vi.fn((name: string) => {
 const fetchManifest = vi.fn();
 const getBaseUrl = vi.fn(() => CDN_EXTERNAL_BASE_URL);
 const isDev = vi.fn(() => false);
+const cloudPilot = vi.hoisted(() => ({ active: false }));
+vi.mock('../cloudPilotDistribution.js', () => ({ isCloudPilotDistribution: () => cloudPilot.active }));
 const syncWindowsVersionAfterUpdate = vi.fn(async () => undefined);
 const download = vi.fn();
 const readAutoUpdateSettings = vi.fn(() => ({ autoRelaunchOnIdle: true }));
@@ -2678,4 +2680,27 @@ describe('splash 启动下载 0% 显式广播', () => {
     expect(progressCountWhenDownloadStarted).toBe(0);
   });
 });
+});
+
+
+describe('isolated distributable Dev update policy', () => {
+  it('never applies Release patches or starts polling with an upstream-based version', async () => {
+    appGetVersion.mockReturnValue('0.1.108-dev.cloud.20261016.1');
+    const service = await freshUpdateService('darwin');
+    cloudPilot.active = true;
+    try {
+      service.initUpdateService();
+      expect(await service.checkForUpdate()).toBe('idle');
+      expect(await ipcHandlers.get('update-check-startup')!()).toMatchObject({ hasUpdate: false, action: 'none' });
+      ipcListeners.get('update-relaunch')!({}, 'dark');
+      expect(fetchManifest).not.toHaveBeenCalled();
+      expect(download).not.toHaveBeenCalled();
+      expect(powerMonitorOn).not.toHaveBeenCalled();
+      expect(spawnProcess).not.toHaveBeenCalled();
+      expect(appQuit).not.toHaveBeenCalled();
+    } finally {
+      service.stopUpdateService();
+      cloudPilot.active = false;
+    }
+  });
 });

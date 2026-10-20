@@ -34,7 +34,7 @@ import {
 import { cloudManagementProviderRegistry, isCloudManagementInvocation, cloudManagementExecution } from './host-settings/managementCalls.js';
 import { configureAdditionalSettingsRuntime } from './host-settings/additionalRuntime.js';
 import { initializeCloudDeviceLinkDefaults } from './instance-runtime/device-link-defaults.js';
-import { cindyManagedHomeDir } from './cloudPilotDistribution.js';
+import { cindyManagedHomeDir, isCloudPilotDistribution } from './cloudPilotDistribution.js';
 import { retainProviderPresentationAfterAuthChange } from './maker-host/provider-presentation-store.js';
 import { codexAccountState } from './maker-host/codex-account-auth.js';
 import { syncSubscriptionAccountUsage } from './usage/subscriptionAccountUsage.js';
@@ -5468,8 +5468,8 @@ const registerIpcHandlers = () => {
     },
   );
 
-  // Device ID (hardware-based, survives app reinstall)
-  const machineId = machineIdSync();
+  // Isolated distributions must expose the same identity used for authentication.
+  const machineId = isCloudPilotDistribution() ? authManager.getDeviceId() : machineIdSync();
   ipcMain.handle('get-device-id', () => machineId);
 
   // CC 网络调试开关 — renderer Settings → Experimental "CC 网络调试日志" 操作此值。
@@ -8926,7 +8926,7 @@ app.on('ready', async () => {
   // node_modules, isInApplicationsFolder() always returns false, and
   // moveToApplicationsFolder() would actually move the dev binary into
   // /Applications and break the developer's workspace.
-  if (app.isPackaged && process.platform === 'darwin' && !app.isInApplicationsFolder()) {
+  if (app.isPackaged && !isCloudPilotDistribution() && process.platform === 'darwin' && !app.isInApplicationsFolder()) {
     const chosen = dialog.showMessageBoxSync({
       type: 'info',
       title: t('update.moveToApplications.title'),

@@ -4,15 +4,20 @@ import os from 'node:os';
 import { randomBytes } from 'node:crypto';
 
 export const CLOUD_PILOT_DESCRIPTOR = 'cloud-pilot-distribution.json';
-const profileName = 'CindyCloudPilot-cn-20260915-r2';
+const legacyProfileName = 'CindyCloudPilot-cn-20260915-r2';
+export const CLOUD_DEV_PROFILE = 'CindyCloudDev-cn';
+export const CLOUD_DEV_APP_NAME = 'CindyCloudDev-cn';
 let active = false;
 let managedHome: string | null = null;
+let activeAppName = 'CindyCloudPilot-cn-r2';
+let endpointManifestPath: string | null = null;
 /** Only Cindy-managed state uses this root; never replace the OS user's HOME. */
 export function cindyManagedHomeDir(): string { return managedHome ?? os.homedir(); }
 export function cloudPilotKeychainService(normal: string): string {
-  return active ? `CindyCloudPilot-cn-r2:${normal}` : normal;
+  return active ? `${activeAppName}:${normal}` : normal;
 }
 export function isCloudPilotDistribution(): boolean { return active; }
+export function cloudPilotEndpointManifestPath(): string | null { return endpointManifestPath; }
 /** The official CLI owns credentials; a pilot must give it its own configuration root. */
 export function cloudPilotClaudeCliEnv(): Record<string, string> {
   return active ? { CLAUDE_CONFIG_DIR: path.join(cindyManagedHomeDir(), '.claude') } : {};
@@ -30,13 +35,23 @@ function readJson(file: string): unknown {
  * Cindy profile, login, device id or keychain identity is adopted. */
 export function resolveCloudPilotDistribution(input: {
   resourcesPath: string; appData: string; packaged: boolean; region: string; version: string;
-}): { userData: string; deviceId: string; appName: string; managedHome: string } | null {
+}): { userData: string; deviceId: string; appName: string; managedHome: string; appData: string } | null {
   if (!input.packaged) return null;
   let descriptor: unknown;
   try { descriptor = readJson(path.join(input.resourcesPath, CLOUD_PILOT_DESCRIPTOR)); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
-  if (JSON.stringify(descriptor) !== JSON.stringify({ version: 1, profile: profileName, region: 'cn' })
-    || input.region !== 'cn' || input.version !== '0.0.0') reject();
+  const legacy = JSON.stringify(descriptor) === JSON.stringify({ version: 1, profile: legacyProfileName, region: 'cn' })
+    && input.version === '0.0.0';
+  const dev = JSON.stringify(descriptor) === JSON.stringify({ version: 2, profile: CLOUD_DEV_PROFILE, region: 'cn', appVersion: input.version })
+    && /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)-dev\.cloud\.\d{8}\.[1-9]\d*$/u.test(input.version);
+  if (input.region !== 'cn' || (!legacy && !dev)) reject();
+  const profileName = dev ? CLOUD_DEV_PROFILE : legacyProfileName;
+  const appName = dev ? CLOUD_DEV_APP_NAME : 'CindyCloudPilot-cn-r2';
+  const endpoints = dev ? path.join(input.resourcesPath, 'cloud-dev-endpoints.json') : null;
+  if (endpoints) {
+    const stat = fs.lstatSync(endpoints);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 65536) reject();
+  }
   const userData = path.join(input.appData, profileName);
   try { fs.mkdirSync(userData, { mode: 0o700 }); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
@@ -66,7 +81,17 @@ export function resolveCloudPilotDistribution(input: {
   const homeStat = fs.lstatSync(privateHome);
   if (!homeStat.isDirectory() || homeStat.isSymbolicLink()
     || process.platform !== 'win32' && (homeStat.uid !== process.getuid!() || (homeStat.mode & 0o077) !== 0)) reject();
+  // Upstream also keeps shared Skills and worktree metadata under appData.
+  // A distributable Dev package must not join those Release mutation domains.
+  const privateAppData = path.join(userData, 'app-data');
+  try { fs.mkdirSync(privateAppData, { mode: 0o700 }); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+  const appDataStat = fs.lstatSync(privateAppData);
+  if (!appDataStat.isDirectory() || appDataStat.isSymbolicLink()
+    || process.platform !== 'win32' && (appDataStat.uid !== process.getuid!() || (appDataStat.mode & 0o077) !== 0)) reject();
   managedHome = privateHome;
+  activeAppName = appName;
+  endpointManifestPath = endpoints;
   active = true;
-  return { userData, deviceId: identity.deviceId, managedHome: privateHome, appName: 'CindyCloudPilot-cn-r2' };
+  return { userData, deviceId: identity.deviceId, managedHome: privateHome, appName, appData: privateAppData };
 }

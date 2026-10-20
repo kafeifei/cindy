@@ -23,12 +23,11 @@ import { assertTrustedAppRendererEvent } from '../security/trustedAppRenderer.js
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { cindyManagedHomeDir } from '../cloudPilotDistribution.js';
 
 import {
   ConnectionPool,
   addManagedHostWithInclude,
-  defaultManagedSshConfigPath,
-  defaultSshConfigPath,
   readSshConfigDetailed,
   removeManagedHost,
   updateManagedHostFields,
@@ -264,8 +263,8 @@ const VALID_AGENT_KINDS: ReadonlyArray<RemoteAgentKind> = ['claude-code', 'codex
 let pool: ConnectionPool | null = null;
 let initPromise: Promise<void> | null = null;
 let registered = false;
-const sshConfigPath = defaultSshConfigPath();
-const managedSshConfigPath = defaultManagedSshConfigPath();
+const sshConfigPath = path.join(cindyManagedHomeDir(), '.ssh', 'config');
+const managedSshConfigPath = path.join(cindyManagedHomeDir(), '.ssh', 'cindy.conf');
 const remoteHostHydrationQueue = new RemoteHostHydrationQueue();
 let sshConfigWarnings: string[] = [];
 let sshConfigDiagnostic: SshConfigDiagnostic | null = null;
@@ -2357,7 +2356,7 @@ export async function startAutoConnectHostsBackground(): Promise<void> {
 async function resolveLocalCodexAuthPath(): Promise<string | null> {
   const candidates = [
     path.join(app.getPath('userData'), 'codex-home', 'auth.json'),
-    path.join(os.homedir(), '.codex', 'auth.json'),
+    path.join(cindyManagedHomeDir(), '.codex', 'auth.json'),
   ];
   for (const candidate of candidates) {
     try {

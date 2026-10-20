@@ -1189,9 +1189,9 @@ async function uninstallLocked(
         ...new Set([
           ...knownEntries,
           ...compatibilityEntries,
-          path.join(os.homedir(), '.claude', 'skills', skillName),
-          path.join(os.homedir(), '.codex', 'skills', skillName),
-          path.join(os.homedir(), '.agents', 'skills', skillName),
+          path.join(cindyManagedHomeDir(), '.claude', 'skills', skillName),
+          path.join(cindyManagedHomeDir(), '.codex', 'skills', skillName),
+          path.join(cindyManagedHomeDir(), '.agents', 'skills', skillName),
         ]),
       ];
   const operationPath = target?.operationPath ?? resolved;
