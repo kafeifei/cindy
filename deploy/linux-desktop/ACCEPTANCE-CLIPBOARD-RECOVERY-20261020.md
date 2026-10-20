@@ -82,18 +82,48 @@ The empty-format guard now returns an empty result without invoking native conte
 getters. Sixteen focused clipboard tests and Desktop typecheck passed. A patched
 standalone Electron harness on R5 completed cold sync/read in 20–41 ms and passed
 terminal/Chrome UTF-8 paste and rich-content checks. This is not a corrected-image
-pass. R6 full build and qualification are pending. The two R5 diagnostic fixtures
+pass. The first R6 build exhausted the local VM memory during Forge compilation;
+no runtime image was produced. The retry lowers the packaging Node heap from
+6 GiB to 4 GiB and requires the executable and ASAR immediately after packaging.
+R6 full build and qualification are pending. The two R5 diagnostic fixtures
 exited with code zero without a recorded normal-shutdown request; no normal-stop
 acceptance is claimed for them, and the fresh-image run must capture the runtime
 exit reason and complete an explicit shutdown check before any deployment.
 
+## Real connection recovery and remaining device checks
+
 The rebuilt isolated Mac Dev test package retains independent app/data/device/
-credential identity. Its internal package version was aligned with the Dev
-bundle version; all other archive contents and unpack layout were checked
-unchanged, and signing verification passed. macOS is locked and the new package
-is waiting for Keychain access. Real Mac-to-cloud clipboard and scoped live
-connection-fault recovery have therefore **not yet passed** in this follow-up.
-Physical iPhone keyboard composition and system clipboard remain deferred.
+credential identity. Its internal package version matches the Dev bundle version;
+all other archive contents and unpack layout were checked unchanged, and signing
+verification passed. The temporary Keychain wait ended before the following test.
+Only this private Dev package enabled a loopback main-process inspector for fault
+injection; the hosting application and release build configuration were not changed.
+
+On the own-instance R4 receiver, one TLS socket belonging to the Dev client's
+production relay connection was destroyed. The client reported connecting and
+returned online after 904 ms without a manual reconnect. The viewer established
+its stream again; two post-recovery samples advanced from 860 to 905 frames.
+A new native input containing Chinese and Emoji matched the cloud Chrome test
+page exactly. The cloud Pod UID stayed the same, and no held keys, modifiers or
+mouse buttons remained. Input attempted during lease handover was rejected with
+`DESKTOP_LEASE_EXPIRED` and was not replayed. Video counters reset when streams
+are replaced, so the acceptance compares samples from the new stream.
+
+This is a real **single-client connection fault**, with direct media available;
+it does not represent a full production relay service outage. The shared relay,
+cloud container and other clients were not restarted. Business-write deduplication
+is covered by the separate synthetic tests, not by sending real user messages.
+
+An additional local TCP/WebSocket fixture used the committed DeviceLink client,
+two controllers and one host. Both socket termination (1006) and service-restart
+closure (1012) recovered; a write whose response was dropped executed once, and
+fresh listing/input requests succeeded. The healthy controller and host each
+retained one connection. It used synthetic identities and accelerated 30–100 ms
+reconnect timing, not production credentials or phone hardware.
+
+Mac-to-cloud clipboard through the product UI remains pending the corrected R6
+receiver. Physical iPhone keyboard composition and system clipboard remain
+explicitly deferred at the user's request.
 
 Raw logs, screenshots, synthetic fixtures and infrastructure receipts stay in the
 private acceptance archive. No user clipboard contents or credentials are
