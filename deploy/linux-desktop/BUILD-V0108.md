@@ -25,8 +25,8 @@ credentials or business PVC mounted:
 | `/workspace/electron-v42.11.12-headers.tar.gz` | Electron headers from the same release, verified against its official checksums before staging |
 
 The source base is `d4b39020bf083d79b352fcb56ea5a4941432fb39`. The recorded patch
-files can be read from `8db3e0683c3db8244ac1d39df2ac897482a95307`; their hashes
-and source/artifact mapping are also in
+files come from `clientRuntimeFixCommit` in the source manifest; their hashes
+and source/artifact mapping are in
 [`runtime-desktop-xfce/source-manifest.json`](runtime-desktop-xfce/source-manifest.json).
 Do not substitute the whole current branch: it includes later native client UI
 work that was not part of this frozen ASAR. `source-freeze.json` is a historical
