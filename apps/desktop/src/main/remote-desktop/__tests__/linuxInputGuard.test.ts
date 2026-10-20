@@ -141,9 +141,71 @@ describe('persistent Linux input helper', () => {
     vi.useFakeTimers();
     const stopping = guard.close();
     await vi.advanceTimersByTimeAsync(2000);
-    expect(native.child.kill).toHaveBeenCalledExactlyOnceWith('SIGKILL');
+    expect(native.child.kill.mock.calls).toEqual([['SIGTERM'], ['SIGKILL']]);
     native.exit();
     await stopping;
+  });
+
+  it('sends bounded Unicode chunks over stdin, preserving surrogate pairs and the original target', async () => {
+    const native = nativeProcess();
+    const guard = await openLinuxInputGuard({ DISPLAY: ':77' }, vi.fn());
+    const validate = vi.fn(async () => {});
+    const input = guard.insertText({
+      windowId: 42,
+      pid: 99,
+      text: '中'.repeat(31) + '😀é',
+      validate,
+    });
+    await vi.waitFor(() => expect(native.child.stdin.write).toHaveBeenCalledTimes(1));
+    const first = JSON.parse(native.child.stdin.write.mock.calls[0][0]);
+    expect(first).toEqual({ id: 1, text: { windowId: 42, pid: 99, text: '中'.repeat(31) + '😀' } });
+    native.receive({ id: 1, stdout: '' });
+    await vi.waitFor(() => expect(native.child.stdin.write).toHaveBeenCalledTimes(2));
+    expect(JSON.parse(native.child.stdin.write.mock.calls[1][0])).toEqual({
+      id: 2,
+      text: { windowId: 42, pid: 99, text: 'é' },
+    });
+    native.receive({ id: 2, stdout: '' });
+    await input;
+    expect(validate).toHaveBeenCalledTimes(3);
+    expect(fixture.spawn.mock.calls[0][1]).toEqual(['-I', helper]); // no text in argv
+    await guard.close();
+  });
+
+  it('stops between chunks on focus change without retrying or redirecting the remaining text', async () => {
+    const native = nativeProcess();
+    const guard = await openLinuxInputGuard({ DISPLAY: ':77' }, vi.fn());
+    const validate = vi
+      .fn(async () => {})
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('DESKTOP_FOCUS_CHANGED'));
+    const input = guard.insertText({ windowId: 42, pid: 99, text: 'x'.repeat(33), validate });
+    const rejected = expect(input).rejects.toThrow('FOCUS_CHANGED');
+    await vi.waitFor(() => expect(native.child.stdin.write).toHaveBeenCalledTimes(1));
+    native.receive({ id: 1, stdout: '' });
+    await rejected;
+    expect(native.child.stdin.write).toHaveBeenCalledTimes(1);
+    await guard.close();
+  });
+
+  it('interrupts native text immediately on lease cancellation and never sends its remaining chunks', async () => {
+    const native = nativeProcess();
+    const guard = await openLinuxInputGuard({ DISPLAY: ':77' }, vi.fn());
+    const abort = new AbortController();
+    const input = guard.insertText({
+      windowId: 42,
+      pid: 99,
+      text: '中'.repeat(4096),
+      signal: abort.signal,
+      validate: async () => {},
+    });
+    const rejected = expect(input).rejects.toThrow('EXPIRED');
+    await vi.waitFor(() => expect(native.child.stdin.write).toHaveBeenCalledTimes(1));
+    abort.abort();
+    await rejected;
+    expect(native.child.kill).toHaveBeenCalledWith('SIGTERM');
+    expect(native.child.stdin.write).toHaveBeenCalledTimes(1);
+    await guard.close();
   });
 
   it('checks XTest availability with no input before advertising Linux control', async () => {

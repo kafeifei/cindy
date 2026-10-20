@@ -4,6 +4,7 @@ export interface LinuxInputText {
   windowId: number;
   pid: number;
   text: string;
+  signal?: AbortSignal;
   validate(): Promise<void>;
 }
 
@@ -258,7 +259,7 @@ export class LinuxDesktopInput {
       await this.validate();
     };
     await validate();
-    await this.deps.insertText({ windowId, pid, text, validate });
+    await this.deps.insertText({ windowId, pid, text, signal: this.abort.signal, validate });
     await validate();
   }
 

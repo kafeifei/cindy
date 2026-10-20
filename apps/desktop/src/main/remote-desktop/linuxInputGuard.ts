@@ -5,6 +5,8 @@ import { access } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
+import type { LinuxInputText } from './linuxX11Input';
+
 const exec = promisify(execFile);
 
 export async function linuxGuardPath(): Promise<string> {
@@ -44,6 +46,7 @@ export async function openLinuxInputGuard(environment: NodeJS.ProcessEnv, onFail
     rejectReady(new Error('DESKTOP_INPUT_UNAVAILABLE'));
     pending?.finish(new Error('DESKTOP_INPUT_UNAVAILABLE'));
     child.stdin.end();
+    child.kill('SIGTERM');
     const timer = setTimeout(() => child.kill('SIGKILL'), 2000);
     timer.unref();
     stopping = closed.finally(() => clearTimeout(timer));
@@ -109,41 +112,61 @@ export async function openLinuxInputGuard(environment: NodeJS.ProcessEnv, onFail
       throw new Error('DESKTOP_INPUT_UNAVAILABLE');
     child.stdin.write(line);
   };
+  const request = (body: Record<string, unknown>, signal?: AbortSignal): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      if (pending) {
+        reject(new Error('DESKTOP_INPUT_BUSY'));
+        return;
+      }
+      if (signal?.aborted) {
+        reject(new Error('DESKTOP_LEASE_EXPIRED'));
+        return;
+      }
+      const id = ++sequence;
+      const abort = () => {
+        pending?.finish(new Error('DESKTOP_LEASE_EXPIRED'));
+        void close();
+      };
+      const timer = setTimeout(fail, 1500);
+      pending = {
+        id,
+        finish(error, value) {
+          clearTimeout(timer);
+          signal?.removeEventListener('abort', abort);
+          pending = undefined;
+          if (error) reject(error);
+          else resolve(value ?? '');
+        },
+      };
+      signal?.addEventListener('abort', abort, { once: true });
+      try {
+        write({ id, ...body });
+      } catch {
+        pending?.finish(new Error('DESKTOP_INPUT_UNAVAILABLE'));
+        fail();
+      }
+    });
+  };
   return {
-    command(args: string[], signal?: AbortSignal): Promise<string> {
-      return new Promise((resolve, reject) => {
-        if (pending) {
-          reject(new Error('DESKTOP_INPUT_BUSY'));
-          return;
-        }
-        if (signal?.aborted) {
-          reject(new Error('DESKTOP_LEASE_EXPIRED'));
-          return;
-        }
-        const id = ++sequence;
-        const abort = () => {
-          pending?.finish(new Error('DESKTOP_LEASE_EXPIRED'));
-          void close();
-        };
-        const timer = setTimeout(fail, 1500);
-        pending = {
-          id,
-          finish(error, value) {
-            clearTimeout(timer);
-            signal?.removeEventListener('abort', abort);
-            pending = undefined;
-            if (error) reject(error);
-            else resolve(value ?? '');
+    command: (args: string[], signal?: AbortSignal) => request({ args }, signal),
+    async insertText(input: LinuxInputText): Promise<void> {
+      // Split by code point, not UTF-16 unit. Each bounded native chunk rechecks
+      // the lease/display; the helper checks the original X11 focus per character.
+      const characters = Array.from(input.text);
+      for (let offset = 0; offset < characters.length; offset += 32) {
+        await input.validate();
+        await request(
+          {
+            text: {
+              windowId: input.windowId,
+              pid: input.pid,
+              text: characters.slice(offset, offset + 32).join(''),
+            },
           },
-        };
-        signal?.addEventListener('abort', abort, { once: true });
-        try {
-          write({ id, args });
-        } catch {
-          pending?.finish(new Error('DESKTOP_INPUT_UNAVAILABLE'));
-          fail();
-        }
-      });
+          input.signal,
+        );
+      }
+      await input.validate();
     },
     hold(keys: string[], buttons: number[]) {
       write({ keys, buttons });

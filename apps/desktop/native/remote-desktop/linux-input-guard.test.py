@@ -103,5 +103,76 @@ class InputGuardTests(unittest.TestCase):
         display.close()
 
 
+class NativeTextTests(unittest.TestCase):
+    def fixture(self):
+        display, _ = InputGuardTests().fixture([])
+        display.text_connection = 10
+        display.typing = SimpleNamespace(xdo_enter_text_window=Mock(return_value=0), xdo_free=Mock())
+        display.library.XkbLockModifiers = Mock()
+        display.validate_text_target = Mock()
+        display.text_modifiers = Mock(return_value={50})
+        display.caps_locked = Mock(return_value=2)
+        return display
+
+    def test_native_unicode_and_modifier_restoration_do_not_touch_mouse(self):
+        display = self.fixture()
+        display.text({'windowId': 42, 'pid': 90, 'text': 'Ab中😀'})
+        self.assertEqual([call.args[2] for call in display.typing.xdo_enter_text_window.call_args_list],
+                         [c.encode() for c in 'Ab中😀'])
+        self.assertTrue(all(call.args[1] == 0 for call in display.typing.xdo_enter_text_window.call_args_list))
+        self.assertEqual(display.test.XTestFakeKeyEvent.call_args_list[0].args, (1, 50, False, 0))
+        self.assertEqual(display.test.XTestFakeKeyEvent.call_args_list[-1].args, (1, 50, True, 0))
+        self.assertEqual(display.library.XkbLockModifiers.call_args_list[-1].args, (1, 0x100, 2, 2))
+        display.test.XTestFakeButtonEvent.assert_not_called()
+
+    def test_focus_change_stops_mid_chunk_and_restores_modifiers(self):
+        display = self.fixture()
+        display.validate_text_target.side_effect = [None, None, ValueError('text focus changed')]
+        with self.assertRaisesRegex(ValueError, 'focus changed'):
+            display.text({'windowId': 42, 'pid': 90, 'text': 'private'})
+        display.typing.xdo_enter_text_window.assert_called_once()
+        self.assertEqual(display.test.XTestFakeKeyEvent.call_args_list[-1].args, (1, 50, True, 0))
+
+    def test_interrupted_native_call_restores_keyboard_state_without_retry(self):
+        display = self.fixture()
+        display.typing.xdo_enter_text_window.side_effect = SystemExit()
+        with self.assertRaises(SystemExit):
+            display.text({'windowId': 42, 'pid': 90, 'text': 'private'})
+        display.typing.xdo_enter_text_window.assert_called_once()
+        self.assertEqual(display.library.XkbLockModifiers.call_args_list[-1].args[-1], 2)
+
+    def test_invalid_request_fails_before_any_native_effect(self):
+        for value in ['', 'a' * 33, '\x00', '\x1b', '\x7f', '\ud83d']:
+            display = self.fixture()
+            with self.assertRaisesRegex(ValueError, 'invalid text'):
+                display.text({'windowId': 42, 'pid': 90, 'text': value})
+            display.validate_text_target.assert_not_called()
+            display.typing.xdo_enter_text_window.assert_not_called()
+        for window, pid in [(True, 90), (42, False), (0, 90), (42, -1)]:
+            with self.assertRaisesRegex(ValueError, 'invalid text'):
+                self.fixture().text({'windowId': window, 'pid': pid, 'text': 'x'})
+
+    def test_batch_deadline_prevents_an_unbounded_native_operation(self):
+        display = self.fixture()
+        with patch.object(module.time, 'monotonic', side_effect=[10, 11.1]):
+            with self.assertRaisesRegex(ValueError, 'timeout'):
+                display.text({'windowId': 42, 'pid': 90, 'text': 'private'})
+        display.typing.xdo_enter_text_window.assert_not_called()
+
+    def test_stale_active_window_and_unrelated_keyboard_focus_are_rejected(self):
+        display = self.fixture()
+        del display.validate_text_target
+        display.property = Mock(side_effect=[99])
+        with self.assertRaisesRegex(ValueError, 'focus changed'):
+            display.validate_text_target(42, 90)
+        display.property = Mock(side_effect=[42, 90])
+        display.library.XGetInputFocus = lambda _d, focus, _r: setattr(focus._obj, 'value', 2)
+        with self.assertRaisesRegex(ValueError, 'focus changed'):
+            display.validate_text_target(42, 90)
+        display.property = Mock(side_effect=[42, 90])
+        display.library.XGetInputFocus = lambda _d, focus, _r: setattr(focus._obj, 'value', 42)
+        display.validate_text_target(42, 90)
+
+
 if __name__ == '__main__':
     unittest.main()

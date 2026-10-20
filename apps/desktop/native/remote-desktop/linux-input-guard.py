@@ -16,10 +16,15 @@ def identity(socket):
     return info.st_dev, info.st_ino, info.st_ctime_ns
 
 
+class ModifierMap(ctypes.Structure):
+    _fields_ = [("max_keypermod", ctypes.c_int), ("modifiermap", ctypes.POINTER(ctypes.c_ubyte))]
+
+
 class Display:
     def __init__(self):
         self.library = ctypes.CDLL("libX11.so.6")
         self.test = ctypes.CDLL("libXtst.so.6")
+        self.typing = ctypes.CDLL("libxdo.so.3")
         pointer = ctypes.c_void_p
         integer = ctypes.c_int
         unsigned = ctypes.c_ulong
@@ -46,6 +51,18 @@ class Display:
             *([ctypes.POINTER(integer)] * 4), ctypes.POINTER(ctypes.c_uint),
         ]
         self.library.XGetPointerMapping.argtypes = [pointer, ctypes.POINTER(ctypes.c_ubyte), integer]
+        self.library.XGetInputFocus.argtypes = [pointer, ctypes.POINTER(unsigned), ctypes.POINTER(integer)]
+        self.library.XQueryTree.argtypes = [pointer, unsigned, ctypes.POINTER(unsigned),
+                                           ctypes.POINTER(unsigned), ctypes.POINTER(pointer), ctypes.POINTER(ctypes.c_uint)]
+        self.library.XQueryKeymap.argtypes = [pointer, ctypes.POINTER(ctypes.c_ubyte)]
+        self.library.XGetModifierMapping.argtypes = [pointer]
+        self.library.XGetModifierMapping.restype = ctypes.POINTER(ModifierMap)
+        self.library.XFreeModifiermap.argtypes = [ctypes.POINTER(ModifierMap)]
+        self.library.XkbLockModifiers.argtypes = [pointer, ctypes.c_uint, ctypes.c_uint, ctypes.c_uint]
+        self.typing.xdo_new_with_opened_display.argtypes = [pointer, ctypes.c_char_p, integer]
+        self.typing.xdo_new_with_opened_display.restype = pointer
+        self.typing.xdo_enter_text_window.argtypes = [pointer, unsigned, ctypes.c_char_p, ctypes.c_uint]
+        self.typing.xdo_free.argtypes = [pointer]
         self.library.XFree.argtypes = [pointer]
         self.library.XSync.argtypes = [pointer, integer]
         self.library.XCloseDisplay.argtypes = [pointer]
@@ -63,6 +80,10 @@ class Display:
         self.screen = self.library.XDefaultScreen(self.connection)
         self.width = self.library.XDisplayWidth(self.connection, self.screen)
         self.height = self.library.XDisplayHeight(self.connection, self.screen)
+        # Use the same authenticated display, never a new connection or shell.
+        self.text_connection = self.typing.xdo_new_with_opened_display(self.connection, None, False)
+        if not self.text_connection:
+            raise ValueError("text input unavailable")
         self.keys = set()
         self.buttons = set()
 
@@ -134,6 +155,90 @@ class Display:
         if not down:
             self.buttons.discard(button)
 
+    def validate_text_target(self, window, pid):
+        if (self.property(self.root, "_NET_ACTIVE_WINDOW") != window
+                or self.property(window, "_NET_WM_PID") != pid):
+            raise ValueError("text focus changed")
+        focused, revert = ctypes.c_ulong(), ctypes.c_int()
+        self.library.XGetInputFocus(self.connection, ctypes.byref(focused), ctypes.byref(revert))
+        # A WM can retain _NET_ACTIVE_WINDOW while a popup owns keyboard focus.
+        # Only the original client window or one of its descendants may receive text.
+        current = focused.value
+        for _ in range(64):
+            if current == window:
+                return
+            if current in (0, 1, self.root):
+                break
+            root, parent, children, count = ctypes.c_ulong(), ctypes.c_ulong(), ctypes.c_void_p(), ctypes.c_uint()
+            try:
+                if not self.library.XQueryTree(self.connection, current, ctypes.byref(root),
+                                              ctypes.byref(parent), ctypes.byref(children), ctypes.byref(count)):
+                    break
+                current = parent.value
+            finally:
+                if children.value:
+                    self.library.XFree(children)
+        raise ValueError("text focus changed")
+
+    def text_modifiers(self):
+        mapping = self.library.XGetModifierMapping(self.connection)
+        if not mapping:
+            raise ValueError("keyboard unavailable")
+        pressed = (ctypes.c_ubyte * 32)()
+        try:
+            self.library.XQueryKeymap(self.connection, pressed)
+            return {code for code in mapping.contents.modifiermap[:8 * mapping.contents.max_keypermod]
+                    if code and pressed[code // 8] & (1 << (code % 8))}
+        finally:
+            self.library.XFreeModifiermap(mapping)
+
+    def caps_locked(self):
+        root, child, state = ctypes.c_ulong(), ctypes.c_ulong(), ctypes.c_uint()
+        positions = [ctypes.c_int() for _ in range(4)]
+        if not self.library.XQueryPointer(self.connection, self.root, ctypes.byref(root), ctypes.byref(child),
+                                         *[ctypes.byref(value) for value in positions], ctypes.byref(state)):
+            raise ValueError("keyboard unavailable")
+        return state.value & 2
+
+    def text(self, request):
+        if not isinstance(request, dict) or set(request) != {"windowId", "pid", "text"}:
+            raise ValueError("invalid text")
+        window, pid, text = request["windowId"], request["pid"], request["text"]
+        if (type(window) is not int or not 1 < window <= 0xffffffff
+                or type(pid) is not int or not 0 < pid <= 0x7fffffff
+                or not isinstance(text, str) or not 1 <= len(text) <= 32
+                or any((ord(c) < 32 and c not in "\t\n") or ord(c) == 127
+                       or 0xd800 <= ord(c) <= 0xdfff for c in text)):
+            raise ValueError("invalid text")
+        deadline = time.monotonic() + 1.0
+        self.validate_text_target(window, pid)
+        modifiers, caps = self.text_modifiers(), self.caps_locked()
+        # Committed text already includes Shift/IME composition. Temporarily clear
+        # keyboard modifiers only; never alter pointer buttons or either clipboard.
+        try:
+            for code in modifiers:
+                self.test.XTestFakeKeyEvent(self.connection, code, False, 0)
+            if caps:
+                self.library.XkbLockModifiers(self.connection, 0x100, 2, 0)
+            self.library.XSync(self.connection, False)
+            for character in text:
+                if time.monotonic() >= deadline:
+                    raise ValueError("text processing timeout")
+                self.validate_text_target(window, pid)
+                # CURRENTWINDOW=0 forces XTest (not XSendEvent). libxdo maps Unicode
+                # to keysyms; its standard 12ms pacing lets applications consume map
+                # changes before scratch keycodes are reused. No CDP or DOM writes.
+                if self.typing.xdo_enter_text_window(self.text_connection, 0, character.encode("utf-8"), 12000):
+                    raise ValueError("text input unavailable")
+            self.validate_text_target(window, pid)
+        finally:
+            for code in modifiers:
+                self.test.XTestFakeKeyEvent(self.connection, code, True, 0)
+            if caps:
+                self.library.XkbLockModifiers(self.connection, 0x100, 2, caps)
+            self.library.XSync(self.connection, False)
+        return ""
+
     def command(self, args):
         if not isinstance(args, list) or len(args) > 2048 or not all(isinstance(arg, str) and len(arg) <= 32 for arg in args):
             raise ValueError("invalid command")
@@ -184,6 +289,8 @@ class Display:
         for button in list(self.buttons):
             self.button(button, False)
         self.library.XSync(self.connection, False)
+        if getattr(self, "text_connection", None):
+            self.typing.xdo_free(self.text_connection)
         self.library.XCloseDisplay(self.connection)
 
 
@@ -217,11 +324,15 @@ def guard():
                 value = json.loads(line)
                 if not isinstance(value, dict):
                     raise ValueError("invalid request")
-                if "args" in value:
+                if "args" in value or "text" in value:
                     identifier = value["id"]
                     if type(identifier) is not int or not 0 < identifier <= 9007199254740991:
                         raise ValueError("invalid request")
-                    output = display.command(value["args"])
+                    if identity(socket) != original:
+                        raise ValueError("display changed")
+                    if "args" in value and "text" in value:
+                        raise ValueError("invalid request")
+                    output = display.text(value["text"]) if "text" in value else display.command(value["args"])
                     print(json.dumps({"id": identifier, "stdout": output}), flush=True)
                 else:
                     if not isinstance(value.get("keys"), list) or not isinstance(value.get("buttons"), list):

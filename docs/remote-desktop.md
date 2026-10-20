@@ -435,6 +435,30 @@ does not guarantee focus isolation: the driver may temporarily change applicatio
 or window focus. Cindy does not currently verify restoration of the original
 focused window or text field, and does not force focus back after an action.
 
+## X11 native input
+
+The X11 receiver delivers pointer events, physical keys and committed text through
+its authenticated X11/XTest helper. Text uses the system `libxdo.so.3` library
+(provided by the existing `xdotool` dependency); the capability probe verifies it
+before advertising control. Cindy, personal Chrome (including the address bar),
+managed browser windows and terminals share this path. No CDP connection,
+renderer script, app allowlist or implicit clipboard write is used for typing.
+The wire protocol and existing peer/lease opt-ins remain unchanged.
+
+A logical text packet retains input ownership and queue ordering. The existing
+4096 UTF-16-unit limit and control-character checks apply before delivery; native
+chunks contain at most 32 Unicode code points. Main rechecks the lease and display
+between chunks, and the helper verifies the original active window, PID and
+keyboard-focus ancestry before each character. Focus changes stop delivery,
+without retrying a prefix or redirecting it to another window. The helper restores
+keyboard modifiers and Caps Lock after text, preserves pointer-button state, and
+releases held remote keys/buttons when stopped. Cancellation terminates only that
+lease's helper. Posting native events does not prove application consumption, and
+physical input from another device is outside Cindy's input ownership lock.
+
+Native Linux tests and real DeviceLink tests are separate acceptance gates.
+Wayland/compositor input and macOS/Windows adapters are unchanged.
+
 ## Wayland capture lifetime
 
 On Hyprland with the system `/usr/bin/grim` executable, Cindy uses native screencopy
