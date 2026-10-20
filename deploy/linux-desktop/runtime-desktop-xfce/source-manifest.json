@@ -12,7 +12,18 @@
     "apps/desktop/src/main/remote-desktop/linuxInputHost.ts": "504cd46ca7bf903603f9d518c8ad1d285dd17a41cf0f04fb80da046c4600081d",
     "apps/desktop/src/main/remote-desktop/linuxX11Input.ts": "ad57e70072b6eab97ddb135198d4b7a8c2a56cd1805b7670af19a0009fae0f48",
     "apps/desktop/src/main/remote-desktop/__tests__/linuxInputGuard.test.ts": "39349b9a74b2b361163b5f50f5077a65215e3b489bd3e744c28d7818602f5a33",
-    "apps/desktop/src/main/remote-desktop/__tests__/linuxInputHost.test.ts": "29ca69b800d3c15df667e004bee3c8bad20d78162c84ba3139f036de66ae6759"
+    "apps/desktop/src/main/remote-desktop/__tests__/linuxInputHost.test.ts": "29ca69b800d3c15df667e004bee3c8bad20d78162c84ba3139f036de66ae6759",
+    "apps/desktop/src/main/device-link/index.ts": "c6848dc0a1dfed0af180c6814236ebe8e1877c7944362162e371e7335fce37de",
+    "apps/desktop/src/main/device-link/__tests__/remoteInvokeSendGuard.test.ts": "ae5cecdb8d3a3b091d6dd3d169d2fe4df56ead98ed5087d1e7a3ca8c70b33f76",
+    "packages/device-link/src/client.ts": "a11ff08bc6b78bb099e6b2a01188c71c8e448e6d7f15cbfa321e4f79f465e8c2",
+    "packages/device-link/src/__tests__/client.test.ts": "c7b93930d4ea62922582215e4a1446241ef05568d875fa83caa7db005d55f1fb",
+    "apps/desktop/src/main/remote-desktop/clipboard.ts": "c3aedb3aa509d3520f13ab86ed8cab6861e9c4fceef245c7e3c8df9112cc923f",
+    "apps/desktop/src/main/remote-desktop/index.ts": "c2de6bdca15b8a521704e6d965604aa7ee960005d10957f696e163a6f286977c",
+    "apps/desktop/src/main/remote-desktop/linuxClipboardNative.ts": "a944a1c17c25dfa044373843f6d561b3baa2505d8172088b135116add8a6ed4c",
+    "apps/desktop/src/main/remote-desktop/linuxX11Clipboard.ts": "82ab54429ec65d9468a810d06cb7a1cae6c5af7ec2741473ed60077e7d5b12a0",
+    "apps/desktop/src/main/remote-desktop/__tests__/linuxClipboardNative.test.ts": "1bfe2d57bc474979714765768a11eee90f9d003d1b6caa423709576d93774802",
+    "apps/desktop/src/main/remote-desktop/__tests__/linuxClipboardTransfer.test.ts": "b82c9a484d42b94821b53ebe1a20a70fb46048ebc8c51f86f9562c8c716b7843",
+    "apps/desktop/src/main/remote-desktop/__tests__/linuxX11Clipboard.test.ts": "c523ca2cd9d22be594945e5dca8a44421379bfd1b1215ddb6b6f0c2eb4eef2ae"
   },
   "runtimeVersion": "0.1.108-xfce-dock-r5.20261019",
   "runtimeManifestDigest": "sha256:472134a7ea610497c71d1692ae1aca8f41ef842daf39d92bac298c6e0cf1c647",
@@ -48,5 +59,5 @@
   },
   "qualification": "Isolated Linux, native X11 input; not DeviceLink end-to-end",
   "clientSourceSnapshotCommit": "1b1ca95cc63d820e9cad2fdfda3d425097073d62",
-  "clientRuntimeFixCommit": "9ad4bdf15b086bfb1d57b6014102cdd4a5d7d691"
+  "clientRuntimeFixCommit": "7704a82c805995b16cd6760d9de935ec3e7a5de8"
 }
