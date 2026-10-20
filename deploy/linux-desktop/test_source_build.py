@@ -1,4 +1,7 @@
 import importlib.util
+import hashlib
+import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -12,6 +15,52 @@ spec.loader.exec_module(audit)
 build_spec = importlib.util.spec_from_file_location('source_build', HERE / 'build-image.py')
 build = importlib.util.module_from_spec(build_spec)
 build_spec.loader.exec_module(build)
+agent_spec = importlib.util.spec_from_file_location('stage_agents', HERE / 'stage-runtime-agents.py')
+agents = importlib.util.module_from_spec(agent_spec)
+agent_spec.loader.exec_module(agents)
+
+class AgentStagingTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.source = self.root / 'source'
+        self.artifact = self.root / 'artifact'
+        for tool in ['shared', 'codex-package']:
+            shutil.copytree(HERE.parents[1] / 'tools' / tool, self.source / 'tools' / tool)
+        self.claude = self.source / 'apps/claude-code-bin/linux-x64/claude'
+        self.claude.parent.mkdir(parents=True)
+        self.claude.write_bytes(b'synthetic CLI')
+        (self.source / 'tools/claude').mkdir()
+        (self.source / 'tools/claude/latest.json').write_text(json.dumps({'version': 'fixture', 'runtimeAssets': {'linux-x64': {'size': 13, 'sha256': hashlib.sha256(b'synthetic CLI').hexdigest()}}}))
+        self.codex = self.source / 'apps/codex-package-bin/linux-x64'
+        for path in ['bin/codex', 'bin/codex-code-mode-host', 'codex-path/rg', 'codex-resources/helper']:
+            p = self.codex / path; p.parent.mkdir(parents=True, exist_ok=True); p.write_text('fixture')
+        (self.codex / 'codex-package.json').write_text(json.dumps({'layoutVersion': 1, 'version': 'fixture', 'target': 'x86_64-unknown-linux-musl', 'variant': 'codex', 'entrypoint': 'bin/codex', 'resourcesDir': 'codex-resources', 'pathDir': 'codex-path'}))
+        (self.codex / '.version').write_text('fixture')
+        (self.codex / '.asset-digest.bin').write_text('a' * 64)
+        (self.source / 'tools/codex-package/latest.json').write_text(json.dumps({'version': 'fixture', 'runtimeAssets': {'linux-x64': {'sha256': 'a' * 64, 'target': 'x86_64-unknown-linux-musl', 'entrypoint': 'bin/codex'}}}))
+        rows = [{'path': p.relative_to(self.codex).as_posix(), 'size': p.stat().st_size, 'sha256': hashlib.sha256(p.read_bytes()).hexdigest()} for p in self.codex.rglob('*') if p.is_file() and p.name != '.version']
+        (self.codex / '.manifest').write_text(json.dumps({'files': rows}))
+
+    def test_full_cli_package_is_staged_and_recorded(self):
+        agents.stage(self.source, self.artifact)
+        self.assertEqual((self.artifact / 'cindy/resources/cloud-runtimes/claude/claude').read_bytes(), b'synthetic CLI')
+        self.assertTrue((self.artifact / 'cindy/resources/cloud-runtimes/codex/codex-resources/helper').is_file())
+        self.assertTrue(json.loads((self.artifact / 'agent-source-proof.json').read_text())['codex']['directoryVerified'])
+
+    def test_rejects_corrupt_binary_before_copy(self):
+        self.claude.write_bytes(b'changed bytes')
+        with self.assertRaisesRegex(ValueError, 'CLAUDE_PIN_MISMATCH'): agents.stage(self.source, self.artifact)
+        self.assertFalse(self.artifact.exists())
+
+    def test_rejects_agent_links_and_unlisted_payload(self):
+        (self.codex / 'escape').symlink_to(self.claude)
+        with self.assertRaisesRegex(ValueError, 'CODEX_DIRECTORY_REQUIRED'): agents.stage(self.source, self.artifact)
+        (self.codex / 'escape').unlink()
+        (self.codex / 'unexpected').write_text('unverified extra')
+        with self.assertRaises(subprocess.CalledProcessError): agents.stage(self.source, self.artifact)
+        self.assertFalse(self.artifact.exists())
 
 class BuildGraphTest(unittest.TestCase):
     def test_remote_targets_use_fresh_base_without_registry_roundtrip(self):

@@ -2,8 +2,10 @@
 
 Use the `feat/cloud-settings-native-client` branch of `zhuoshaojian/cindy`.
 Required host tools: Git with full branch history, Python >= 3.12, and Docker
-Buildx. Run the final release build on native Linux amd64. Apple Silicon emulation
-is useful for preliminary recipe checks, not the final release artifact.
+Buildx. The build targets Linux amd64; it can run on native amd64 or under Docker's
+amd64 emulation on Apple Silicon. Record which environment produced the image.
+An emulated build still requires acceptance of that exact image on native Linux
+amd64 before promotion; successful compilation alone does not prove runtime health.
 
 From the repository root, with a committed, clean `deploy/linux-desktop/`:
 
@@ -36,6 +38,10 @@ is mounted into build stages. Use a full clone; frozen commits must be present.
   cloud overlays and builds maintenance/context bundles from the same source.
 - `assemble-runtime.py` installs the application once, the tracked helpers,
   Xfce/Dock sources and the Chrome compatibility wrapper. It removes no user data.
+- `stage-runtime-agents.py` bundles the frozen Claude binary and complete Codex
+  package from their verified downloads. The standard desktop Forge output does
+  not include these cloud CLI assets; their checksums and directory manifest are
+  checked again before assembly.
 - `audit-runtime-layer.py` verifies permissions, required entrypoints and the two
   explicit agent CLI links. `release_guard.py` checks architecture, non-root user,
   command, source labels and the base-plus-one-application layout.

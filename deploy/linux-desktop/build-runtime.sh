@@ -21,5 +21,6 @@ pnpm --filter desktop exec esbuild src/main/instance-runtime/profile-maintenance
 pnpm --filter desktop exec esbuild src/main/instance-runtime/profile-runtime-wire.ts --bundle --platform=node --format=esm --outfile=/workspace/artifact/profile-runtime-wire.mjs
 test ! -e /workspace/artifact/cindy
 cp -a apps/desktop/out/Cindy-linux-x64 /workspace/artifact/cindy
+python3 /workspace/recipe/stage-runtime-agents.py /workspace/source /workspace/artifact
 chmod -R a+rX /workspace/artifact
 printf 'CLOUD_PACKAGE_COMPLETE\n'
