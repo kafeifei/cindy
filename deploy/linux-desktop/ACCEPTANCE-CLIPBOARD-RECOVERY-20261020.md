@@ -3,7 +3,7 @@
 This follow-up covers the clipboard and automatic recovery gaps left by
 [R4 native-input acceptance](ACCEPTANCE-NATIVE-INPUT-20261020.md). The scope is
 one authorized cloud instance. Physical iPhone input and system clipboard tests
-are deferred at the user's request; no simulated test below is a phone pass.
+require the user's real-device operation; no simulated test below is a phone pass.
 
 ## Changes
 
@@ -172,10 +172,31 @@ fresh listing/input requests succeeded. The healthy controller and host each
 retained one connection. It used synthetic identities and accelerated 30–100 ms
 reconnect timing, not production credentials or phone hardware.
 
-Mac-to-cloud clipboard through the product UI remains pending: the Mac is locked.
-No UI action while locked is counted as acceptance. Physical iPhone keyboard
-composition and system clipboard remain
-explicitly deferred at the user's request. Mobile changes are source- and
+### Mac product-UI follow-up
+
+After the Mac was unlocked and the original Keychain request was authorized, the
+Dev viewer connected to the R6 receiver. Pasting synthetic Chinese/Emoji text with
+the actual **Clipboard → Paste to remote computer** button failed with
+`DESKTOP_CLIPBOARD_UNAVAILABLE`; the cloud test field remained empty. This is a
+failed transfer, not a pass based on advertised capabilities.
+
+The local native clipboard-counter helper exited with code 77 before clipboard
+transfer. The isolated, ad-hoc-signed Cloud Dev package had retained the production
+helper, whose caller authentication only accepts the signed release identities.
+The existing `DESKTOP_INPUT_DEVELOPMENT` build mode was used to rebuild the
+unchanged helper sources for this private acceptance app, bound to its exact
+executable path. An unrelated Node caller was still rejected with code 77 and no
+output. Release helper authentication and source were not modified. This local
+Dev fixture does not qualify a Developer ID-signed distribution package.
+
+The Mac's original clipboard was restored before the private Dev app quit. The
+rebuilt app's new signature triggered a new Keychain request; the follow-up is
+waiting for that system consent. Bidirectional Mac transfer, terminal paste and
+clipboard sync through the product UI remain unverified. The cloud test page is
+open and the previous Mac viewer has disconnected.
+
+Physical iPhone keyboard composition and system clipboard still require the
+user's real-device input and copy/paste result. Mobile changes are source- and
 test-verified only; no iPhone application update was installed during this work.
 
 Raw logs, screenshots, synthetic fixtures and infrastructure receipts stay in the
