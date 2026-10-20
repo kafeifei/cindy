@@ -1,0 +1,8 @@
+ARG BASE_RUNTIME_IMAGE
+FROM ${BASE_RUNTIME_IMAGE}
+USER root
+COPY --chmod=0755 --chown=root:root cindy-dock-terminal cindy-dock-chrome /usr/local/bin/
+COPY --chmod=0644 --chown=root:root com.cindy.cloud-terminal.desktop com.cindy.cloud-chrome.desktop /usr/share/applications/
+COPY --chmod=0644 --chown=root:root apply-dock-apps.py /usr/local/share/cindy/appearance/apply-dock-apps.py
+RUN umask 022 && update-desktop-database /usr/share/applications
+USER cindy

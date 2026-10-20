@@ -1,0 +1,17 @@
+{
+  "commit": "d4b39020bf083d79b352fcb56ea5a4941432fb39",
+  "upstream": "v0.1.108",
+  "cloudParent": "650f0b0fc086c3df852cac2672546ba1ccf5ad9d",
+  "packagingAllowed": true,
+  "formalPromotionAllowed": false,
+  "excludedConcurrentAuthEdits": true,
+  "includedPatch": {
+    "apps/desktop/src/main/host-settings/managementAuthorization.ts": "cb648929e86cee49446a140ca8cac3ba00f72e68028e5c1535693be805aedeef",
+    "apps/desktop/src/main/maker-host/codex-account-auth.ts": "ae0c670abc2b815becc61965923c485679e9aacd356447961c5ac752684a37ab",
+    "apps/desktop/src/main/instance-runtime/authorization-browser.ts": "13cf26f50eac1c33628ff3c6b76257c8e32e32ea09d727fb3d91ab993a70d9ec",
+    "apps/desktop/src/main/instance-runtime/__tests__/authorization-browser.test.ts": "952a4f04bf3689a9db890bc4226d7775fa4e291a3e6ec66743508c603247ffdc",
+    "apps/desktop/native/remote-desktop/linux-input-guard.py": "aabb6e84dc406c87e3a824380cdc0de0858a3ba9a8ed26882b46e9f6fcebeb3e",
+    "apps/desktop/native/remote-desktop/linux-input-guard.test.py": "43bfedc2d4bc64949b3d680dd43005f22fb7699db8125a90ced2b2c35cf15c1b"
+  },
+  "scope": "own-instance-input-auth-canary"
+}

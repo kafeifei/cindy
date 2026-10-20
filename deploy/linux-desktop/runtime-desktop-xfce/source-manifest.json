@@ -1,0 +1,47 @@
+{
+  "upstreamVersion": "v0.1.108",
+  "clientBaseCommit": "d4b39020bf083d79b352fcb56ea5a4941432fb39",
+  "clientPatchSha256": {
+    "apps/desktop/src/main/host-settings/managementAuthorization.ts": "cb648929e86cee49446a140ca8cac3ba00f72e68028e5c1535693be805aedeef",
+    "apps/desktop/src/main/maker-host/codex-account-auth.ts": "ae0c670abc2b815becc61965923c485679e9aacd356447961c5ac752684a37ab",
+    "apps/desktop/src/main/instance-runtime/authorization-browser.ts": "13cf26f50eac1c33628ff3c6b76257c8e32e32ea09d727fb3d91ab993a70d9ec",
+    "apps/desktop/src/main/instance-runtime/__tests__/authorization-browser.test.ts": "952a4f04bf3689a9db890bc4226d7775fa4e291a3e6ec66743508c603247ffdc",
+    "apps/desktop/native/remote-desktop/linux-input-guard.py": "aabb6e84dc406c87e3a824380cdc0de0858a3ba9a8ed26882b46e9f6fcebeb3e",
+    "apps/desktop/native/remote-desktop/linux-input-guard.test.py": "43bfedc2d4bc64949b3d680dd43005f22fb7699db8125a90ced2b2c35cf15c1b"
+  },
+  "runtimeVersion": "0.1.108-xfce-dock-r5.20261019",
+  "runtimeManifestDigest": "sha256:472134a7ea610497c71d1692ae1aca8f41ef842daf39d92bac298c6e0cf1c647",
+  "runtimeAsarSha256": "717a70c6d68b3611dee579f91e90b1a760f7a5a196f1265d1726de49064b4781",
+  "r5LayerBaseDigest": "sha256:4eafc9afc12486d1f2c74ebf8f7303cc705d06dda2e7549e4fe2346b0a1e4394",
+  "sourceSha256": {
+    "cindy-linux-desktop": "0df9bb42dcc3703b89133f965c8ef46a9dc37c0776c9909287ae0fb68a77a02e",
+    "xfce-session": "b91002fb99ac1702d40b0a6cc113e1a3c1bc567ecc19fd801c77dedeaf35e877",
+    "apply-appearance.py": "caced5f2b7f7e907ef66191fe8741d88a1ced86da9030b2ec7e4ac184a2da683",
+    "apply-dock.py": "df6e641cc800800520cd77667f4903e1b7cda4ab643b8d1fffab641f825df090",
+    "seccomp.json": "c21ad5704a7154137e417c3769c3d473ab6f277e25ece9b23b24f711680fe2a8",
+    "apply-dock-apps.py": "fa30f9715ad758d8dd2e8d78744234c2e49eab705f588881245625f345f6f7a6",
+    "cindy-dock-chrome": "41f2f32362a42a3a23414881ecd64ca525da437cafd07a74fc13c4c040fd7b6f",
+    "cindy-dock-terminal": "0cd98f0e084020451f8048f4858c94328bd04099d506a19338a01e5d534601ce",
+    "com.cindy.cloud-chrome.desktop": "dba64ae496426bb1ab08ac02ac8d06a4fbef30cacb409d3deeb12188fa8be316",
+    "com.cindy.cloud-terminal.desktop": "b19a92d2252780067bcecf3a7f98f037fb4be23933152d6018ee527a875b8019"
+  },
+  "windowOverlaySha256": {
+    "policy.mjs": "d4565920de95b4619a918291c2db818de553613196a0d1aaffb1da6e8976eff6",
+    "overlay.mjs": "7332d438d4ecca6e6092271e59ced9208660f9a7e8c149b12df287ea6d7b8b0b",
+    "overlay.test.mjs": "dd58f4271456e6108e85195819ce20689dae6de1d588f31604691f604eb58cf4"
+  },
+  "verifiedPackages": {
+    "google-chrome-stable": "155.0.8059.84-1",
+    "plank": "0.11.89-4+b1",
+    "xfce4-terminal": "1.0.4-1",
+    "xfwm4": "4.18.0-1",
+    "xfdesktop4": "4.18.1-1"
+  },
+  "themeResources": {
+    "arc-theme": "20221218-1",
+    "papirus-icon-theme": "20230104-2"
+  },
+  "qualification": "Isolated Linux, native X11 input; not DeviceLink end-to-end",
+  "clientSourceSnapshotCommit": "1b1ca95cc63d820e9cad2fdfda3d425097073d62",
+  "clientRuntimeFixCommit": "8db3e0683c3db8244ac1d39df2ac897482a95307"
+}

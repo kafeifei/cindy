@@ -1,5 +1,9 @@
 # Cloud runtime image packaging
 
+Client image source ownership and future ACS cache CI/CD stages are documented
+in [README.md](README.md). Historical application inputs are in
+[BUILD-V0108.md](BUILD-V0108.md).
+
 The released image must contain one dependency filesystem and one application
 payload, not the entire chain of earlier full application releases. A Docker
 `COPY` or `chmod` on top of an old application image retains the old bytes in
