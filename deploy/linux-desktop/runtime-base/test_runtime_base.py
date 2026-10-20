@@ -133,6 +133,14 @@ class CompareTest(unittest.TestCase):
         result = compare_base.classify({}, {"usr/local/lib/cindy/seccomp.json": row()})
         self.assertEqual(result["unexpected"], ["usr/local/lib/cindy/seccomp.json"])
 
+    def test_identical_release_files_and_build_leftovers_are_rejected(self):
+        for path in ("opt/cindy/Cindy", "usr/local/lib/cindy/seccomp.json",
+                     "usr/share/applications/com.cindy.cloud-terminal.desktop",
+                     "root/.cache/pnpm/index", "home/cindy/.local/share/gh/device_id"):
+            with self.subTest(path=path):
+                files = {path: row()}
+                self.assertEqual(compare_base.classify(files, dict(files))["unexpected"], [path])
+
     def test_regenerated_files_keep_metadata(self):
         result = compare_base.classify({"var/log/dpkg.log": row("a")}, {"var/log/dpkg.log": row("b")})
         self.assertEqual(result["regenerated"], ["var/log/dpkg.log"])

@@ -95,9 +95,14 @@ def classify(reference, candidate, contents=None):
     result["unexpected"] = []
     for path in sorted(reference.keys() | candidate.keys()):
         ref, new = reference.get(path), candidate.get(path)
+        kind = category(path)
+        # These paths must be absent even when copied byte-for-byte from the
+        # reference. Equality alone cannot qualify an application-free base.
+        if kind in ("release-layer", "build-leftover") and new is not None:
+            result["unexpected"].append(path)
+            continue
         if ref == new:
             continue
-        kind = category(path)
         both = ref is not None and new is not None and metadata(ref) == metadata(new)
         if kind in ("release-layer", "build-leftover"):
             # Allowed only as absences from the rebuilt base.
