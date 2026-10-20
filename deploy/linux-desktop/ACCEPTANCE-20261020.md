@@ -82,22 +82,43 @@ Xfce/Plank processes and system launchers.
 | Check | Result in this follow-up |
 | --- | --- |
 | Cloud runtime precheck | Passed |
-| Fresh OpenAI OAuth, local callback and cloud credential writeback | Pending; no fresh authorization was initiated |
-| DeviceLink live frames, mouse and keyboard through the remote viewer | Pending; no cross-device input result was obtained |
+| Fresh OpenAI OAuth and native callback forwarding | Passed; a new login reached `waiting → running → succeeded`, including a native `respond` request |
+| Cloud credential persistence and reload | Passed; new account credentials were written during this attempt, and the provider remained connected after reloading the client |
+| Authorization cleanup | Passed; login staging directory removed, login process and both port 1455 listeners gone, no cloud authorization-browser window remained |
+| Mac viewer → cloud mouse | Passed; pointer movement, Dock launch/minimize/restore, and Cindy search-field clicks were independently observed on the cloud desktop |
+| Mac viewer → Cindy keyboard | Passed; ASCII, Chinese and Emoji text, selection and deletion reached the cloud search field |
+| Foreground live video | Passed at 1280×800; matching client/cloud screenshots showed the typed search text while decoded frames advanced at approximately 30 fps |
+| Mac viewer → personal Dock Chrome text | **Failed**; entering committed text disconnected control |
 
-The controlling Mac was screen-locked. The isolated client process started, but
-its renderer was not available for interaction; a macOS SecurityAgent process
-also appeared during startup. The existing remote viewer showed a disconnecting
-state, which is not evidence of a new connection or a runtime regression. User
-unlock is required before continuing the product-entry checks. No screen-lock
-or credential protection was bypassed. These pending checks do not inherit a
-pass from the earlier native X11 or synthetic authorization-browser tests.
+After the user unlocked the Mac, the test used the native client provider card
+and its existing callback forwarding. No operator-created port proxy, copied
+callback URL or manual cloud `/success` request was used. An earlier attempt
+expired waiting for a callback and is not counted as a pass. The successful
+attempt wrote fresh `auth.json`, `account.json` and `config.toml` as UID 10001
+with mode 0600; verification inspected metadata, not credential contents.
+The cloud login child suppresses its own browser launch, so this path correctly
+left no cloud Chrome window to reclaim.
 
-Completion requires observing a fresh OpenAI operation reach success, connected
-status after reloading cloud settings, and cleanup of its owned browser tabs and
-login process. DeviceLink acceptance requires input through the actual macOS
-viewer and independently observed changes on the cloud desktop, with live frame
-updates. A macOS-to-cloud pass would not establish iPhone-to-cloud acceptance.
+DeviceLink was opened through Settings → Cloud instances → Remote desktop in
+the isolated Mac client. Trusted mouse and keyboard events were delivered to
+that viewer through its local debug connection, then traversed the real
+DeviceLink control path. Cloud-side X11 inspection was read-only. Independent
+cloud screenshots and the viewer both showed the test search text. Foreground
+samples advanced from 4130 to 4194 decoded frames over about 2.1 seconds. Earlier
+captures stalled while the test app was not reliably foregrounded; activating
+the existing Dev app restored updates. Background/occlusion behavior remains
+unqualified. Test text and the temporary fixture were removed; no task was sent.
+
+The personal Chrome failure is an outstanding input capability gap, so this is
+**not an unrestricted whole-desktop DeviceLink pass**. The frozen application's
+[Linux text adapter](../../apps/desktop/src/main/remote-desktop/linuxInputHost.ts)
+accepts Cindy's focused window and delegates other processes to the
+[owned managed-browser check](../../apps/desktop/src/main/mcp-integrations/browser-focused-text.ts).
+The separate Dock Chrome profile does not satisfy that check; input failure
+ends the control session. Its text path needs a separate implementation and
+regression check before claiming full Dock-browser remote control. No input
+ownership checks or sandbox restrictions were weakened for this acceptance.
+Terminal text and iPhone-to-cloud input were not qualified by this run.
 
 ## Limits
 
@@ -105,8 +126,8 @@ The local Rosetta runtime attempt stopped at `INSTANCE_SECCOMP_UNAVAILABLE`;
 sandboxing was not weakened. Runtime acceptance therefore uses the isolated
 native Linux environment and the authorized cloud instance, not a claimed local
 Mac runtime pass. Native X11 input tests are not DeviceLink cross-device E2E.
-This run did not repeat third-party OAuth token exchange, model inference or
-backup restoration. No formal version tag or fleet promotion was performed.
+Real OAuth above covers OpenAI only; other providers, model inference and backup
+restoration were not repeated. No formal version tag or fleet promotion was performed.
 
 Operator receipts, raw screenshots and infrastructure identifiers remain in the
 private acceptance archive; they are deliberately excluded from this repository.
