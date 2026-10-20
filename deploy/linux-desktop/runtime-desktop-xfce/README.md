@@ -1,9 +1,10 @@
 # Xfce / Plank cloud desktop sources
 
-This directory records the final desktop sources in
-`0.1.108-xfce-dock-r5.20261019`, based on Cindy upstream `v0.1.108`.
-`source-manifest.json` records the published image digest, ASAR hash, frozen client
-patch hashes, package versions and source hashes. Registry credentials, deployment
+These desktop sources are assembled by the [complete source build](../SOURCE-BUILD.md),
+based on Cindy upstream `v0.1.108`.
+`source-manifest.json` retains historical R5 comparison metadata: image digest,
+ASAR hash, frozen client patch hashes, package versions and source hashes. Current
+source-build acceptance is linked from `SOURCE-BUILD.md`. Registry credentials, deployment
 addresses, instance identities, profiles, backups and operator programs are not
 part of this source archive.
 
@@ -39,6 +40,22 @@ Papirus resources, X11 tools, D-Bus and the existing managed-keyring runtime.
 Theme resources are third-party packages, not vendored binaries here. The native
 client source and its cloud packaging overlays are separate inputs: this archive
 is not a claim that the whole native-client branch was bundled into the ASAR.
+
+## Existing user launchers
+
+When validating an upgraded desktop, inspect `~/.local/share/applications` for the
+managed `cindy-dock-terminal.desktop` and `cindy-dock-chrome.desktop` entries.
+They can take precedence over the new system launcher and cause duplicate Dock
+icons. With the user's test Terminal/Chrome windows closed, run
+`retire-legacy-dock-entries.py` as the desktop user, then restart the Dock and
+verify launch/minimize/restore. The tool archives only files whose entire content
+matches the corresponding system launcher. Custom entries and symlinks remain
+unchanged; absent legacy directories are not created and no ownership is changed.
+Backups are under `~/.config/cindy-desktop/legacy-user-desktop-entries/`.
+
+This is an explicit data migration tool, not an automatic login hook. A successful
+image build alone does not prove an existing user's Dock matching is correct.
+Run its filesystem regression with `python3 test_retire_legacy_dock_entries.py`.
 
 ## Historical R5 repair layer
 
