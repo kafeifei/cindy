@@ -9,7 +9,9 @@ COPY recipe/ /workspace/recipe/
 ENV CI=1 NODE_OPTIONS=--max-old-space-size=6144 \
     CINDY_AUTH_REGION=cn VITE_CINDY_AUTH_REGION=cn APP_VERSION=0.1.108
 RUN mkdir -p /workspace/debs /workspace/sysroot \
-    && node /workspace/recipe/download-build-assets.mjs
+    && node /workspace/recipe/download-build-assets.mjs \
+    && node /workspace/recipe/prepare-codex.mjs \
+    && node /workspace/recipe/prepare-other-assets.mjs
 RUN ELECTRON_SKIP_BINARY_DOWNLOAD=1 pnpm install --frozen-lockfile
 RUN /bin/sh /workspace/recipe/prepare-linux.sh
 RUN /bin/sh /workspace/recipe/build-runtime.sh
