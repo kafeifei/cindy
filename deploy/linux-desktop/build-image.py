@@ -61,12 +61,31 @@ def run_build(output, name, args, cwd):
     if result.returncode:
         raise RuntimeError(f'{name} failed; see {output / (name + ".log")}')
 
+def bake_plan(output, tag, revision, entrypoint_sha, no_cache):
+    """Connect both Dockerfiles without publishing an intermediate base image."""
+    common = {'CINDY_SOURCE_COMMIT': revision, 'SOURCE_DATE_EPOCH': '1789344000'}
+    base = {'context': 'recipe', 'dockerfile': 'runtime-base/Dockerfile',
+            'target': 'runtime-base-slim', 'args': common,
+            'platforms': ['linux/amd64'], 'no-cache': no_cache,
+            'output': [f'type=docker,name={tag}-base,rewrite-timestamp=true']}
+    runtime = {'context': '.', 'dockerfile': 'recipe/Dockerfile',
+               'contexts': {'cindy-source-base': 'target:base'},
+               'args': {**common, 'BASE_IMAGE': 'cindy-source-base',
+                        'CINDY_RUNTIME_VERSION': tag.rsplit(':', 1)[1],
+                        'CINDY_ENTRYPOINT_SHA256': entrypoint_sha},
+               'platforms': ['linux/amd64'], 'no-cache': no_cache, 'target': 'runtime',
+               'output': [f'type=docker,name={tag},rewrite-timestamp=true']}
+    records = {**runtime, 'target': 'build-records',
+               'output': ['type=local,dest=' + str(output / 'records')]}
+    return {'target': {'base': base, 'runtime': runtime, 'records': records}}
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--tag', required=True, help='new local image tag; never a formal X.Y.Z tag')
     parser.add_argument('--no-cache', action='store_true')
     parser.add_argument('--prepare-only', action='store_true')
+    parser.add_argument('--builder', help='existing native amd64 Buildx builder; exports images to local Docker')
     args = parser.parse_args()
     if not re.fullmatch(r'[a-z0-9._/-]+:[a-zA-Z0-9_.-]+', args.tag) or re.search(r':\d+\.\d+\.\d+$', args.tag):
         parser.error('use a unique candidate tag')
@@ -85,6 +104,24 @@ def main():
     flags = ['--no-cache'] if args.no_cache else []
     build = ['docker', 'buildx', 'build', '--platform', 'linux/amd64', '--progress=plain', *flags]
     common = ['--build-arg', 'CINDY_SOURCE_COMMIT=' + revision, '--build-arg', 'SOURCE_DATE_EPOCH=1789344000']
+    entrypoint_sha = digest((context / 'recipe/runtime-desktop-xfce/cindy-linux-desktop').read_bytes())
+    if args.builder:
+        plan = output / 'docker-bake.json'
+        plan.write_text(json.dumps(bake_plan(output, args.tag, revision, entrypoint_sha, args.no_cache), indent=2) + '\n')
+        run_build(output, 'full-build', ['docker', 'buildx', 'bake', '--builder', args.builder,
+                  '--progress=plain', '-f', str(plan), '--metadata-file', str(output / 'build-metadata.json'),
+                  'base', 'runtime', 'records'], context)
+        base = json.loads(docker('image', 'inspect', base_tag))[0]
+        info = json.loads(docker('image', 'inspect', args.tag))[0]
+        (output / 'base-image.json').write_text(json.dumps(base, indent=2) + '\n')
+        (output / 'runtime-image.json').write_text(json.dumps(info, indent=2) + '\n')
+        import release_guard
+        release_guard.audit_image(info, base, revision, entrypoint_sha)
+        (output / 'result.json').write_text(json.dumps({'imageId': info['Id'], 'baseImageId': base['Id'],
+                  'recipeCommit': revision, 'builder': args.builder, 'bytes': info['Size'], 'published': False,
+                  'runtimeAcceptance': 'pending', 'buildOnly': True}, indent=2) + '\n')
+        print(json.dumps({'imageId': info['Id'], 'output': str(output), 'runtimeAcceptance': 'pending'}))
+        return
     run_build(output, 'base-build', build + ['-f', 'runtime-base/Dockerfile', *common,
               '--target', 'runtime-base-slim', '--output', f'type=docker,name={base_tag},rewrite-timestamp=true', '.'], context / 'recipe')
     base = json.loads(docker('image', 'inspect', base_tag))[0]

@@ -16,6 +16,10 @@ python3 deploy/linux-desktop/build-image.py \
 Use a new tag and output directory. `--no-cache` forces both Dockerfiles to run
 again; `--prepare-only` exports the exact source context without starting Docker.
 The script never publishes images, creates ACS caches or updates instances.
+Pass `--builder NAME` to use an existing native amd64 Buildx builder from a Mac
+or another host. Bake connects the freshly built base directly to the application
+and records targets; it does not fetch a historical Cindy image or publish an
+intermediate base. The resulting images and records are returned to the host.
 Network access is needed for pinned OS packages, npm dependencies and verified
 Electron/agent assets. No user HOME, credentials, business data or Docker socket
 is mounted into build stages. Use a full clone; frozen commits must be present.

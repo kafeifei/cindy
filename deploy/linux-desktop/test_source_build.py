@@ -9,6 +9,22 @@ HERE = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location('runtime_audit', HERE / 'audit-runtime-layer.py')
 audit = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(audit)
+build_spec = importlib.util.spec_from_file_location('source_build', HERE / 'build-image.py')
+build = importlib.util.module_from_spec(build_spec)
+build_spec.loader.exec_module(build)
+
+class BuildGraphTest(unittest.TestCase):
+    def test_remote_targets_use_fresh_base_without_registry_roundtrip(self):
+        plan = build.bake_plan(Path('/private/records'), 'example:unique', 'commit', 'entrysha', True)['target']
+        self.assertEqual(plan['base']['target'], 'runtime-base-slim')
+        for name in ['runtime', 'records']:
+            self.assertEqual(plan[name]['contexts'], {'cindy-source-base': 'target:base'})
+            self.assertEqual(plan[name]['args']['BASE_IMAGE'], 'cindy-source-base')
+            self.assertEqual(plan[name]['args']['CINDY_SOURCE_COMMIT'], 'commit')
+            self.assertTrue(plan[name]['no-cache'])
+        self.assertEqual(plan['records']['target'], 'build-records')
+        self.assertEqual(plan['records']['output'], ['type=local,dest=/private/records/records'])
+        self.assertTrue(all('push=' not in out for t in plan.values() for out in t['output']))
 
 class RuntimeLayerTest(unittest.TestCase):
     def setUp(self):
