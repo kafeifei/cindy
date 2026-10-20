@@ -83,8 +83,10 @@ getters. Sixteen focused clipboard tests and Desktop typecheck passed. A patched
 standalone Electron harness on R5 completed cold sync/read in 20–41 ms and passed
 terminal/Chrome UTF-8 paste and rich-content checks. This is not a corrected-image
 pass. The first R6 build exhausted the local VM memory during Forge compilation;
-no runtime image was produced. The retry lowers the packaging Node heap from
-6 GiB to 4 GiB and requires the executable and ASAR immediately after packaging.
+no runtime image was produced. A 4 GiB packaging heap retry also failed with V8 heap exhaustion. The recipe
+retains its 6 GiB heap and now requires the executable and ASAR immediately
+after packaging; the next local build uses temporary VM swap to provide
+headroom without restarting or stopping existing services.
 A subsequent download failed with curl error 18 (truncated HTTP/2 stream).
 The downloader now retries stalled/partial transfers over HTTPS/HTTP 1.1 and
 uses a SHA-256-verified BuildKit asset cache; five tests cover cache reuse,

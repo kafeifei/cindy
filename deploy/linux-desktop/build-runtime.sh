@@ -2,7 +2,7 @@
 set -eu
 cd /workspace/source
 export TAR_OPTIONS=--no-same-owner
-export CI=1 NODE_OPTIONS=--max-old-space-size=4096
+export CI=1 NODE_OPTIONS=--max-old-space-size=6144
 export CINDY_AUTH_REGION=cn VITE_CINDY_AUTH_REGION=cn APP_VERSION=0.1.108
 export PATH=/workspace/sysroot/usr/bin:$PATH
 export PKG_CONFIG_SYSROOT_DIR=/workspace/sysroot
