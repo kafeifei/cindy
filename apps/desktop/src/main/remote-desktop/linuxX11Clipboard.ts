@@ -36,6 +36,13 @@ export async function readX11ClipboardSnapshot(primary = false): Promise<{
   if (formats.length > 64 || formats.some(f => f.length > 256))
     throw new Error('CLIPBOARD_UNSUPPORTED');
   const content: RemoteClipboardContent = {};
+  // An owner can disappear while the X11 clipboard manager is saving its
+  // targets. Reading a format that is not offered can block Electron's main
+  // thread until that handover times out. An empty offer has no data to read.
+  if (!formats.length) {
+    await check();
+    return { formats, content };
+  }
   const fileBacked = formats.some(f => /file-url|filenames|hdrop|filecontents|filegroupdescriptor|uri-list/i.test(f));
   if (!fileBacked) {
     for (const [key, read] of [

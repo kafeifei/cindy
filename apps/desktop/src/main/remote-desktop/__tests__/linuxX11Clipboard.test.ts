@@ -16,6 +16,7 @@ vi.mock('electron', () => ({
 vi.mock('../../instance-runtime/config', () => ({ getInstanceConfig: h.config }));
 vi.mock('../linuxDisplay', async (original) => ({ ...await original<object>(), openLinuxDisplay: h.open }));
 import { managedX11Clipboard, supportsManagedX11Clipboard, readX11ClipboardSnapshot, writeX11Clipboard } from '../linuxX11Clipboard';
+import { clipboard } from 'electron';
 beforeEach(() => {
   vi.stubGlobal('process', { ...process, platform: 'linux' });
   vi.stubEnv('DISPLAY', ':99'); vi.stubEnv('WAYLAND_DISPLAY', ''); vi.stubEnv('HYPRLAND_INSTANCE_SIGNATURE', '');
@@ -53,6 +54,22 @@ it('does not copy file paths or encode oversized images', async () => {
 it('bounds text before returning or fingerprinting it', async () => {
   h.text = 'x'.repeat(512001);
   await expect(readX11ClipboardSnapshot()).rejects.toThrow('CLIPBOARD_TOO_LONG');
+});
+it.each([false, true])('does not request data from an empty X11 selection (primary=%s)', async primary => {
+  h.formats = [];
+  const reads = ['readText', 'readHTML', 'readRTF'].map(key =>
+    vi.spyOn(clipboard, key as 'readText').mockImplementation(() => {
+      throw new Error('An unavailable target would block the native clipboard');
+    }));
+  try {
+    expect(await readX11ClipboardSnapshot(primary)).toEqual({ formats: [], content: {} });
+    for (const read of reads) expect(read).not.toHaveBeenCalled();
+    expect(h.readImage).not.toHaveBeenCalled();
+    h.current.mockResolvedValue(false);
+    await expect(readX11ClipboardSnapshot(primary)).rejects.toThrow('DESKTOP_CLIPBOARD_UNAVAILABLE');
+  } finally {
+    reads.forEach(read => read.mockRestore());
+  }
 });
 it('rejects a replaced display, unavailable display and expired lease without writing', async () => {
   h.current.mockResolvedValue(false);
