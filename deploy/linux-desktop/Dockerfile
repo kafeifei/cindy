@@ -8,7 +8,8 @@ COPY source/ ./
 COPY recipe/download-build-assets.mjs recipe/prepare-codex.mjs recipe/prepare-other-assets.mjs recipe/prepare-linux.sh /workspace/recipe/
 ENV CI=1 NODE_OPTIONS=--max-old-space-size=6144 \
     CINDY_AUTH_REGION=cn VITE_CINDY_AUTH_REGION=cn APP_VERSION=0.1.108
-RUN mkdir -p /workspace/debs /workspace/sysroot \
+RUN --mount=type=cache,id=cindy-linux-build-assets,target=/var/cache/cindy-build-assets,sharing=locked \
+    mkdir -p /workspace/debs /workspace/sysroot \
     && node /workspace/recipe/download-build-assets.mjs \
     && node /workspace/recipe/prepare-codex.mjs \
     && node /workspace/recipe/prepare-other-assets.mjs

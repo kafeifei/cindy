@@ -85,6 +85,10 @@ terminal/Chrome UTF-8 paste and rich-content checks. This is not a corrected-ima
 pass. The first R6 build exhausted the local VM memory during Forge compilation;
 no runtime image was produced. The retry lowers the packaging Node heap from
 6 GiB to 4 GiB and requires the executable and ASAR immediately after packaging.
+A subsequent download failed with curl error 18 (truncated HTTP/2 stream).
+The downloader now retries stalled/partial transfers over HTTPS/HTTP 1.1 and
+uses a SHA-256-verified BuildKit asset cache; five tests cover cache reuse,
+corruption, interrupted downloads, checksum failure and invalid pins.
 R6 full build and qualification are pending. The two R5 diagnostic fixtures
 exited with code zero without a recorded normal-shutdown request; no normal-stop
 acceptance is claimed for them, and the fresh-image run must capture the runtime
