@@ -11,8 +11,8 @@ release checks. Ordinary desktop builds do not enable these overlays.
 
 | Material | Purpose |
 | --- | --- |
-| [SOURCE-BUILD.md](SOURCE-BUILD.md), [R4 acceptance](ACCEPTANCE-NATIVE-INPUT-20261020.md) | Complete source-build entry and the current one-instance native input qualification |
-| [Clipboard and recovery follow-up](ACCEPTANCE-CLIPBOARD-RECOVERY-20261020.md) | Targeted checks, native clipboard results and clearly separated pending device acceptance |
+| [SOURCE-BUILD.md](SOURCE-BUILD.md), [R4 acceptance](ACCEPTANCE-NATIVE-INPUT-20261020.md) | Complete source-build entry and the R4 native input qualification |
+| [Clipboard and recovery follow-up](ACCEPTANCE-CLIPBOARD-RECOVERY-20261020.md) | R7 source-build and Mac clipboard acceptance, rollout results, and explicit phone-test limits |
 | [Dual-version update plan](DUAL-VERSION-UPDATES.md) | Proposed upstream/cloud revision model and release selection; not implemented CI/CD |
 | [runtime-base/README.md](runtime-base/README.md), `runtime-base/Dockerfile`, `runtime-base/packages.lock` | Build the third-party CN dependency base from pinned OS, package and asset inputs; no Cindy application or helpers |
 | [BUILD-V0108.md](BUILD-V0108.md), `source-freeze.json` | Historical v0.1.108 application build inputs and limitations |

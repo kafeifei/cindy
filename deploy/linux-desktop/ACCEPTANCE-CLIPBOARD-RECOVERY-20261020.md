@@ -1,9 +1,11 @@
-# Managed X11 clipboard and peer recovery — 2026-10-20
+# Managed X11 clipboard and peer recovery — 2026-10-20–21
 
 This follow-up covers the clipboard and automatic recovery gaps left by
 [R4 native-input acceptance](ACCEPTANCE-NATIVE-INPUT-20261020.md). The scope is
-one authorized cloud instance. Physical iPhone input and system clipboard tests
-require the user's real-device operation; no simulated test below is a phone pass.
+initially one authorized cloud instance; the subsequent authorized R7 rollout is
+recorded at the end. Physical iPhone input and clipboard acceptance were skipped
+with user approval because the installed build had no established entry. Neither
+Mac acceptance nor simulated tests count as a phone pass.
 
 ## Changes
 
@@ -223,8 +225,8 @@ contract or either consumer's validator. A regression using the actual shared
 sync engine reproduced `CLIPBOARD_UNSUPPORTED` before the fix and passed after it,
 covering initial no-write behavior, both transfer directions and no repeated
 write on an unchanged tick. All 34 focused clipboard/viewer tests and Desktop
-typecheck passed. This is a **source fix**: the deployed R6 image still contains
-the defect, and automatic sync is not recorded as a live pass.
+typecheck passed. R6 contains the defect. The subsequent R7 qualification below
+includes the fix; its separate product-UI result is recorded below.
 
 ### Physical iPhone status
 
@@ -258,3 +260,118 @@ were not changed.
 Raw logs, screenshots, synthetic fixtures and infrastructure receipts stay in the
 private acceptance archive. No user clipboard contents or credentials are
 included in this record.
+
+## R7 follow-up — 2026-10-21
+
+The complete Dockerfile chain was rebuilt from recipe commit
+`c9ba0537d09932bc1be14bba29953d1b588e996a`, including the frozen decimal-generation
+fix `80c313a857a6ca97207e79d79d2bfa7fc2790142`. No previous Cindy runtime image
+was used as the base. The temporary local build swap was removed afterward.
+
+| Artifact | Value |
+| --- | --- |
+| Candidate tag | `0.1.108-source-r7.20261020` |
+| Registry manifest digest | `sha256:76d51e58368b53870df9a9b5018659e56cd1e9fc67d81dffaa8a43e8986e560d` |
+| Image config ID | `sha256:715e2d8a03b778c877806579c205ca6088eb1dce092467093598eaf84a9dcb70` |
+| Application ASAR SHA-256 | `ad024b0ff1c1a168f5bd71e45771fa60e07f836db2a88eae9627355cdab9207a` |
+| Uncompressed image size | 3,704,833,236 bytes |
+
+Non-root audit passed for 820 payload files, two layers and 603 pinned system
+packages. All 22 checks passed on a disposable native Linux amd64 fixture,
+including the R6 desktop/input/clipboard checks and the actual shared clipboard
+sync engine against native X11 clipboard access. The new check verified initial
+no-write behavior, both directions, no repeated write on an unchanged tick and
+no synthesized key. The generation was a valid 77-digit decimal string. The
+controller side of this harness was synthetic; it was not a DeviceLink product-UI
+or phone test. Empty-clipboard operations took 31–41 ms. Normal shutdown exited
+zero with no new crash dump, and the fixture was deleted by UID.
+
+The exact R7 ACS cache reached Ready. A disposable probe verified cache hits for
+the main container, the actual profile-status init command, the retained legacy
+volume-init image, and the new-instance volume-init command using R7. All three
+init containers and the main check exited zero. No business PVC or service-account
+token was mounted, and the probe was removed.
+
+### R7 own-instance and Mac product UI
+
+The own instance was upgraded from R6 to the exact R7 digest after a stopped,
+read-only, encrypted OSS backup (3,207 files; 436,538,349 ciphertext bytes).
+Database integrity/counts, schedules, crash dumps and runtime readiness passed;
+maintenance returned to `released` at epoch 82 with zero Pod restarts. At that
+checkpoint, the other 11 instances and new-claim defaults were unchanged.
+
+The isolated Mac Dev client then connected through the actual product remote
+viewer to this R7 instance. Foreground automatic sync passed in both directions:
+Mac text containing Chinese, Emoji and a newline reached the cloud X11 clipboard
+without typing into the page; a subsequent remote Ctrl+V inserted the exact text.
+New Chinese/ZWJ Emoji text entered and copied through the viewer on cloud Chrome
+reached the Mac pasteboard exactly. Its change counter remained unchanged on the
+following check, showing no repeated write. The test used the real DeviceLink
+connection and product sync toggle; no cloud clipboard setter or synthetic
+controller replaced that path.
+
+Initial empty-clipboard handling displayed the skipped-content notice. A manual
+transfer comparison changed both sides and correctly raised the conflict notice.
+After restoring native viewer focus and resetting that test baseline through the
+product retry control, a fresh copy completed automatic sync without a remaining
+notice. Renderer CDP focus alone is insufficient evidence of native window focus.
+The private Dev package retains its previously documented development helper
+binding; this is not release-signature acceptance.
+
+The exec-launched fixture displayed a separate Chrome task icon. Closing that
+fixture and starting Chrome through the real Dock pin produced one merged icon;
+minimize and restoration through that icon passed. No user launcher was removed.
+The test tabs were closed, sync returned to off, the original empty Mac pasteboard
+was restored, the viewer disconnected and the private Dev app quit normally.
+Its temporary renderer debug port closed; the hosting app was not changed.
+Physical iPhone input and clipboard
+remain skipped under the user's authorization; no new real OAuth exchange was
+performed in this R7 follow-up.
+
+
+### R7 rollout result
+
+After own-instance product acceptance, nine other running instances were upgraded
+serially. Each completed a stopped, read-only, encrypted OSS backup before its
+image change, then passed cache-hit, readiness, ASAR, desktop/font, sealed database,
+schedule and crash-dump checks. Every upgraded runtime returned to `released`.
+One initially unknown activity count cleared on a fresh inspection and was then
+upgraded through the same process, without overriding the activity gate.
+
+| Final state | Count |
+| --- | --- |
+| Running on R7, including the own instance; ready with zero restarts | 10 |
+| Already stopped; R7 staged for next start, without waking the instance | 1 |
+| Deferred with its original image and Pod because activity and near-term scheduled work remained | 1 |
+
+The stopped instance completed a real encrypted OSS cold backup (158 files;
+367,291 ciphertext bytes) before the main/init template changed. It remained at
+zero replicas, with automatic updates still off. This proves template staging,
+not a successful application start on that instance.
+
+That cold backup used a dedicated one-instance operator extension, not a new
+shared CIS deployment: it bound the stopped record version, source template and
+STS/PVC identities, rejected writable mounts and maintained the fence throughout
+the backup. Its manifest explicitly records an operator-verified offline snapshot,
+not fabricated clean-shutdown/epoch evidence. Twelve focused helper checks, a
+synthetic archive/encryption/restore and tamper check, and disposable real-Linux
+read-only-versus-writable mount checks passed before use. The actual cold object
+was uploaded successfully; a production-data restore was not performed here.
+
+New-claim defaults in both API and orchestrator now resolve to the same qualified
+R7 digest. The actual pure template builder was checked for matching R7 main and
+volume-init images without creating a business instance. Existing verified-profile
+init images also moved to R7. One native template retained its bound legacy volume
+initializer; that exact initializer had its own successful ACS cache-hit check.
+
+Final reconciliation preserved all 12 PVCs and instance identities, resource
+settings and update preferences. Scheduled work was preserved, the deferred
+instance's Pod/template remained unchanged, and no maintenance operation remained
+active. Shared CIS maintenance and backup module hashes were unchanged. Temporary
+operators, script ConfigMaps and probes were removed by exact UID; active policy
+and immutable audit records were retained.
+
+The [dual-version update plan](DUAL-VERSION-UPDATES.md) is committed separately.
+It remains a proposal: this rollout did not implement CI/CD, a release registry
+or automatic cloud-revision selection. The deferred instance was not silently
+queued through a new scheduler or forced to restart.
