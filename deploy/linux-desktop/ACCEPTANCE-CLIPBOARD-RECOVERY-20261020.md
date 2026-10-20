@@ -228,13 +228,23 @@ the defect, and automatic sync is not recorded as a live pass.
 
 ### Physical iPhone status
 
-The user could not find the cloud remote-desktop entry on the installed phone.
-The current source provides **Home menu → Device management → Cloud Cindy →
-Remote desktop**, and the account's device list reports the own Linux instance
-online with control enabled. Guidance has been provided; the phone's actual
-screen, native keyboard composition and system clipboard transfers remain
-pending. No iPhone application update was installed during this work, and neither
-Mac input nor mobile unit tests substitute for this hardware acceptance.
+The user confirmed that the installed **production iPhone app does not have
+Device management**. The guidance above came from the development branch and
+must not be presented as the production app's available navigation. This was an
+acceptance setup error; no phone input or clipboard failure has been established.
+
+The cloud device is online with control enabled, but its availability alone does
+not prove that this phone build has a matching entry. The phone's installed build
+must be identified before giving further navigation or deciding whether a test
+build is required. Native keyboard composition and both phone clipboard
+directions remain pending. No iPhone application update was installed, and
+neither Mac input nor mobile unit tests substitute for hardware acceptance.
+
+The private Mac Dev app has now quit normally; its original inspector fuse
+settings were restored and code-signing verification passed. The test-only native
+helper retains the documented exact-path development binding and is not a
+release-signature qualification. The blank cloud test page remains available for
+the phone follow-up; other cloud instances were not changed.
 
 Raw logs, screenshots, synthetic fixtures and infrastructure receipts stay in the
 private acceptance archive. No user clipboard contents or credentials are
