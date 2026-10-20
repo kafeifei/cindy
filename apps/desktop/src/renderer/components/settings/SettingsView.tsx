@@ -5,9 +5,9 @@ import { useSyncExternalStore } from 'react';
 import { ArrowLeft, ChevronRight, Puzzle } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
-import { Tip } from '@/components/ui/tooltip';
 import { TAB_IDS, isSettingsTab } from '@/lib/tabLabels';
 import type { SettingsTab } from '@/lib/tabLabels';
+import { SettingsSidebar } from './SettingsSidebar';
 import { SettingsSidebarNav } from './SettingsSidebarNav';
 import { resolveSettingsSearchEntry } from './settingsSearchCatalog';
 import { SettingsSearchNavigationContext } from './SettingsSearchNavigation';
@@ -62,6 +62,7 @@ import { canAccessBillingSettings } from './billingVisibility';
 import { canAccessUsageSettings } from './usageVisibility';
 import { UsageHistorySection } from './usage/UsageHistorySection';
 import { CURRENT_CINDY_REGION } from '../../../shared/brandRegion';
+import { CloudInstancesSection } from '@/features/cloud-settings/CloudInstancesSection';
 
 const DEFAULT_SETTINGS_MENU_WIDTH = 260;
 
@@ -104,9 +105,10 @@ export function SettingsView() {
     if (raw === 'tina') return 'im-bot';
     if (raw === 'billing' && !canAccessBilling) return 'general';
     if (raw === 'usage' && !canAccessUsage) return 'general';
+    if (raw === 'cloud-instances' && mode !== 'cloud') return 'general';
     if (raw === 'agent-island' && !isMac) return 'general';
     return isSettingsTab(raw) ? raw : 'general';
-  }, [canAccessBilling, canAccessUsage, isMac, rawTab]);
+  }, [canAccessBilling, canAccessUsage, isMac, rawTab, mode]);
   const piExtensionsPanelOpen =
     activeTab === 'general' &&
     (rawTab === 'pi-extensions' || searchParams.get('openPanel') === 'pi-extensions');
@@ -227,9 +229,10 @@ export function SettingsView() {
         (tabId) =>
           (isMac || tabId !== 'agent-island') &&
           (canAccessBilling || tabId !== 'billing') &&
-          (canAccessUsage || tabId !== 'usage'),
+          (canAccessUsage || tabId !== 'usage') &&
+          (mode === 'cloud' || tabId !== 'cloud-instances'),
       ),
-    [canAccessBilling, canAccessUsage, isMac],
+    [canAccessBilling, canAccessUsage, isMac, mode],
   );
   const searchContext = useMemo<SettingsSearchContext>(() => ({
     region: CURRENT_CINDY_REGION,
@@ -260,28 +263,7 @@ export function SettingsView() {
           左侧保留原来的页头位置；右侧不再为页头预留 56px，贴着 46px 标题栏起排。 */}
       <div className="flex h-full min-h-0 w-full justify-start pb-5">
         {/* Inner sidebar mirrors the main sidebar width for a stable route transition. */}
-        <aside
-          className="flex h-full min-h-0 shrink-0 flex-col gap-2 overflow-y-auto pl-6 pr-4 pt-7"
-          style={{ width: menuWidth }}
-          aria-label={t('settings.title')}
-        >
-          {/* Back navigation — gap 10, pb 18, aligned with menu items via px-3 */}
-          <div className="flex items-center gap-2.5 px-3 pb-[18px]">
-            <Tip text={t('settings.back')} side="bottom">
-              <button
-                type="button"
-                onClick={exitSettings}
-                aria-label={t('settings.back')}
-                className="flex h-7 w-7 items-center justify-center rounded-full text-[var(--settings-back-icon)] transition-[color,background-color,transform] duration-150 hover:bg-titlebar-button-hover hover:text-[var(--settings-back-text)] active:scale-[0.98]"
-              >
-                <ArrowLeft size={20} />
-              </button>
-            </Tip>
-            <h1 className="text-24 font-medium leading-[1.1] text-[var(--settings-back-text)]">
-              {t('settings.title')}
-            </h1>
-          </div>
-
+        <SettingsSidebar width={menuWidth} onBack={exitSettings}>
           <SettingsSidebarNav
             tabIds={visibleTabIds}
             searchContext={searchContext}
@@ -289,7 +271,7 @@ export function SettingsView() {
             onSelectTab={handleSelectTab}
             onSelectSearchResult={handleSelectSearchResult}
           />
-        </aside>
+        </SettingsSidebar>
 
         {/* Content column — capped and centered in the remaining space.
             Most tabs scroll as a page; Session Import and Plugins use a fixed-height
@@ -455,6 +437,16 @@ export function SettingsView() {
                     </section>
                   </>
                 )}
+              </div>
+            )}
+
+            {activeTab === 'cloud-instances' && (
+              <div
+                role="tabpanel"
+                id="settings-panel-cloud-instances"
+                aria-labelledby="settings-tab-cloud-instances"
+              >
+                <CloudInstancesSection />
               </div>
             )}
 

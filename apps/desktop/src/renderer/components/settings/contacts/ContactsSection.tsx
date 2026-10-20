@@ -201,6 +201,71 @@ export function ContactsSection() {
   }, [t]);
 
   return (
+    <ContactsSectionView
+      enabled={enabled}
+      togglePending={togglePending}
+      aiSessionPending={aiSessionPending}
+      statsLine={statsLine}
+      pendingCount={pendingCount}
+      syncStatus={syncStatus}
+      syncPending={syncPending}
+      syncSummary={syncSummary}
+      handleToggle={handleToggle}
+      handleSyncToggle={handleSyncToggle}
+      handleSyncNow={handleSyncNow}
+      startAiSession={startAiSession}
+      onManage={() => setManagerOpen(true)}
+      manager={
+        <ContactsManagerDialog
+          open={managerOpen}
+          onOpenChange={setManagerOpen}
+          syncStatus={syncStatus}
+          syncPending={syncPending}
+          syncSummary={syncSummary}
+          onSyncNow={() => void handleSyncNow()}
+          {...(enabled ? { onAiOrganize: startAiSession } : {})}
+        />
+      }
+    />
+  );
+}
+
+export function ContactsSectionView({
+  enabled,
+  togglePending,
+  aiSessionPending,
+  statsLine,
+  pendingCount,
+  syncStatus,
+  syncPending,
+  syncSummary,
+  handleToggle,
+  handleSyncToggle,
+  handleSyncNow,
+  startAiSession,
+  onManage,
+  manager,
+}: {
+  enabled: boolean;
+  togglePending: boolean;
+  aiSessionPending: boolean;
+  statsLine: string;
+  pendingCount: number;
+  syncStatus:
+    | (Pick<ContactsDeviceSyncStatus, 'available' | 'enabled'> & Partial<ContactsDeviceSyncStatus>)
+    | null;
+  syncPending: boolean;
+  syncSummary: string;
+  handleToggle: (value: boolean) => Promise<void>;
+  handleSyncToggle: (value: boolean) => Promise<void>;
+  handleSyncNow: (() => Promise<void>) | undefined;
+  startAiSession: (() => Promise<void>) | undefined;
+  onManage: (() => void) | undefined;
+  manager: React.ReactNode;
+}) {
+  const { t } = useTranslation();
+
+  return (
     <div className="flex flex-col gap-[14px]">
       <div className="flex flex-col gap-1">
         <h2 className="text-16 font-medium leading-[1.2] text-[var(--settings-section-title)]">
@@ -239,14 +304,16 @@ export function ContactsSection() {
         <div className="flex shrink-0 items-center gap-2">
           {/* 管理入口不随开关禁用: 开关只 gate agent 侧访问, 关闭后用户仍需要
               能进来浏览/清理既有数据(数据 CRUD IPC 通道本就不受 gate) */}
-          <Button variant="secondary" size="md" compact type="button" onClick={() => setManagerOpen(true)}>
-            {t('settings.contacts.manage')}
-            {pendingCount > 0 && (
-              <span className="rounded-full bg-[var(--status-bar-accent)] px-1.5 text-11 leading-[1.455] text-[var(--accent-pure-cta-fg)]">
-                {pendingCount}
-              </span>
-            )}
-          </Button>
+          {onManage && (
+            <Button variant="secondary" size="md" compact type="button" onClick={onManage}>
+              {t('settings.contacts.manage')}
+              {pendingCount > 0 && (
+                <span className="rounded-full bg-[var(--status-bar-accent)] px-1.5 text-11 leading-[1.455] text-[var(--accent-pure-cta-fg)]">
+                  {pendingCount}
+                </span>
+              )}
+            </Button>
+          )}
           <Switch
             checked={enabled}
             disabled={togglePending}
@@ -287,7 +354,7 @@ export function ContactsSection() {
               )}
             >
               {syncSummary}
-              {syncStatus?.enabled && syncStatus.onlineDeviceCount > 0
+              {syncStatus?.enabled && (syncStatus.onlineDeviceCount ?? 0) > 0
                 ? ` · ${t('settings.contacts.sync.onlineDevices', {
                     count: syncStatus.onlineDeviceCount,
                   })}`
@@ -296,7 +363,7 @@ export function ContactsSection() {
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          {syncStatus?.enabled && (
+          {syncStatus?.enabled && handleSyncNow && (
             <Button
               variant="secondary"
               size="md"
@@ -307,7 +374,10 @@ export function ContactsSection() {
               disabled={syncPending || syncStatus.onlineDeviceCount === 0}
             >
               <span
-                className={cn('inline-flex', syncPending && 'animate-spinner motion-reduce:animate-none')}
+                className={cn(
+                  'inline-flex',
+                  syncPending && 'animate-spinner motion-reduce:animate-none',
+                )}
                 aria-hidden="true"
               >
                 <RefreshCw size={13} />
@@ -325,7 +395,7 @@ export function ContactsSection() {
       </div>
 
       {/* 唯一常驻入口：不按空库状态隐藏，空库可建库，非空库可继续补充与整理。 */}
-      {enabled && (
+      {enabled && startAiSession && (
         <div
           className={cn(
             'flex flex-col gap-2.5 rounded-xl px-4 py-3',
@@ -352,16 +422,7 @@ export function ContactsSection() {
         </div>
       )}
 
-      {/* 管理浮层仍可复用同一个预填入口。 */}
-      <ContactsManagerDialog
-        open={managerOpen}
-        onOpenChange={setManagerOpen}
-        syncStatus={syncStatus}
-        syncPending={syncPending}
-        syncSummary={syncSummary}
-        onSyncNow={() => void handleSyncNow()}
-        {...(enabled ? { onAiOrganize: startAiSession } : {})}
-      />
+      {manager}
     </div>
   );
 }

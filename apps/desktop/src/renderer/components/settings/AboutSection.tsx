@@ -26,7 +26,12 @@ import { useAnalyticsSettings } from '@/hooks/useAnalyticsSettings';
 import { useLogUploadSettings } from '@/hooks/useLogUploadSettings';
 import { OpenLogsRow, UploadLogsRow } from '@/components/log-support/LogSupportActions';
 import { PiKernelVersionRow } from './PiKernelVersionRow';
-import { HARNESS_MENU_ITEM_CLASS, HarnessMenuFootnote, HarnessVersionMenuItem, HarnessVersionMenuRow } from './HarnessVersionMenuRow';
+import {
+  HARNESS_MENU_ITEM_CLASS,
+  HarnessMenuFootnote,
+  HarnessVersionMenuItem,
+  HarnessVersionMenuRow,
+} from './HarnessVersionMenuRow';
 import { DefaultOverrideControls } from './DefaultOverrideControls';
 import { CURRENT_CINDY_REGION } from '../../../shared/brandRegion';
 import { LEGAL_LINKS } from '../../../shared/legalLinks';
@@ -76,7 +81,10 @@ const DESKTOP_SOCIAL_LINKS = [
   },
 ] as const;
 
-function useAgentBinaryVersion(kind: UpdatableAgentKind): { state: AgentVersionState; check: () => void } {
+function useAgentBinaryVersion(kind: UpdatableAgentKind): {
+  state: AgentVersionState;
+  check: () => void;
+} {
   const [state, setState] = useState<AgentVersionState>(INITIAL);
   const mounted = useRef(false);
   const checkPending = useRef(false);
@@ -110,7 +118,12 @@ function useAgentBinaryVersion(kind: UpdatableAgentKind): { state: AgentVersionS
         },
         () => {
           if (mounted.current) {
-            setState((prev) => ({ ...prev, checking: false, checkFailed: true, updateAvailable: false }));
+            setState((prev) => ({
+              ...prev,
+              checking: false,
+              checkFailed: true,
+              updateAvailable: false,
+            }));
           }
         },
       )
@@ -219,11 +232,11 @@ function AgentVersionRow({
     const next = stateRef.current;
     return Boolean(
       !next.checking &&
-        next.updateAvailable &&
-        next.version &&
-        next.latestVersion &&
-        extractSemver(next.version) &&
-        extractSemver(next.latestVersion),
+      next.updateAvailable &&
+      next.version &&
+      next.latestVersion &&
+      extractSemver(next.version) &&
+      extractSemver(next.latestVersion),
     );
   };
   const status = state.checking
@@ -293,12 +306,18 @@ function AgentVersionRow({
         onSelect={() => void handleUpdate()}
       />
       <DropdownMenuSeparator />
-      <DropdownMenuItem className={HARNESS_MENU_ITEM_CLASS} disabled={state.checking} onSelect={onCheck}>
+      <DropdownMenuItem
+        className={HARNESS_MENU_ITEM_CLASS}
+        disabled={state.checking}
+        onSelect={onCheck}
+      >
         {state.checking ? t('settings.about.harnessChecking') : t('settings.about.harnessCheck')}
       </DropdownMenuItem>
       {state.checkedAt && (
         <HarnessMenuFootnote>
-          {t('settings.about.harnessCheckedAt', { time: new Date(state.checkedAt).toLocaleString(i18n.language) })}
+          {t('settings.about.harnessCheckedAt', {
+            time: new Date(state.checkedAt).toLocaleString(i18n.language),
+          })}
         </HarnessMenuFootnote>
       )}
     </HarnessVersionMenuRow>
@@ -320,7 +339,8 @@ export function AboutSection() {
       </div>
 
       {/* Info Card */}
-      <div id="settings-search-settings-about-appVersionLabel"
+      <div
+        id="settings-search-settings-about-appVersionLabel"
         className={cn(
           'flex flex-col rounded-xl',
           'bg-[var(--settings-theme-card-bg)]',
@@ -518,7 +538,10 @@ export function AutoUpdateToggleRow() {
     return (
       <div className="flex flex-col gap-1.5 px-[18px] py-4">
         <div className="flex min-w-0 flex-col gap-1">
-          <span id="settings-search-settings-about-autoUpdateLabel" className="text-13 text-[var(--settings-section-sublabel)]">
+          <span
+            id="settings-search-settings-about-autoUpdateLabel"
+            className="text-13 text-[var(--settings-section-sublabel)]"
+          >
             {t('settings.about.autoUpdateLabel')}
           </span>
           <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
@@ -563,7 +586,10 @@ export function AutoUpdateToggleRow() {
     <div className="flex flex-col gap-1.5 px-[18px] py-4">
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 flex-col gap-1">
-          <span id="settings-search-settings-about-autoUpdateLabel" className="text-13 text-[var(--settings-section-sublabel)]">
+          <span
+            id="settings-search-settings-about-autoUpdateLabel"
+            className="text-13 text-[var(--settings-section-sublabel)]"
+          >
             {t('settings.about.autoUpdateLabel')}
           </span>
           <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
@@ -639,7 +665,10 @@ function AnalyticsToggleRow() {
     <div className="flex flex-col gap-1.5 px-[18px] py-4">
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 flex-col gap-1">
-          <span id="settings-search-settings-about-analyticsLabel" className="text-13 text-[var(--settings-section-sublabel)]">
+          <span
+            id="settings-search-settings-about-analyticsLabel"
+            className="text-13 text-[var(--settings-section-sublabel)]"
+          >
             {t('settings.about.analyticsLabel')}
           </span>
           <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
@@ -688,7 +717,10 @@ function DebugLogToggleRow() {
   return (
     <div className="flex flex-col gap-1.5 px-[18px] py-4">
       <div className="flex items-center justify-between gap-3">
-        <span id="settings-search-settings-about-debugLogLabel" className="text-13 text-[var(--settings-section-sublabel)]">
+        <span
+          id="settings-search-settings-about-debugLogLabel"
+          className="text-13 text-[var(--settings-section-sublabel)]"
+        >
           {t('settings.about.debugLogLabel')}
         </span>
         <Switch
@@ -755,10 +787,41 @@ function CrashAutoUploadToggleRow() {
   const disabled = state.loading || saving || blocked;
 
   return (
+    <CrashAutoUploadToggleView
+      customized={state.crashAutoUploadCustomized}
+      enabled={state.crashAutoUploadEnabled}
+      disabled={disabled}
+      resetting={state.loading || saving}
+      handleReset={handleReset}
+      handleToggle={handleToggle}
+    />
+  );
+}
+
+export function CrashAutoUploadToggleView({
+  customized,
+  enabled,
+  disabled,
+  resetting,
+  handleReset,
+  handleToggle,
+}: {
+  customized: boolean;
+  enabled: boolean;
+  disabled: boolean;
+  resetting: boolean;
+  handleReset: () => Promise<void>;
+  handleToggle: (next: boolean) => Promise<void>;
+}) {
+  const { t } = useTranslation();
+  return (
     <div className="flex flex-col gap-1.5 px-[18px] py-4">
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 flex-col gap-1">
-          <span id="settings-search-settings-about-logUpload-crashAutoLabel" className="text-13 text-[var(--settings-section-sublabel)]">
+          <span
+            id="settings-search-settings-about-logUpload-crashAutoLabel"
+            className="text-13 text-[var(--settings-section-sublabel)]"
+          >
             {t('settings.about.logUpload.crashAutoLabel')}
           </span>
           <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
@@ -767,12 +830,12 @@ function CrashAutoUploadToggleRow() {
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <DefaultOverrideControls
-            isCustomized={state.crashAutoUploadCustomized}
-            disabled={state.loading || saving}
+            isCustomized={customized}
+            disabled={resetting}
             onReset={handleReset}
           />
           <Switch
-            checked={state.crashAutoUploadEnabled}
+            checked={enabled}
             disabled={disabled}
             onCheckedChange={handleToggle}
             aria-label={t('settings.about.logUpload.crashAutoLabel')}

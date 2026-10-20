@@ -8,7 +8,24 @@ import { toast } from '@/lib/toast';
 import { Button } from '@/components/ui/button';
 
 export function UserPromptSection() {
-  const { value, ready, unavailable, customized, revision, ownerKey, setValue, resetValue } = useUserPrompt();
+  const state = useUserPrompt();
+  return <UserPromptEditor {...state} />;
+}
+
+/** Shared native control; the cloud surface supplies its own scoped adapter. */
+export function UserPromptEditor({
+  value,
+  ready,
+  unavailable,
+  customized,
+  revision,
+  ownerKey,
+  setValue,
+  resetValue,
+  onDirtyChange,
+}: ReturnType<typeof useUserPrompt> & {
+  onDirtyChange?(dirty: boolean): void;
+}) {
   const { t } = useTranslation();
 
   const [draft, setDraft] = useState({ value, revision, ownerKey });
@@ -19,13 +36,19 @@ export function UserPromptSection() {
   useEffect(() => {
     const previous = previousValue.current;
     previousValue.current = value;
-    setDraft(current => current.ownerKey !== ownerKey || current.value === previous
-      ? { value, revision, ownerKey } : current);
+    setDraft((current) =>
+      current.ownerKey !== ownerKey || current.value === previous
+        ? { value, revision, ownerKey }
+        : current,
+    );
   }, [value, revision, ownerKey]);
 
   const length = draft.value.length;
   const overLimit = length > USER_PROMPT_MAX_LENGTH;
   const dirty = draft.value !== value;
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
   const conflicted = dirty && draft.revision !== revision;
   const canSave = ready && dirty && !overLimit && !saving && !conflicted;
 
@@ -35,8 +58,11 @@ export function UserPromptSection() {
     try {
       await setValue(draft.value, draft.revision);
       toast.success(t('settings.personalization.toast.saved'));
-    } catch { toast.error(t('hostSettings.saveFailed')); }
-    finally { setSaving(false); }
+    } catch {
+      toast.error(t('hostSettings.saveFailed'));
+    } finally {
+      setSaving(false);
+    }
   }, [canSave, draft, setValue, t]);
 
   const handleReset = useCallback(async () => {
@@ -46,8 +72,11 @@ export function UserPromptSection() {
       await resetValue(revision);
       setDraft({ value: '', revision: null, ownerKey });
       toast.success(t('settings.personalization.toast.saved'));
-    } catch { toast.error(t('hostSettings.saveFailed')); }
-    finally { setSaving(false); }
+    } catch {
+      toast.error(t('hostSettings.saveFailed'));
+    } finally {
+      setSaving(false);
+    }
   }, [ready, revision, saving, resetValue, ownerKey, t]);
 
   const counter = useMemo(
@@ -83,11 +112,13 @@ export function UserPromptSection() {
         <textarea
           value={draft.ownerKey === ownerKey ? draft.value : ''}
           disabled={!ready || saving}
-          onChange={(e) => setDraft(current => ({
-            value: e.target.value,
-            revision: current.value === value ? revision : current.revision,
-            ownerKey,
-          }))}
+          onChange={(e) =>
+            setDraft((current) => ({
+              value: e.target.value,
+              revision: current.value === value ? revision : current.revision,
+              ownerKey,
+            }))
+          }
           placeholder={t('settings.personalization.placeholder')}
           aria-label={t('settings.personalization.ariaLabel')}
           rows={7}
@@ -125,7 +156,11 @@ export function UserPromptSection() {
           </p>
 
           <div className="flex items-center gap-2">
-            <Button variant="secondary" onClick={handleReset} disabled={!ready || !customized || saving || conflicted}>
+            <Button
+              variant="secondary"
+              onClick={handleReset}
+              disabled={!ready || !customized || saving || conflicted}
+            >
               {t('hostSettings.reset')}
             </Button>
             <Button onClick={handleSave} disabled={!canSave} loading={saving}>

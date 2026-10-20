@@ -1368,32 +1368,7 @@ export function ComputerUseSection({
           'border border-[var(--settings-theme-card-border)]',
         )}
       >
-        <div className="flex items-center justify-between gap-3 px-4 py-[14px]">
-          <div className="flex min-w-0 items-center gap-3">
-            <div
-              className={cn(
-                'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg',
-                'bg-[var(--settings-input-bg)]',
-              )}
-            >
-              <Globe size={16} className="text-[var(--settings-section-title)]" />
-            </div>
-            <div className="flex min-w-0 flex-col gap-[8px]">
-              <p id="settings-search-settings-computerUse-browser-title" className="truncate text-14 font-medium leading-none text-[var(--settings-section-title)]">
-                {t('settings.computerUse.browser.title')}
-              </p>
-              <p className="truncate text-12 leading-none text-[var(--settings-section-desc)]">
-                {t('settings.computerUse.browser.description')}
-              </p>
-            </div>
-          </div>
-          <Switch
-            checked={browserEnabled}
-            disabled={togglePending}
-            onCheckedChange={handleToggleBrowser}
-            aria-label={t('settings.computerUse.browser.toggleAria')}
-          />
-        </div>
+        <BrowserAutomationHeader checked={browserEnabled} disabled={togglePending} onChange={handleToggleBrowser} />
         {/* Phase 5: backend 切换 segmented control,排在 enable toggle 紧下方 —
             「使用哪个浏览器」是控制 toggle 之后用户首先需要回答的问题,所以放在
             探测 / 登录 cell 之前。state 还没拉到时不渲染。 */}
@@ -1466,32 +1441,7 @@ export function ComputerUseSection({
           'border border-[var(--settings-theme-card-border)]',
         )}
       >
-        <div className="flex items-center justify-between gap-3 px-4 py-[14px]">
-          <div className="flex min-w-0 items-center gap-3">
-            <div
-              className={cn(
-                'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg',
-                'bg-[var(--settings-input-bg)]',
-              )}
-            >
-              <MonitorCog size={16} className="text-[var(--settings-section-title)]" />
-            </div>
-            <div className="flex min-w-0 flex-col gap-[8px]">
-              <p id="settings-search-settings-computerUse-directControl-title" className="truncate text-14 font-medium leading-none text-[var(--settings-section-title)]">
-                {t('settings.computerUse.directControl.title')}
-              </p>
-              <p className="truncate text-12 leading-none text-[var(--settings-section-desc)]">
-                {t('settings.computerUse.directControl.description')}
-              </p>
-            </div>
-          </div>
-          <Switch
-            checked={computerSwitchChecked}
-            disabled={computerSwitchDisabled}
-            onCheckedChange={handleToggleComputer}
-            aria-label={t('settings.computerUse.directControl.toggleAria')}
-          />
-        </div>
+        <ComputerAutomationHeader checked={computerSwitchChecked} disabled={computerSwitchDisabled} onChange={handleToggleComputer} />
         {computerStatus === null ? (
           <div role="status" className="flex items-center gap-2 border-t border-[var(--settings-theme-card-border)] px-4 py-4 text-12 text-[var(--settings-section-desc)]">
             <Spinner size={12} />
@@ -1985,6 +1935,93 @@ export function ComputerUseSection({
       <p className="text-12 leading-[1.5] text-[var(--settings-section-desc)]">
         {t('settings.computerUse.android.toggleHint')}
       </p>
+    </div>
+  );
+}
+
+
+export function BrowserAutomationHeader({
+  checked,
+  disabled,
+  onChange,
+}: {
+  checked: boolean;
+  disabled: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex items-center justify-between gap-3 px-4 py-[14px]">
+      <div className="flex min-w-0 items-center gap-3">
+        <div
+          className={cn(
+            'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg',
+            'bg-[var(--settings-input-bg)]',
+          )}
+        >
+          <Globe size={16} className="text-[var(--settings-section-title)]" />
+        </div>
+        <div className="flex min-w-0 flex-col gap-[8px]">
+          <p
+            id="settings-search-settings-computerUse-browser-title"
+            className="truncate text-14 font-medium leading-none text-[var(--settings-section-title)]"
+          >
+            {t('settings.computerUse.browser.title')}
+          </p>
+          <p className="truncate text-12 leading-none text-[var(--settings-section-desc)]">
+            {t('settings.computerUse.browser.description')}
+          </p>
+        </div>
+      </div>
+      <Switch
+        checked={checked}
+        disabled={disabled}
+        onCheckedChange={onChange}
+        aria-label={t('settings.computerUse.browser.toggleAria')}
+      />
+    </div>
+  );
+}
+
+export function ComputerAutomationHeader({
+  checked,
+  disabled,
+  onChange,
+}: {
+  checked: boolean;
+  disabled: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex items-center justify-between gap-3 px-4 py-[14px]">
+      <div className="flex min-w-0 items-center gap-3">
+        <div
+          className={cn(
+            'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg',
+            'bg-[var(--settings-input-bg)]',
+          )}
+        >
+          <MonitorCog size={16} className="text-[var(--settings-section-title)]" />
+        </div>
+        <div className="flex min-w-0 flex-col gap-[8px]">
+          <p
+            id="settings-search-settings-computerUse-directControl-title"
+            className="truncate text-14 font-medium leading-none text-[var(--settings-section-title)]"
+          >
+            {t('settings.computerUse.directControl.title')}
+          </p>
+          <p className="truncate text-12 leading-none text-[var(--settings-section-desc)]">
+            {t('settings.computerUse.directControl.description')}
+          </p>
+        </div>
+      </div>
+      <Switch
+        checked={checked}
+        disabled={disabled}
+        onCheckedChange={onChange}
+        aria-label={t('settings.computerUse.directControl.toggleAria')}
+      />
     </div>
   );
 }

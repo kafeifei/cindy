@@ -20,6 +20,7 @@ export type SettingsTab =
   | 'import'
   | 'connections'
   | 'remote-control'
+  | 'cloud-instances'
   | 'shared-tasks'
   | 'tina'
   | 'ghosts'
@@ -53,6 +54,7 @@ export const TAB_IDS = [
   // 意识化收尾(Google/Jira/GitHub/GitLab 此前已迁意识)。id 仍留在 SettingsTab
   // 类型与 TAB_LABEL_KEY 保留,供旧深链重定向到插件分区。
   'remote-control',
+  'cloud-instances',
   'shared-tasks',
   'ghosts',
   'builtin-tools',
@@ -77,6 +79,7 @@ export const TAB_LABEL_KEY: Record<SettingsTab, string> = {
   connections: 'settings.tabs.connections',
   providers: 'settings.tabs.providers',
   'remote-control': 'settings.tabs.remoteControl',
+  'cloud-instances': 'cloudSettings.instance.title',
   'shared-tasks': 'sharedTask.title',
   tina: 'settings.tabs.tina',
   ghosts: 'settings.tabs.ghosts',

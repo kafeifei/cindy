@@ -194,6 +194,51 @@ export function AgentResourceSection() {
   if (!settings) return null;
 
   return (
+    <AgentResourceSectionView
+      settings={settings}
+      activePreset={activePreset}
+      applyingPreset={applyingPreset}
+      applyPreset={applyPreset}
+      maxDraft={maxDraft}
+      setMaxDraft={setMaxDraft}
+      persist={persist}
+      reset={() => {
+        if (applyingPreset) return;
+        void window.electronAPI.maker
+          .agentResourceSettingsReset()
+          .then((next) => {
+            applyServerState(next);
+            toast.success(t('settings.defaults.restored'));
+          })
+          .catch(() => toast.error(t('settings.defaults.restoreFailed')));
+      }}
+    />
+  );
+}
+
+/** Shared native view. Local and cloud controllers provide the same state/actions. */
+export function AgentResourceSectionView({
+  settings,
+  activePreset,
+  applyingPreset,
+  applyPreset,
+  maxDraft,
+  setMaxDraft,
+  persist,
+  reset,
+}: {
+  settings: Wire;
+  activePreset: PresetId | null;
+  applyingPreset: boolean;
+  applyPreset: (id: PresetId) => Promise<void>;
+  maxDraft: string | null;
+  setMaxDraft: (value: string | null) => void;
+  persist: (key: SettingKey, value: number | string | boolean) => void;
+  reset: () => void;
+}) {
+  const { t } = useTranslation();
+
+  return (
     <div className="flex flex-col gap-[14px]">
       {/* min-h 锁住标题行高度:DefaultOverrideControls 未自定义时返回 null,若不预留
           高度,首次改动让「已自定义」+ 恢复按钮(30px)出现会把整段往下顶,列表抖一下。 */}
@@ -204,18 +249,7 @@ export function AgentResourceSection() {
         <DefaultOverrideControls
           isCustomized={Boolean(settings.isCustomized)}
           disabled={applyingPreset}
-          onReset={() => {
-            if (applyingPreset) return;
-            void window.electronAPI.maker
-              .agentResourceSettingsReset()
-              .then((next) => {
-                applyServerState(next);
-                toast.success(t('settings.defaults.restored'));
-              })
-              .catch(() => {
-                toast.error(t('settings.defaults.restoreFailed'));
-              });
-          }}
+          onReset={reset}
         />
       </div>
 
@@ -232,7 +266,11 @@ export function AgentResourceSection() {
             才能像同卡其它行一样相对「标签 + 说明」整块垂直居中。 */}
         <div className={cn(ROW_CLASS, 'cindy-segmented-row')}>
           <div className="flex min-w-0 flex-col gap-1">
-            <p id="settings-search-settings-agentResource-preset" className={ROW_LABEL_CLASS} style={{ letterSpacing: '0.12px' }}>
+            <p
+              id="settings-search-settings-agentResource-preset"
+              className={ROW_LABEL_CLASS}
+              style={{ letterSpacing: '0.12px' }}
+            >
               {t('settings.agentResource.preset')}
             </p>
             {/* 四段提示全部常挂载、叠在同一个 grid 格里,只有当前档位那段可见(其余
@@ -270,7 +308,11 @@ export function AgentResourceSection() {
         {/* 并发命令上限 */}
         <label className={ROW_CLASS}>
           <span className="flex min-w-0 flex-col gap-1">
-            <span id="settings-search-settings-agentResource-maxConcurrent" className={ROW_LABEL_CLASS} style={{ letterSpacing: '0.12px' }}>
+            <span
+              id="settings-search-settings-agentResource-maxConcurrent"
+              className={ROW_LABEL_CLASS}
+              style={{ letterSpacing: '0.12px' }}
+            >
               {t('settings.agentResource.maxConcurrent')}
             </span>
             <span className={ROW_HINT_CLASS}>{t('settings.agentResource.maxConcurrentHint')}</span>
@@ -304,7 +346,11 @@ export function AgentResourceSection() {
         {/* 进程优先级 */}
         <div className={cn(ROW_CLASS, 'cindy-segmented-row')}>
           <div className="flex min-w-0 flex-col gap-1">
-            <p id="settings-search-settings-agentResource-priority" className={ROW_LABEL_CLASS} style={{ letterSpacing: '0.12px' }}>
+            <p
+              id="settings-search-settings-agentResource-priority"
+              className={ROW_LABEL_CLASS}
+              style={{ letterSpacing: '0.12px' }}
+            >
               {t('settings.agentResource.priority')}
             </p>
             <p className={ROW_HINT_CLASS}>{t('settings.agentResource.priorityHint')}</p>
@@ -326,7 +372,11 @@ export function AgentResourceSection() {
         {/* 工具链限核 */}
         <div className={ROW_CLASS}>
           <div className="flex min-w-0 flex-col gap-1">
-            <p id="settings-search-settings-agentResource-capThreads" className={ROW_LABEL_CLASS} style={{ letterSpacing: '0.12px' }}>
+            <p
+              id="settings-search-settings-agentResource-capThreads"
+              className={ROW_LABEL_CLASS}
+              style={{ letterSpacing: '0.12px' }}
+            >
               {t('settings.agentResource.capThreads')}
             </p>
             <p className={ROW_HINT_CLASS}>{t('settings.agentResource.capThreadsHint')}</p>

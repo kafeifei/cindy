@@ -47,7 +47,7 @@ const IM_BOT_GROUP_TIP_KEY: Record<ImBotSettingsGroup, string> = {
   personal: 'settings.imBot.tips.personal',
 };
 
-function GroupTip({ message }: { message: string }) {
+export function GroupTip({ message }: { message: string }) {
   return (
     <div className="flex items-start gap-2 rounded-xl bg-[var(--surface-chip)] px-3.5 py-2.5">
       <Lightbulb size={14} className="mt-[2px] shrink-0 text-[var(--text-tertiary)]" />

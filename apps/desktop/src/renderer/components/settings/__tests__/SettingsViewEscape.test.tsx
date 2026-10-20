@@ -13,8 +13,15 @@ import { SettingsView } from '../SettingsView';
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
+const auth = vi.hoisted(() => ({ mode: 'local' }));
 vi.mock('@/contexts/AuthContext', () => ({
-  useAuth: () => ({ mode: 'local', dataOwnerId: null, user: null }),
+  useAuth: () => ({ mode: auth.mode, dataOwnerId: null, user: null }),
+}));
+vi.mock('@/components/ui/confirm-dialog-provider', () => ({
+  useConfirmDialog: () => ({ confirm: vi.fn().mockResolvedValue(false) }),
+}));
+vi.mock('@/features/device-link/useDeviceLinkDeviceList', () => ({
+  useDeviceLinkDeviceList: () => [],
 }));
 vi.mock('@/lib/useCindyVersions', () => ({
   useCindyVersions: () => ({ state: 'idle' }),
@@ -120,9 +127,31 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  auth.mode = 'local';
 });
 
 describe('SettingsView Escape', () => {
+  it('hosts cloud instance discovery inside Settings and exits without creating an instance', async () => {
+    auth.mode = 'cloud';
+    const instanceList = vi.fn().mockResolvedValue([]);
+    const instanceClaim = vi.fn();
+    vi.stubGlobal('electronAPI', { platform: 'darwin', cloudSettings: { instanceList, instanceClaim } });
+    renderSettings('/settings?tab=cloud-instances');
+    await screen.findByRole('button', { name: 'cloudSettings.onboarding.claim' });
+    expect(screen.getByRole('tabpanel').id).toBe('settings-panel-cloud-instances');
+    expect(instanceList).toHaveBeenCalledExactlyOnceWith({});
+    expect(instanceClaim).not.toHaveBeenCalled();
+    pressEscape();
+    expect(location()).toBe('/');
+  });
+
+  it('does not fetch cloud instances from a signed-out settings deep link', () => {
+    const instanceList = vi.fn();
+    vi.stubGlobal('electronAPI', { platform: 'darwin', cloudSettings: { instanceList } });
+    renderSettings('/settings?tab=cloud-instances');
+    expect(screen.queryByTestId('cloud-instances-page')).toBeNull();
+    expect(instanceList).not.toHaveBeenCalled();
+  });
   it('returns from the Pi extensions page to General before leaving Settings', () => {
     renderSettings('/settings?openPanel=pi-extensions');
     expect(screen.getByText('PI packages')).toBeTruthy();

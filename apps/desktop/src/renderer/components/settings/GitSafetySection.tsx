@@ -37,6 +37,33 @@ export function GitSafetySection() {
   }, [reset, saving, t]);
 
   return (
+    <GitSafetySectionView
+      mode={mode}
+      isCustomized={isCustomized}
+      saving={saving}
+      handleModeChange={handleModeChange}
+      handleReset={handleReset}
+    />
+  );
+}
+
+/** Shared native view. Local and cloud controllers provide the same state/actions. */
+export function GitSafetySectionView({
+  mode,
+  isCustomized,
+  saving,
+  handleModeChange,
+  handleReset,
+}: {
+  mode: GitSafetyMode;
+  isCustomized: boolean;
+  saving: boolean;
+  handleModeChange: (next: GitSafetyMode) => void;
+  handleReset: () => void;
+}) {
+  const { t } = useTranslation();
+
+  return (
     <div className="flex flex-col gap-[14px]">
       <h2 className="text-16 font-medium leading-[1.2] text-[var(--settings-section-title)]">
         {t('settings.gitSafety.title')}
@@ -51,25 +78,36 @@ export function GitSafetySection() {
       >
         <div className="cindy-segmented-row">
           <div className="flex min-w-0 flex-col gap-1">
-            <p id="settings-search-settings-gitSafety-autoSnapshotTitle" className="text-13 font-medium text-[var(--settings-section-sublabel)]">
+            <p
+              id="settings-search-settings-gitSafety-autoSnapshotTitle"
+              className="text-13 font-medium text-[var(--settings-section-sublabel)]"
+            >
               {t('settings.gitSafety.autoSnapshotTitle')}
             </p>
-            <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">{t('settings.gitSafety.description')}</p>
+            <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
+              {t('settings.gitSafety.description')}
+            </p>
           </div>
 
           <div className="cindy-segmented-row-actions">
-          <SegmentedControl
-            value={mode}
-            onValueChange={handleModeChange}
-            disabled={saving}
-            aria-label={t('settings.gitSafety.modeAria')}
-            options={[
-              { value: 'off', label: t('settings.gitSafety.modes.off') },
-              { value: 'existing-git', label: t('settings.gitSafety.modes.existingGit') },
-              { value: 'all-projects', label: t('settings.gitSafety.modes.allProjects') },
-            ] satisfies ReadonlyArray<{ value: GitSafetyMode; label: string }>}
-          />
-          <DefaultOverrideControls isCustomized={isCustomized} disabled={saving} onReset={handleReset} />
+            <SegmentedControl
+              value={mode}
+              onValueChange={handleModeChange}
+              disabled={saving}
+              aria-label={t('settings.gitSafety.modeAria')}
+              options={
+                [
+                  { value: 'off', label: t('settings.gitSafety.modes.off') },
+                  { value: 'existing-git', label: t('settings.gitSafety.modes.existingGit') },
+                  { value: 'all-projects', label: t('settings.gitSafety.modes.allProjects') },
+                ] satisfies ReadonlyArray<{ value: GitSafetyMode; label: string }>
+              }
+            />
+            <DefaultOverrideControls
+              isCustomized={isCustomized}
+              disabled={saving}
+              onReset={handleReset}
+            />
           </div>
         </div>
       </div>

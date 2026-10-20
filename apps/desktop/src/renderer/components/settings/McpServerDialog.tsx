@@ -14,11 +14,12 @@
 
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Check, Plus, Sparkles, Trash2 } from 'lucide-react';
+import { Plus, Sparkles, Trash2 } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { Button } from '@/components/ui/button';
 import { FormField } from '@/components/ui/form-field';
 import { Tip } from '@/components/ui/tooltip';
+import { McpTokenField } from './McpTokenField';
 import { SettingsTextInput } from './SettingsTextInput';
 import { SegmentedControl } from '@/components/ui/segmented-control';
 
@@ -293,31 +294,13 @@ export function McpServerDialog({ initial, existingIds, onSaved, onClose }: McpS
                   />
                 )}
               </FormField>
-              <FormField
+              <McpTokenField
                 id={`${id}-token`}
-                label={t('settings.mcp.fields.token')}
-                hint={t('settings.mcp.fields.tokenHelp')}
-                labelAction={
-                  hasToken && (
-                    <span className="flex items-center gap-1 rounded-full bg-[var(--settings-btn-secondary-bg)] px-2 py-0.5 text-11 font-medium text-[var(--settings-section-desc)]">
-                      <Check size={11} />
-                      {t('settings.mcp.fields.tokenSaved')}
-                    </span>
-                  )
-                }
-              >
-                {(control) => (
-                  <SettingsTextInput
-                    {...control}
-                    surface="ivory"
-                    value={token}
-                    onChange={setToken}
-                    placeholder={tokenPlaceholder}
-                    secret
-                    secretTipContentClassName="z-[10001]"
-                  />
-                )}
-              </FormField>
+                value={token}
+                onChange={setToken}
+                hasToken={hasToken}
+                placeholder={tokenPlaceholder}
+              />
               <fieldset className="flex min-w-0 flex-col gap-2">
                 <legend className="mb-2 text-13 font-medium text-[var(--settings-section-title)]">
                   {t('settings.mcp.fields.headers')}

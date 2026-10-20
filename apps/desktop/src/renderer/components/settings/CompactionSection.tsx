@@ -18,9 +18,17 @@ type CompactionCardProps = {
   isCustomized: boolean;
   resetPct: () => Promise<number>;
   setPct: (next: number) => void;
+  disabled?: boolean;
 };
 
-function CompactionCard({ agent, pct, isCustomized, resetPct, setPct }: CompactionCardProps) {
+function CompactionCard({
+  agent,
+  pct,
+  isCustomized,
+  resetPct,
+  setPct,
+  disabled,
+}: CompactionCardProps) {
   const { t } = useTranslation();
   const key = agent === 'pi' ? 'settings.compaction.piCard' : 'settings.compaction.card';
 
@@ -36,23 +44,29 @@ function CompactionCard({ agent, pct, isCustomized, resetPct, setPct }: Compacti
           </span>
           <DefaultOverrideControls
             isCustomized={isCustomized}
+            disabled={disabled}
             onReset={() => {
               void resetPct()
                 .then(() => toast.success(t('settings.defaults.restored')))
                 .catch((err) => {
-                  toast.error(err instanceof Error ? err.message : t('settings.defaults.restoreFailed'));
+                  toast.error(
+                    err instanceof Error ? err.message : t('settings.defaults.restoreFailed'),
+                  );
                 });
             }}
           />
         </div>
       </div>
 
-      <p className="text-12 leading-[1.5] text-[var(--text-secondary)]">{t(`${key}.description`)}</p>
+      <p className="text-12 leading-[1.5] text-[var(--text-secondary)]">
+        {t(`${key}.description`)}
+      </p>
 
       <div className="flex items-center gap-[14px]">
         <div className="flex min-w-0 flex-1 flex-col gap-1.5">
           <Slider
             value={[pct]}
+            disabled={disabled}
             min={50}
             max={95}
             step={1}
@@ -78,10 +92,25 @@ function CompactionCard({ agent, pct, isCustomized, resetPct, setPct }: Compacti
 }
 
 export function CompactionSection() {
-  const { t } = useTranslation();
   const claude = useCompactionSettings('claude');
   const pi = useCompactionSettings('pi');
 
+  if (claude.pct === null || pi.pct === null) return null;
+
+  return <CompactionSectionView claude={claude} pi={pi} />;
+}
+
+/** Shared native view. Local and cloud controllers provide the same state/actions. */
+export function CompactionSectionView({
+  claude,
+  pi,
+  disabled,
+}: {
+  disabled?: boolean;
+  claude: ReturnType<typeof useCompactionSettings>;
+  pi: ReturnType<typeof useCompactionSettings>;
+}) {
+  const { t } = useTranslation();
   if (claude.pct === null || pi.pct === null) return null;
 
   return (
@@ -96,6 +125,7 @@ export function CompactionSection() {
       </div>
 
       <CompactionCard
+        disabled={disabled}
         agent="claude"
         pct={claude.pct}
         isCustomized={claude.isCustomized}
@@ -103,6 +133,7 @@ export function CompactionSection() {
         setPct={claude.setPct}
       />
       <CompactionCard
+        disabled={disabled}
         agent="pi"
         pct={pi.pct}
         isCustomized={pi.isCustomized}

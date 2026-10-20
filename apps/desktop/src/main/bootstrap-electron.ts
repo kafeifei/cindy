@@ -480,6 +480,7 @@ import {
 } from './database-size-warning-settings';
 import { createDatabaseSizeWarningSettingsWatcher } from './database-size-warning-settings-watcher.js';
 import { registerHostSettingsIpc } from './host-settings/ipc.js';
+import { registerCloudSettingsClientIpc } from './cloud-settings-client/runtime.js';
 import { registerDesktopPreferencesIpc } from './host-settings/desktopPreferencesIpc.js';
 import { isResourceUsageWebContentsId } from './resource-usage-window/registry.js';
 import { isTrustedAppearanceSettingsReadWindow } from './appearance-settings-reader.js';
@@ -4279,6 +4280,7 @@ function parseOptionalDeviceLinkDeviceId(value: unknown): string | null | undefi
 
 const registerIpcHandlers = () => {
   registerHostSettingsIpc(broadcastDatabaseSizeWarningChanged);
+  registerCloudSettingsClientIpc();
   const localPreferencesAccess = {
     isLocalWindow(id: number, access: 'read' | 'write') {
       const sender = webContents.fromId(id);

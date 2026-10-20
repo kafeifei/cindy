@@ -114,7 +114,8 @@ export function MemorySection() {
 
   useEffect(() => {
     void reloadSlots();
-    void window.electronAPI.maker.memoryGetSettingsState()
+    void window.electronAPI.maker
+      .memoryGetSettingsState()
       .then((settings) => setSettingsCustomized(settings.isCustomized))
       .catch(() => undefined);
     const onFocus = () => void reloadSlots();
@@ -155,7 +156,9 @@ export function MemorySection() {
         // 操作本身成功 → success(绿). next-session 只是信息性后缀, 不用 warning ——
         // 警告色会让用户误以为出错。文案 suffix 已经把 "新会话生效" 说清楚了。
         const suffix =
-          result.effective === 'next-session' ? t('settings.memory.agent.toast.takesEffectSuffix') : '';
+          result.effective === 'next-session'
+            ? t('settings.memory.agent.toast.takesEffectSuffix')
+            : '';
         const baseKey = next
           ? 'settings.memory.agent.toast.enabled'
           : 'settings.memory.agent.toast.disabled';
@@ -221,9 +224,7 @@ export function MemorySection() {
     setMakerResetPending(true);
     try {
       const result = await window.electronAPI.maker.makerMemoryReset();
-      toast.success(
-        t('settings.memory.maker.toast.resetSuccess', { count: result.removedCount }),
-      );
+      toast.success(t('settings.memory.maker.toast.resetSuccess', { count: result.removedCount }));
     } catch (err) {
       log.warn('makerMemoryReset failed', err);
       toast.error(
@@ -269,6 +270,48 @@ export function MemorySection() {
     },
     [confirm, t],
   );
+
+  return (
+    <MemorySectionView
+      settingsCustomized={settingsCustomized}
+      makerEnabled={makerEnabled}
+      makerTogglePending={makerTogglePending}
+      makerResetPending={makerResetPending}
+      slots={slots}
+      handleResetSettings={handleResetSettings}
+      handleMakerToggle={handleMakerToggle}
+      handleMakerReset={handleMakerReset}
+      handleToggle={handleToggle}
+      handleReset={handleReset}
+    />
+  );
+}
+
+/** Shared native view. Local and cloud controllers provide the same state/actions. */
+export function MemorySectionView({
+  settingsCustomized,
+  makerEnabled,
+  makerTogglePending,
+  makerResetPending,
+  slots,
+  handleResetSettings,
+  handleMakerToggle,
+  handleMakerReset,
+  handleToggle,
+  handleReset,
+}: {
+  settingsCustomized: boolean;
+  makerEnabled: boolean;
+  makerTogglePending: boolean;
+  makerResetPending: boolean;
+  slots: Record<AgentKind, MemorySlotState>;
+  handleResetSettings: () => Promise<void>;
+  handleMakerToggle: (next: boolean) => Promise<void>;
+  handleMakerReset: (() => Promise<void>) | undefined;
+  handleToggle: (kind: AgentKind, next: boolean, label: string) => Promise<void>;
+  handleReset: ((kind: AgentKind, label: string) => Promise<void>) | undefined;
+}) {
+  const { t } = useTranslation();
 
   return (
     <div className="flex flex-col gap-[14px]">
@@ -322,21 +365,23 @@ export function MemorySection() {
               onCheckedChange={(v) => void handleMakerToggle(v)}
               aria-label={t('settings.memory.maker.toggleAria')}
             />
-            <button
-              type="button"
-              onClick={() => void handleMakerReset()}
-              disabled={makerResetPending || makerTogglePending}
-              aria-label={t('settings.memory.maker.resetAria')}
-              className={cn(
-                'flex h-[30px] w-[30px] items-center justify-center rounded-lg',
-                'text-[var(--settings-section-desc)]',
-                'hover:bg-[var(--settings-input-bg)] hover:text-[var(--settings-section-title)]',
-                'transition-colors',
-                'disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent',
-              )}
-            >
-              <RotateCcw size={16} />
-            </button>
+            {handleMakerReset && (
+              <button
+                type="button"
+                onClick={() => void handleMakerReset()}
+                disabled={makerResetPending || makerTogglePending}
+                aria-label={t('settings.memory.maker.resetAria')}
+                className={cn(
+                  'flex h-[30px] w-[30px] items-center justify-center rounded-lg',
+                  'text-[var(--settings-section-desc)]',
+                  'hover:bg-[var(--settings-input-bg)] hover:text-[var(--settings-section-title)]',
+                  'transition-colors',
+                  'disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent',
+                )}
+              >
+                <RotateCcw size={16} />
+              </button>
+            )}
           </div>
         </div>
 
@@ -345,8 +390,11 @@ export function MemorySection() {
           const supported = slot.enabled !== null;
           const loading = slot.enabled === undefined;
           const checked = slot.enabled === true;
-          const disabled = (agent.requiresMaker ? !makerEnabled : makerEnabled)
-            || !supported || slot.pending || loading;
+          const disabled =
+            (agent.requiresMaker ? !makerEnabled : makerEnabled) ||
+            !supported ||
+            slot.pending ||
+            loading;
           // Agent label/description 来自 i18n 表 (品牌名 Claude / Codex 也走 i18n
           // —— 各语种都保留品牌原文，只方便统一管理)。
           const label = t(`settings.memory.agents.${agent.kind}.label`);
@@ -386,21 +434,23 @@ export function MemorySection() {
                   onCheckedChange={(v) => void handleToggle(agent.kind, v, label)}
                   aria-label={t('settings.memory.agent.toggleAria', { label })}
                 />
-                <button
-                  type="button"
-                  onClick={() => void handleReset(agent.kind, label)}
-                  disabled={disabled}
-                  aria-label={t('settings.memory.agent.resetAria', { label })}
-                  className={cn(
-                    'flex h-[30px] w-[30px] items-center justify-center rounded-lg',
-                    'text-[var(--settings-section-desc)]',
-                    'hover:bg-[var(--settings-input-bg)] hover:text-[var(--settings-section-title)]',
-                    'transition-colors',
-                    'disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent',
-                  )}
-                >
-                  <RotateCcw size={16} />
-                </button>
+                {handleReset && (
+                  <button
+                    type="button"
+                    onClick={() => void handleReset(agent.kind, label)}
+                    disabled={disabled}
+                    aria-label={t('settings.memory.agent.resetAria', { label })}
+                    className={cn(
+                      'flex h-[30px] w-[30px] items-center justify-center rounded-lg',
+                      'text-[var(--settings-section-desc)]',
+                      'hover:bg-[var(--settings-input-bg)] hover:text-[var(--settings-section-title)]',
+                      'transition-colors',
+                      'disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent',
+                    )}
+                  >
+                    <RotateCcw size={16} />
+                  </button>
+                )}
               </div>
             </div>
           );

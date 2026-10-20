@@ -13,7 +13,7 @@
  *     标题,hover 扫过就弹菜单太吵;段级收起同时取消,标题的点击语义让给范围切换。
  *
  * 无任何相关远程机器时标题仍是「全部任务 ▾」(2026-08-13 用户裁决:箭头保留),
- * 菜单不出现设备列表,只留「远程连接设置」与「侧边栏显示设置」——单机用户看不到
+ * 菜单不出现设备列表,保留设置入口——单机用户看不到
  * 设备概念,但仍能从段头进这两项。范围标题恒在后,断网逃生不再靠「假装还有
  * 远程设备」画出机器列表——目录空了就只留两项设置,用户从「远程连接设置」
  * 或范围标题本身回到本机。
@@ -255,9 +255,9 @@ export function MachineSwitcherMenu({
                 />
               );
             })}
-            <DropdownMenuSeparator />
           </>
         ) : null}
+        {showDeviceList ? <DropdownMenuSeparator /> : null}
         {settingsItems}
       </DropdownMenuContent>
     </DropdownMenu>

@@ -404,7 +404,10 @@ export function MainLayout() {
     syncNotificationsEnabledToMain();
   }, []);
 
-  const isSettingsRoute = location.pathname === '/settings';
+  const isSettingsRoute =
+    location.pathname === '/settings' ||
+    location.pathname === '/cloud-settings' ||
+    (import.meta.env.DEV && location.pathname === '/cloud-settings-trial');
 
   // 完全隐藏态 hover 临时浮出(peek)状态机 —— hover 折叠按钮抽屉滑出预览,
   // 点击/⌘B 固定展开(pin)。rail 态(isCollapsed=false)不触发。见 useSidebarPeek。

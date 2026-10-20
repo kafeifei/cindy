@@ -6,10 +6,11 @@ import { Button } from '@/components/ui/button';
 import type { ProviderOAuthDeviceCode } from '@/hooks/useProviderOAuthDeviceCode';
 
 /** Manual recovery only; the native CLI remains the sole automatic browser opener. */
-export function OAuthBrowserLink({ url }: { url: string }) {
+export function OAuthBrowserLink({ url, onOpen }: { url: string; onOpen?: (url: string) => Promise<void> }) {
   const { t } = useTranslation();
   return (
     <Button variant="secondary" size="md" onClick={() => {
+      if (onOpen) { void onOpen(url).catch(() => toast.error(t('settings.providers.wizard.verificationPageOpenFailed'))); return; }
       void window.electronAPI.openExternal(url).then((result) => {
         if (!result.success) toast.error(t('settings.providers.wizard.verificationPageOpenFailed'));
       }).catch(() => toast.error(t('settings.providers.wizard.verificationPageOpenFailed')));
@@ -21,8 +22,10 @@ export function OAuthBrowserLink({ url }: { url: string }) {
 
 export function OAuthDeviceCodeCard({
   deviceCode,
+  onOpen,
 }: {
   deviceCode?: ProviderOAuthDeviceCode | null;
+  onOpen?: (url: string) => Promise<void>;
 }) {
   const { t } = useTranslation();
   const verificationHost = (() => {
@@ -80,6 +83,7 @@ export function OAuthDeviceCodeCard({
               compact
               type="button"
               onClick={() => {
+                if (onOpen) { void onOpen(deviceCode.verificationUrl).catch(() => toast.error(t('settings.providers.wizard.verificationPageOpenFailed'))); return; }
                 void window.electronAPI
                   .openExternal(deviceCode.verificationUrl)
                   .then((result) => {

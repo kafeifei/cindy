@@ -101,6 +101,42 @@ export function TerminalShellSection() {
     pref !== 'auto' && !shells.some((shell) => shell.id === pref) ? pref : null;
 
   return (
+    <TerminalShellSectionView
+      pref={pref}
+      shells={shells}
+      resetting={resetting}
+      isCustomized={isCustomized}
+      onChange={onChange}
+      onReset={onReset}
+      autoLabel={autoLabel}
+      unavailablePref={unavailablePref}
+    />
+  );
+}
+
+/** Shared native view. Local and cloud controllers provide the same state/actions. */
+export function TerminalShellSectionView({
+  pref,
+  shells,
+  resetting,
+  isCustomized,
+  onChange,
+  onReset,
+  autoLabel,
+  unavailablePref,
+}: {
+  pref: ShellId;
+  shells: AvailableShell[];
+  resetting: boolean;
+  isCustomized: boolean;
+  onChange: (value: ShellId) => void;
+  onReset: () => Promise<void>;
+  autoLabel: string;
+  unavailablePref: ShellId | null;
+}) {
+  const { t } = useTranslation();
+
+  return (
     <div className="flex flex-col gap-[14px]">
       <div className="flex flex-col gap-1">
         <h2 className="text-16 font-medium leading-[1.2] text-[var(--settings-section-title)]">

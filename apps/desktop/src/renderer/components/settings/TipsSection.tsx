@@ -40,6 +40,47 @@ export function TipsSection() {
   );
 
   return (
+    <TipsSectionView>
+      {/* 输入框推荐提示词:turn 结束后自动预测用户下一步输入 */}
+      <div className="flex items-center justify-between gap-3 px-4 py-[14px]">
+        <div className="flex items-center gap-3">
+          <div
+            className={cn(
+              'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg',
+              'bg-[var(--settings-input-bg)]',
+            )}
+          >
+            <Sparkles size={18} className="text-[var(--settings-section-title)]" />
+          </div>
+          <div className="flex flex-col gap-[8px]">
+            <p
+              id="settings-search-settings-promptRecommendation-label"
+              className="text-14 font-medium leading-none text-[var(--settings-section-title)]"
+            >
+              {t('settings.promptRecommendation.label')}
+            </p>
+            <p className="text-12 leading-[1.4] text-[var(--settings-section-desc)]">
+              {t('settings.promptRecommendation.description')}
+            </p>
+          </div>
+        </div>
+        <Switch
+          checked={recommendationEnabled}
+          onCheckedChange={handleRecommendationToggle}
+          aria-label={t('settings.promptRecommendation.toggleAria')}
+        />
+      </div>
+      <SilentEncryptedRetryCell />
+      {mode !== 'local' ? <ChatEmbeddingCell /> : null}
+      <MessageNavRailCell />
+    </TipsSectionView>
+  );
+}
+
+export function TipsSectionView({ children }: { children: React.ReactNode }) {
+  const { t } = useTranslation();
+
+  return (
     <div className="flex flex-col gap-[14px]">
       <div className="flex flex-col gap-1">
         <h2 className="text-16 font-medium leading-[1.2] text-[var(--settings-section-title)]">
@@ -60,35 +101,7 @@ export function TipsSection() {
           '[&>*+*]:border-t [&>*+*]:border-[var(--settings-theme-card-border)]',
         )}
       >
-        {/* 输入框推荐提示词:turn 结束后自动预测用户下一步输入 */}
-        <div className="flex items-center justify-between gap-3 px-4 py-[14px]">
-          <div className="flex items-center gap-3">
-            <div
-              className={cn(
-                'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg',
-                'bg-[var(--settings-input-bg)]',
-              )}
-            >
-              <Sparkles size={18} className="text-[var(--settings-section-title)]" />
-            </div>
-            <div className="flex flex-col gap-[8px]">
-              <p id="settings-search-settings-promptRecommendation-label" className="text-14 font-medium leading-none text-[var(--settings-section-title)]">
-                {t('settings.promptRecommendation.label')}
-              </p>
-              <p className="text-12 leading-[1.4] text-[var(--settings-section-desc)]">
-                {t('settings.promptRecommendation.description')}
-              </p>
-            </div>
-          </div>
-          <Switch
-            checked={recommendationEnabled}
-            onCheckedChange={handleRecommendationToggle}
-            aria-label={t('settings.promptRecommendation.toggleAria')}
-          />
-        </div>
-        <SilentEncryptedRetryCell />
-        {mode !== 'local' ? <ChatEmbeddingCell /> : null}
-        <MessageNavRailCell />
+        {children}
       </div>
     </div>
   );
