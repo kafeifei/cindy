@@ -71,6 +71,34 @@ recipe commit above. After migration, the matcher selected the system entries
 and all desktop checks passed again on the cloud instance. Three filesystem
 regressions cover archival/idempotence, custom files/symlinks and absent directories.
 
+## Real OAuth and DeviceLink follow-up
+
+The follow-up targets the same candidate on the same authorized instance, using
+the isolated macOS client `0.1.108-dev.cloud.20261016.1`. No additional deployment
+was performed. The cloud precheck confirmed the ASAR hash above, all five
+readiness components ready, maintenance released at epoch 79, and the expected
+Xfce/Plank processes and system launchers.
+
+| Check | Result in this follow-up |
+| --- | --- |
+| Cloud runtime precheck | Passed |
+| Fresh OpenAI OAuth, local callback and cloud credential writeback | Pending; no fresh authorization was initiated |
+| DeviceLink live frames, mouse and keyboard through the remote viewer | Pending; no cross-device input result was obtained |
+
+The controlling Mac was screen-locked. The isolated client process started, but
+its renderer was not available for interaction; a macOS SecurityAgent process
+also appeared during startup. The existing remote viewer showed a disconnecting
+state, which is not evidence of a new connection or a runtime regression. User
+unlock is required before continuing the product-entry checks. No screen-lock
+or credential protection was bypassed. These pending checks do not inherit a
+pass from the earlier native X11 or synthetic authorization-browser tests.
+
+Completion requires observing a fresh OpenAI operation reach success, connected
+status after reloading cloud settings, and cleanup of its owned browser tabs and
+login process. DeviceLink acceptance requires input through the actual macOS
+viewer and independently observed changes on the cloud desktop, with live frame
+updates. A macOS-to-cloud pass would not establish iPhone-to-cloud acceptance.
+
 ## Limits
 
 The local Rosetta runtime attempt stopped at `INSTANCE_SECCOMP_UNAVAILABLE`;
