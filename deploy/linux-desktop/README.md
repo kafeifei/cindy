@@ -47,8 +47,9 @@ The source builder does not publish images or operate instances.
 Local acceptance delivers a loadable image archive and checksum, image config ID,
 complete Dockerfiles/build inputs, build logs and test records. Test with disposable
 data and synthetic credentials; record native versus emulated execution and
-untested production behavior. The local result is reviewed before registry
-publication or changes to cloud instances. A local image ID or archive checksum
+untested production behavior. Review the local result before an authorized candidate
+upload for native Linux qualification; promotion and instance changes require the
+completed qualification. A local image ID or archive checksum
 is not a registry manifest digest.
 
 ## Release pipeline ownership
@@ -64,6 +65,8 @@ client release sequence is:
 2. Qualify the final locally built candidate for normal startup, identity,
    sandbox, keyring, desktop/input and orderly shutdown in isolated Linux.
 3. After publication is authorized, publish a unique immutable image digest.
+   An upload solely for isolated native qualification may precede step 2; it
+   remains an unqualified candidate until that test passes.
    Enumerate the main image and **every
    actual initContainer image** required by the supported deployment templates.
 4. Create their ACS caches in each target Region/cluster network. Verify `Ready`
