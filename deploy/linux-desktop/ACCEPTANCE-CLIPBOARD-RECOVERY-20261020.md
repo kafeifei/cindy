@@ -228,23 +228,32 @@ the defect, and automatic sync is not recorded as a live pass.
 
 ### Physical iPhone status
 
-The user confirmed that the installed **production iPhone app does not have
-Device management**. The guidance above came from the development branch and
+The user identified the installed iPhone app as **TestFlight 0.1.0**, with
+displayed identifier **`370e8402`**, and confirmed that it does not have
+**Device management**. The earlier navigation guidance came from the development branch and
 must not be presented as the production app's available navigation. This was an
 acceptance setup error; no phone input or clipboard failure has been established.
 
 The cloud device is online with control enabled, but its availability alone does
-not prove that this phone build has a matching entry. The phone's installed build
-must be identified before giving further navigation or deciding whether a test
-build is required. Native keyboard composition and both phone clipboard
-directions remain pending. No iPhone application update was installed, and
-neither Mac input nor mobile unit tests substitute for hardware acceptance.
+not prove that this phone build has a matching entry. The reported eight-character
+identifier has not been mapped to a released source revision; the current source
+can display a shortened OTA update ID, so it must not be treated as a Git commit
+or native build number without release evidence.
+
+The user authorized skipping phone acceptance if the installed app has no usable
+entry. No cloud remote-desktop entry was established in this TestFlight build,
+so physical keyboard composition and both phone clipboard directions are recorded
+as **skipped / not verified**, not passed or failed. This does not establish that
+all remote-desktop functionality is absent from that release. No iPhone update,
+test-package installation or OTA publication was performed. Neither Mac input
+nor mobile unit tests substitute for hardware acceptance.
 
 The private Mac Dev app has now quit normally; its original inspector fuse
 settings were restored and code-signing verification passed. The test-only native
 helper retains the documented exact-path development binding and is not a
-release-signature qualification. The blank cloud test page remains available for
-the phone follow-up; other cloud instances were not changed.
+release-signature qualification. The blank cloud test page remains available,
+but phone acceptance is no longer awaiting user action. Other cloud instances
+were not changed.
 
 Raw logs, screenshots, synthetic fixtures and infrastructure receipts stay in the
 private acceptance archive. No user clipboard contents or credentials are
