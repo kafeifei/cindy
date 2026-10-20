@@ -375,3 +375,43 @@ The [dual-version update plan](DUAL-VERSION-UPDATES.md) is committed separately.
 It remains a proposal: this rollout did not implement CI/CD, a release registry
 or automatic cloud-revision selection. The deferred instance was not silently
 queued through a new scheduler or forced to restart.
+
+### Previously deferred instance completed — 2026-10-21
+
+The user explicitly authorized brief downtime for the remaining instance, with
+backup before upgrade and preservation of its scheduled tasks. A fresh inspection
+identified four enabled schedules that fire every minute. The earlier
+`counts.active = 1` represented the `scheduler-next-wake` blocker, not one running
+task; this workload cannot provide the normal 35-minute upgrade window.
+
+The application's own controls temporarily paused the 18 enabled schedules. All
+25 schedule definitions and their original states were recorded first; the seven
+already-paused schedules were left unchanged. With actual work settled, the
+existing maintenance gate sealed the runtime and stopped the source container.
+A read-only, encrypted OSS backup completed before the image change: 99,918 files
+and 1,160,797,318 ciphertext bytes. The per-operation audit retained the schedule
+restoration list; no maintenance or backup safety check was bypassed.
+
+The main container and all of this profile's init containers moved to the same
+qualified R7 digest and hit the ACS cache. The runtime passed all five readiness
+checks with zero restarts, matched the audited ASAR and verified Xfce/Plank, pinned
+launchers and Emoji font. Sealed database integrity/counts, schedules and crash
+dumps were unchanged. Maintenance completed and returned to `released` at epoch 92.
+
+All 25 schedule definitions and original states were then verified: 18 enabled,
+seven paused. The four minute-based schedules resumed automatic execution. One
+script's first resumed run exited with code 143 (`Terminated`); the same error was
+present in its pre-upgrade history, and at least five subsequent runs succeeded.
+This failure is retained in the evidence; its underlying cause was not established
+here, and the acceptance does not claim zero failed business runs. At the final
+sample, 32 scheduled runs since restoration comprised 24 successes, seven normal
+skips and that one failure. The latest four minute-based results were three
+successes and one skip, with runtime readiness still healthy.
+
+Final reconciliation confirmed the other 11 instances' Pod identities, templates,
+resources and update preferences unchanged, all PVCs preserved, and no active
+maintenance operation. Shared CIS code and new-claim policy were unchanged.
+The dedicated operator and its script ConfigMap were removed by exact UID;
+backup keys and immutable audit records were retained. The fleet now has **11
+running instances on R7 and one stopped instance with R7 staged for its next
+start**. New claims continue to use R7 for both main and init containers.
