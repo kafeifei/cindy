@@ -452,7 +452,10 @@ between chunks, and the helper verifies the original active window, PID and
 keyboard-focus ancestry before each character. Focus changes stop delivery,
 without retrying a prefix or redirecting it to another window. The helper restores
 keyboard modifiers and Caps Lock after text, preserves pointer-button state, and
-releases held remote keys/buttons when stopped. Cancellation terminates only that
+releases held remote keys/buttons when stopped. Unicode uses a bounded cache of
+otherwise unused keycodes, retaining mappings long enough for applications to
+consume events; physical bindings are never taken, and still-owned mappings are
+restored on helper exit. Cancellation terminates only that
 lease's helper. Posting native events does not prove application consumption, and
 physical input from another device is outside Cindy's input ownership lock.
 

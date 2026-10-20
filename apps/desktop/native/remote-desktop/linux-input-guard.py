@@ -54,6 +54,10 @@ class Display:
         self.library.XGetInputFocus.argtypes = [pointer, ctypes.POINTER(unsigned), ctypes.POINTER(integer)]
         self.library.XQueryTree.argtypes = [pointer, unsigned, ctypes.POINTER(unsigned),
                                            ctypes.POINTER(unsigned), ctypes.POINTER(pointer), ctypes.POINTER(ctypes.c_uint)]
+        self.library.XDisplayKeycodes.argtypes = [pointer, ctypes.POINTER(integer), ctypes.POINTER(integer)]
+        self.library.XGetKeyboardMapping.argtypes = [pointer, ctypes.c_ubyte, integer, ctypes.POINTER(integer)]
+        self.library.XGetKeyboardMapping.restype = ctypes.POINTER(unsigned)
+        self.library.XChangeKeyboardMapping.argtypes = [pointer, integer, integer, ctypes.POINTER(unsigned), integer]
         self.library.XQueryKeymap.argtypes = [pointer, ctypes.POINTER(ctypes.c_ubyte)]
         self.library.XGetModifierMapping.argtypes = [pointer]
         self.library.XGetModifierMapping.restype = ctypes.POINTER(ModifierMap)
@@ -84,6 +88,7 @@ class Display:
         self.text_connection = self.typing.xdo_new_with_opened_display(self.connection, None, False)
         if not self.text_connection:
             raise ValueError("text input unavailable")
+        self.text_mappings = {}
         self.keys = set()
         self.buttons = set()
 
@@ -155,6 +160,73 @@ class Display:
         if not down:
             self.buttons.discard(button)
 
+    def keyboard_mapping(self):
+        low, high, width = ctypes.c_int(), ctypes.c_int(), ctypes.c_int()
+        self.library.XDisplayKeycodes(self.connection, ctypes.byref(low), ctypes.byref(high))
+        data = self.library.XGetKeyboardMapping(self.connection, low.value, high.value - low.value + 1,
+                                               ctypes.byref(width))
+        if not data or not 8 <= low.value <= high.value <= 255 or not 1 <= width.value <= 32:
+            raise ValueError("keyboard unavailable")
+        try:
+            return {code: tuple(data[(code - low.value) * width.value:(code - low.value + 1) * width.value])
+                    for code in range(low.value, high.value + 1)}
+        finally:
+            self.library.XFree(data)
+
+    def prepare_text_mapping(self, text):
+        mapping = self.keyboard_mapping()
+        needed = {0xff09 if c == "\t" else 0xff0d if c == "\n" else
+                  ord(c) if ord(c) < 256 else 0x01000000 | ord(c) for c in text}
+        present = {symbol for symbols in mapping.values() for symbol in symbols}
+        pressed = (ctypes.c_ubyte * 32)()
+        self.library.XQueryKeymap(self.connection, pressed)
+        # Keep Unicode mappings across calls. libxdo's temporary single scratch
+        # key is removed before a busy Chromium client can resolve its KeyPress,
+        # losing characters even though XTest acknowledged the event.
+        for code, (symbol, _) in list(self.text_mappings.items()):
+            if symbol not in mapping[code] or any(x not in (0, symbol) for x in mapping[code]):
+                del self.text_mappings[code]  # another keyboard owner changed it
+        for symbol in sorted(needed - present):
+            available = [code for code, symbols in mapping.items() if not any(symbols)
+                         and not (pressed[code // 8] & (1 << (code % 8)))]
+            if available:
+                code = available[0]
+            else:
+                reusable = [(used, code) for code, (old, used) in self.text_mappings.items()
+                            if old not in needed and not (pressed[code // 8] & (1 << (code % 8)))]
+                if not reusable:
+                    raise ValueError("text mapping unavailable")
+                used, code = min(reusable)
+                # Bound reuse, rather than remapping the key immediately after
+                # release. Never take a physical binding or a key still held down.
+                remaining = 0.05 - (time.monotonic() - used)
+                if remaining > 0:
+                    time.sleep(remaining)
+            symbols = (ctypes.c_ulong * len(mapping[code]))(*([symbol] * len(mapping[code])))
+            self.library.XChangeKeyboardMapping(self.connection, code, len(symbols), symbols, 1)
+            mapping[code] = tuple(symbols)
+            self.text_mappings[code] = (symbol, time.monotonic())
+        for code, (symbol, used) in list(self.text_mappings.items()):
+            if symbol in needed:
+                self.text_mappings[code] = (symbol, time.monotonic())
+        self.library.XSync(self.connection, False)
+        # libxdo caches the keyboard layout. Reopen on the same Display so it sees
+        # the prepared mappings and never takes its ephemeral-scratch fallback.
+        self.typing.xdo_free(self.text_connection)
+        self.text_connection = self.typing.xdo_new_with_opened_display(self.connection, None, False)
+        if not self.text_connection:
+            raise ValueError("text input unavailable")
+
+    def restore_text_mapping(self):
+        if not getattr(self, "text_mappings", None):
+            return
+        mapping = self.keyboard_mapping()
+        for code, (symbol, _) in self.text_mappings.items():
+            if symbol in mapping[code] and all(x in (0, symbol) for x in mapping[code]):
+                empty = (ctypes.c_ulong * len(mapping[code]))()
+                self.library.XChangeKeyboardMapping(self.connection, code, len(empty), empty, 1)
+        self.text_mappings.clear()
+
     def validate_text_target(self, window, pid):
         if (self.property(self.root, "_NET_ACTIVE_WINDOW") != window
                 or self.property(window, "_NET_WM_PID") != pid):
@@ -224,10 +296,10 @@ class Display:
             for character in text:
                 if time.monotonic() >= deadline:
                     raise ValueError("text processing timeout")
+                self.prepare_text_mapping(character)
                 self.validate_text_target(window, pid)
-                # CURRENTWINDOW=0 forces XTest (not XSendEvent). libxdo maps Unicode
-                # to keysyms; its standard 12ms pacing lets applications consume map
-                # changes before scratch keycodes are reused. No CDP or DOM writes.
+                # CURRENTWINDOW=0 forces XTest (not XSendEvent); all symbols have
+                # stable bindings prepared above. No CDP or DOM writes.
                 if self.typing.xdo_enter_text_window(self.text_connection, 0, character.encode("utf-8"), 12000):
                     raise ValueError("text input unavailable")
             self.validate_text_target(window, pid)
@@ -289,6 +361,7 @@ class Display:
         for button in list(self.buttons):
             self.button(button, False)
         self.library.XSync(self.connection, False)
+        self.restore_text_mapping()
         if getattr(self, "text_connection", None):
             self.typing.xdo_free(self.text_connection)
         self.library.XCloseDisplay(self.connection)

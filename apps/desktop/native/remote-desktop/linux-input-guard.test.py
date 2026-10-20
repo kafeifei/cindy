@@ -110,6 +110,7 @@ class NativeTextTests(unittest.TestCase):
         display.typing = SimpleNamespace(xdo_enter_text_window=Mock(return_value=0), xdo_free=Mock())
         display.library.XkbLockModifiers = Mock()
         display.validate_text_target = Mock()
+        display.prepare_text_mapping = Mock()
         display.text_modifiers = Mock(return_value={50})
         display.caps_locked = Mock(return_value=2)
         return display
@@ -172,6 +173,57 @@ class NativeTextTests(unittest.TestCase):
         display.property = Mock(side_effect=[42, 90])
         display.library.XGetInputFocus = lambda _d, focus, _r: setattr(focus._obj, 'value', 42)
         display.validate_text_target(42, 90)
+
+
+class StableMappingTests(unittest.TestCase):
+    def fixture(self, mapping):
+        display = NativeTextTests().fixture()
+        del display.prepare_text_mapping
+        display.text_mappings = {}
+        display.keyboard_mapping = lambda: dict(mapping)
+        def change(_connection, code, _width, symbols, _count):
+            mapping[code] = tuple(symbols)
+        display.library.XChangeKeyboardMapping = Mock(side_effect=change)
+        display.library.XQueryKeymap = Mock()
+        display.typing.xdo_new_with_opened_display = Mock(return_value=10)
+        return display
+
+    def test_reuses_stable_unicode_bindings_and_restores_only_owned_empty_slots(self):
+        mapping = {8: (97, 65), 9: (0, 0), 10: (0, 0)}
+        display = self.fixture(mapping)
+        display.prepare_text_mapping('中😀a')
+        self.assertEqual(mapping[8], (97, 65))
+        self.assertEqual(len(display.text_mappings), 2)
+        before = dict(mapping)
+        display.prepare_text_mapping('😀中')
+        self.assertEqual(mapping, before)
+        self.assertEqual(display.library.XChangeKeyboardMapping.call_count, 2)
+        display.restore_text_mapping()
+        self.assertEqual(mapping, {8: (97, 65), 9: (0, 0), 10: (0, 0)})
+
+    def test_full_map_never_steals_an_existing_physical_binding(self):
+        display = self.fixture({8: (97, 65)})
+        with self.assertRaisesRegex(ValueError, 'mapping unavailable'):
+            display.prepare_text_mapping('中')
+        display.library.XChangeKeyboardMapping.assert_not_called()
+
+    def test_eviction_uses_only_idle_owned_slots_not_current_chunk_symbols(self):
+        mapping = {8: (0, 0), 9: (0, 0)}
+        display = self.fixture(mapping)
+        display.prepare_text_mapping('中😀')
+        with patch.object(module.time, 'sleep') as sleep:
+            display.prepare_text_mapping('😀文')
+        self.assertEqual(set(mapping[9]), {0x0101f600})
+        self.assertEqual(set(mapping[8]), {0x01006587})
+        self.assertLessEqual(sleep.call_args.args[0], 0.05)
+
+    def test_external_mapping_changes_are_preserved_during_cleanup(self):
+        mapping = {8: (0, 0)}
+        display = self.fixture(mapping)
+        display.prepare_text_mapping('中')
+        mapping[8] = (0x01004e2d, 65)
+        display.restore_text_mapping()
+        self.assertEqual(mapping[8], (0x01004e2d, 65))
 
 
 if __name__ == '__main__':
