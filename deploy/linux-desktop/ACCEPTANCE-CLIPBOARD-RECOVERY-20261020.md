@@ -58,43 +58,85 @@ The fixture had no business PVC, real credentials or service-account token and
 was removed afterward. The clipboard harness was a separate Electron process;
 this preflight is neither final-image acceptance nor DeviceLink end-to-end input.
 
-## Outstanding acceptance
+## R6 full build and native qualification
 
-The full R5 candidate was built from the complete Dockerfile chain, without
-inheriting a previous Cindy runtime image. The non-root audit verified 820
-payload files, parent traversal and permissions; the image retains two layers
-and 603 pinned packages, with duplicate Chromium removed.
+The corrected R6 candidate was built from the complete Dockerfile chain, without
+inheriting a previous Cindy runtime image. Recipe commit:
+`2b430a20a47bed3d8da2ace6c1059b406c63d44c`; frozen application source includes
+`93316f6d08`. Local compilation used Linux amd64 under Rosetta on Apple Silicon;
+runtime qualification used a separate native Linux amd64 fixture.
 
 | Artifact | Value |
 | --- | --- |
-| Candidate tag | `0.1.108-source-r5.20261020` |
-| Registry manifest digest | `sha256:4483ca02a98e37bede2b76e8c57351dfbcde7de11c51a51d368e6269e5c2392d` |
-| Image config ID | `sha256:9ab40eb1cdcf7bb0f60b4e2a16cb0c7146a5d0edb45a8c3d66173de2a6d8c78e` |
-| Application ASAR SHA-256 | `adb21dd6fabadb50b9aad7325e7bcd0148278a978d11d13cd83781077bec758c` |
-| Uncompressed image size | 3,704,833,152 bytes |
+| Candidate tag | `0.1.108-source-r6.20261020` |
+| Registry manifest digest | `sha256:2a9c5d0f34c5ede4d32cdc09444409318d4f066d1de93e685a144b64ba2a7f03` |
+| Image config ID | `sha256:384e81ab03b39129f26cc2e5263107357ddce494be0176338327de3eadfb5c49` |
+| Application ASAR SHA-256 | `3d7d5f8f9f301c428f9e4d9c65bac1b6dcc745811d44f75ed2d2dbd13a48f8eb` |
+| Uncompressed image size | 3,704,833,204 bytes |
 
-Local compilation used Linux amd64 under Rosetta on Apple Silicon. Final-image
-native Linux checks passed the desktop/input cases, but found a roughly ten-second
-empty-clipboard read during ownership handover. R5 was therefore not deployed. Its
-ACS cache reached Ready and the main and actual init image both hit it.
+The non-root audit verified 820 payload files, parent traversal and permissions.
+The image retains two layers and 603 pinned packages, with duplicate Chromium
+removed. ACS cache reached Ready; a disposable probe verified an exact cache hit
+for both the main image and the actual `prepare-profile-status` init image and
+command. The probe had no business PVC or service-account token and was removed.
 
-The empty-format guard now returns an empty result without invoking native content
-getters. Sixteen focused clipboard tests and Desktop typecheck passed. A patched
-standalone Electron harness on R5 completed cold sync/read in 20–41 ms and passed
-terminal/Chrome UTF-8 paste and rich-content checks. This is not a corrected-image
-pass. The first R6 build exhausted the local VM memory during Forge compilation;
-no runtime image was produced. A 4 GiB packaging heap retry also failed with V8 heap exhaustion. The recipe
-retains its 6 GiB heap and now requires the executable and ASAR immediately
-after packaging; the next local build uses temporary VM swap to provide
-headroom without restarting or stopping existing services.
-A subsequent download failed with curl error 18 (truncated HTTP/2 stream).
-The downloader now retries stalled/partial transfers over HTTPS/HTTP 1.1 and
-uses a SHA-256-verified BuildKit asset cache; five tests cover cache reuse,
-corruption, interrupted downloads, checksum failure and invalid pins.
-R6 full build and qualification are pending. The two R5 diagnostic fixtures
-exited with code zero without a recorded normal-shutdown request; no normal-stop
-acceptance is claimed for them, and the fresh-image run must capture the runtime
-exit reason and complete an explicit shutdown check before any deployment.
+All 21 native qualification steps passed on this exact R6 image, including:
+
+- Startup with root-owned, non-writable legacy `.local/share`, without changing
+  its ownership or permissions; runtime sandbox and system desktop launchers.
+- Terminal/Chrome launch, minimize/restore, Dock restart, fullscreen avoidance,
+  Cindy close protection and launcher migration.
+- Native text, long text, composed Chinese/Emoji/ZWJ text, cancellation and pointer
+  input; synthetic authorization-browser ownership and cleanup.
+- Clipboard sync/read latency of 20–31 ms with an empty X11 clipboard; exact
+  terminal/Chrome UTF-8 paste, CLIPBOARD rather than PRIMARY selection,
+  text/HTML/RTF round trips and PNG normalization.
+- Clipboard harness exit, one surviving application main process, then explicit
+  SIGTERM: main-process exit in 0.1 seconds, container exit zero and no new crash
+  dump. The fixture was removed after shutdown.
+
+The clipboard harness was a separate Electron process compiled from the same
+committed adapter source. These checks do not substitute for DeviceLink product-UI
+clipboard acceptance or a real third-party OAuth exchange. A test-only process
+parser initially counted Electron children as main processes because Linux
+proctitle rewriting can place the arguments in one string; the parser was fixed
+and the exact-main-process assertion then passed before shutdown.
+
+R5 was withheld after finding a roughly ten-second empty-clipboard read during
+ownership handover. The corrected guard avoids native content getters when no
+formats exist; 16 focused tests and Desktop typecheck passed. Earlier R6 build
+attempts exhausted VM memory or encountered an interrupted download. The successful
+build retained Forge's required 6 GiB heap and used temporary VM swap, which was
+removed afterward. Packaging now checks executable/ASAR output immediately; asset
+downloads use bounded HTTPS/HTTP 1.1 retries and a SHA-256-verified BuildKit cache.
+Five downloader tests cover cache reuse, corruption, interruption, checksum failure
+and invalid pins. Failed-attempt evidence is retained privately.
+
+## Own-instance deployment
+
+Only the authorized own instance was upgraded from R4 to R6. The existing
+maintenance path sealed the runtime, stopped it, mounted the PVC read-only and
+completed an encrypted OSS backup (3,208 files; 436,502,030 ciphertext bytes)
+before changing the main and init image. The new Pod hit the qualified ACS cache,
+started with zero restarts and passed all five runtime readiness checks.
+
+Sealed database integrity/counts, schedules and crash-dump comparisons passed.
+Maintenance completed and the new runtime returned to `released` at epoch 81.
+Xfce, Plank, the two pinned launchers, the 40 px Matte Dock and the Emoji font
+were present; the application ASAR matched the audited R6 hash.
+
+Final checks confirmed all other 11 instance images, Pod identities and
+StatefulSet specs unchanged, including the stopped instance remaining stopped.
+All 12 PVCs, instance identities, resources and update preferences were preserved.
+New-claim defaults and the shared CIS maintenance implementation were unchanged;
+there were no active maintenance operations. Temporary operator resources were
+removed after verification.
+
+A read-only request from the isolated Mac Dev client over real DeviceLink to the
+R6 receiver returned text/inline/rich-content clipboard, clipboard sync, native
+control and automatic-reconnect capabilities in 123 ms. It did not start a viewer
+or access either device's clipboard; capability discovery is not a clipboard
+transfer test.
 
 ## Real connection recovery and remaining device checks
 
@@ -103,7 +145,10 @@ credential identity. Its internal package version matches the Dev bundle version
 all other archive contents and unpack layout were checked unchanged, and signing
 verification passed. The temporary Keychain wait ended before the following test.
 Only this private Dev package enabled a loopback main-process inspector for fault
-injection; the hosting application and release build configuration were not changed.
+injection. After acceptance it quit normally, the original fuse values were
+restored and code signing verification passed. The hosting application and release
+build configuration were not changed; no local user clipboard content was read or
+replaced by the deferred UI test.
 
 On the own-instance R4 receiver, one TLS socket belonging to the Dev client's
 production relay connection was destroyed. The client reported connecting and
@@ -127,9 +172,11 @@ fresh listing/input requests succeeded. The healthy controller and host each
 retained one connection. It used synthetic identities and accelerated 30–100 ms
 reconnect timing, not production credentials or phone hardware.
 
-Mac-to-cloud clipboard through the product UI remains pending the corrected R6
-receiver. Physical iPhone keyboard composition and system clipboard remain
-explicitly deferred at the user's request.
+Mac-to-cloud clipboard through the product UI remains pending: the Mac is locked.
+No UI action while locked is counted as acceptance. Physical iPhone keyboard
+composition and system clipboard remain
+explicitly deferred at the user's request. Mobile changes are source- and
+test-verified only; no iPhone application update was installed during this work.
 
 Raw logs, screenshots, synthetic fixtures and infrastructure receipts stay in the
 private acceptance archive. No user clipboard contents or credentials are
