@@ -1,5 +1,8 @@
 # Complete CN source build
 
+The [2026-10-20 acceptance record](ACCEPTANCE-20261020.md) identifies the qualified
+candidate, its build inputs, environments, one-instance rollout and limitations.
+
 Use the `feat/cloud-settings-native-client` branch of `zhuoshaojian/cindy`.
 Required host tools: Git with full branch history, Python >= 3.12, and Docker
 Buildx. The build targets Linux amd64; it can run on native amd64 or under Docker's
@@ -56,7 +59,9 @@ config IDs are local identifiers, not registry manifest digests.
 Use disposable data and synthetic identity/keyring material. Test normal startup,
 managed identity readiness, sandboxed renderers, Chrome authorization tab cleanup,
 terminal/browser Dock launch, minimize/restore, fullscreen, native mouse/keyboard,
-Emoji, legacy HOME migration and orderly maintenance shutdown. Native X11 tests
+Emoji, legacy HOME migration and orderly maintenance shutdown. For existing homes,
+also check [legacy user launchers](runtime-desktop-xfce/README.md#existing-user-launchers)
+and prove that launched windows merge into their pinned Dock icons. Native X11 tests
 are not DeviceLink end-to-end tests. Compare the final image and application
 payload with the accepted behavior and record any deliberate differences.
 
