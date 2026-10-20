@@ -20,14 +20,14 @@
     "apps/desktop/src/main/device-link/index.ts": "c6848dc0a1dfed0af180c6814236ebe8e1877c7944362162e371e7335fce37de",
     "apps/desktop/src/main/device-link/__tests__/remoteInvokeSendGuard.test.ts": "ae5cecdb8d3a3b091d6dd3d169d2fe4df56ead98ed5087d1e7a3ca8c70b33f76",
     "packages/device-link/src/client.ts": "a11ff08bc6b78bb099e6b2a01188c71c8e448e6d7f15cbfa321e4f79f465e8c2",
-    "packages/device-link/src/__tests__/client.test.ts": "c7b93930d4ea62922582215e4a1446241ef05568d875fa83caa7db005d55f1fb",
+    "packages/device-link/src/__tests__/client.test.ts": "2b2c37bb34bde7de4738e2bfdea73831ba2895e45fb9d74fa1cfb509111d0da1",
     "apps/desktop/src/main/remote-desktop/clipboard.ts": "c3aedb3aa509d3520f13ab86ed8cab6861e9c4fceef245c7e3c8df9112cc923f",
     "apps/desktop/src/main/remote-desktop/index.ts": "c2de6bdca15b8a521704e6d965604aa7ee960005d10957f696e163a6f286977c",
     "apps/desktop/src/main/remote-desktop/linuxClipboardNative.ts": "a944a1c17c25dfa044373843f6d561b3baa2505d8172088b135116add8a6ed4c",
-    "apps/desktop/src/main/remote-desktop/linuxX11Clipboard.ts": "82ab54429ec65d9468a810d06cb7a1cae6c5af7ec2741473ed60077e7d5b12a0",
+    "apps/desktop/src/main/remote-desktop/linuxX11Clipboard.ts": "5ba20585a78785c2a241da7bf4bd5ef67f229f356a2e307d29ab46aa491cd2d3",
     "apps/desktop/src/main/remote-desktop/__tests__/linuxClipboardNative.test.ts": "1bfe2d57bc474979714765768a11eee90f9d003d1b6caa423709576d93774802",
     "apps/desktop/src/main/remote-desktop/__tests__/linuxClipboardTransfer.test.ts": "b82c9a484d42b94821b53ebe1a20a70fb46048ebc8c51f86f9562c8c716b7843",
-    "apps/desktop/src/main/remote-desktop/__tests__/linuxX11Clipboard.test.ts": "c523ca2cd9d22be594945e5dca8a44421379bfd1b1215ddb6b6f0c2eb4eef2ae"
+    "apps/desktop/src/main/remote-desktop/__tests__/linuxX11Clipboard.test.ts": "91295715a2af5fd0293bd6002a23b6769c80bab21129179f19fd280eef32b445"
   },
   "scope": "own-instance-input-auth-canary"
 }
