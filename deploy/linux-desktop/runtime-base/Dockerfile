@@ -155,3 +155,33 @@ ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
 LABEL io.cindy.base-recipe-commit=${CINDY_SOURCE_COMMIT} \
       io.cindy.region=cn \
       io.cindy.target-architecture=amd64
+
+# Keep the independently reproducible reference target above. The release base
+# removes only the duplicate browser; development/agent tools stay available.
+FROM assembled AS trimmed
+RUN --mount=type=bind,source=runtime-base,target=/recipe <<'EOF'
+apt-get --yes purge chromium chromium-common chromium-sandbox
+python3 -I - <<'PY'
+import sys
+sys.path.insert(0, '/recipe')
+import base_lock
+expected = base_lock.read_lock(open('/recipe/packages.lock').read())
+for package in ('chromium', 'chromium-common', 'chromium-sandbox'):
+    del expected[(package, 'amd64')]
+actual = base_lock.parse_installed(base_lock.run('dpkg-query', '-W', '-f=' + base_lock.DPKG_FORMAT),
+                                   base_lock.run('apt-mark', 'showmanual'))
+problems = base_lock.differences(expected, actual)
+if problems: raise SystemExit('\n'.join(problems))
+print('SLIM_PACKAGE_LOCK_VERIFIED', len(actual))
+PY
+rm -rf /var/lib/apt/lists/* /var/cache/apt/*.bin /tmp/* /root/.cache
+EOF
+
+FROM scratch AS runtime-base-slim
+ARG CINDY_SOURCE_COMMIT
+COPY --from=trimmed / /
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    NODE_VERSION=24.19.0 YARN_VERSION=1.22.22 LANG=zh_CN.UTF-8 LANGUAGE=zh_CN:zh
+LABEL io.cindy.base-recipe-commit=${CINDY_SOURCE_COMMIT} \
+      io.cindy.region=cn io.cindy.target-architecture=amd64 \
+      io.cindy.base-variant=single-browser

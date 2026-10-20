@@ -33,36 +33,16 @@ different build outputs of this repository.
 `cindy-server` is the server repository; `cloud-instance-server` (CIS) is a
 service inside it. A checkout directory name is not a repository or service name.
 
-## Build status and remaining work
+## Complete source build
 
-The dependency base is now independently buildable with the committed
-[base Dockerfile](runtime-base/README.md#build). It installs the pinned third-party
-dependencies, Xfce/Plank, Chrome and fonts. Its output deliberately has no Cindy
-application, runtime helpers or startup command; it is not a runnable cloud image.
+The [source build entry](SOURCE-BUILD.md) exports the frozen client and recorded
+runtime fixes from Git, builds the pinned dependency base, compiles the application
+and context/wire bundles, and installs the tracked runtime programs into one
+application layer. `Dockerfile.r5` is retained only as a historical repair recipe.
 
-The **complete client source-to-image chain is still incomplete**:
-
-- The archived application scripts require a prepared `/workspace` and Electron
-  assets; a committed builder recipe must create those inputs from the frozen
-  source, lockfile and verified downloads.
-- `cindy-seccomp`, the health probe, profile maintenance/preflight launchers and
-  their keyring/CDP helpers still need tracked source and installation rules.
-- The final runtime Dockerfile must assemble that application and those helpers
-  with the freshly built base, then pass isolated startup and shutdown checks.
-
-`runtime-desktop-xfce/Dockerfile.r5` remains a historical R4-to-R5 repair layer.
-It is not that final assembly recipe. Do not use an old application image or a
-compacted filesystem export to stand in for these missing inputs. Successful
-base builds, offline tests or CIS tests do not qualify a complete cloud image.
-
-The replacement chain must include the complete builder, dependency-base and
-runtime Dockerfiles (or named stages in one Dockerfile), with a documented
-build-context entry point. Record the base OS digest, client/upstream and recipe
-commits, dependency lockfiles, package versions, external asset checksums and
-explicit region/platform. Build the application, helpers and runtime filesystem
-from these inputs without extracting them from a previous Cindy image or relying
-on an operator's prepared workspace. Do not mark this requirement complete until
-the exact committed recipe has successfully built and its output has been tested.
+The source build and slim base require fresh isolated acceptance before use. A
+successful Docker build is not startup, authorization, input or rollout acceptance.
+The source builder does not publish images or operate instances.
 
 Local acceptance delivers a loadable image archive and checksum, image config ID,
 complete Dockerfiles/build inputs, build logs and test records. Test with disposable

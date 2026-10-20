@@ -1,0 +1,3 @@
+#!/bin/sh
+# Keep the frozen runtime's executable path while shipping one browser engine.
+exec /opt/google/chrome/google-chrome "$@"

@@ -1,0 +1,12 @@
+{
+  "seccomp-launch.py": "b1ef283b0371b8e561ce80a70e787b7fa2e3d717cc11488747805113ba18696f",
+  "healthcheck.mjs": "6e17a6635b3b3a5482250d47ef4aaf2175ce39995287a920e4084d5e380154cc",
+  "keyring-check.mjs": "73c12137351d62baa7d269a36eb74e3b7fc322a909a4897b9f79c706f6bf8821",
+  "profile-entry-check.mjs": "d6caab1a8cd82d5edcf8c1cea16a82634c691cad553ed53b4e2c6f8e45b1de41",
+  "profile-helper.mjs": "af46b6bd30e5e37cc6150ed75cf651d672893547c50fb053b45dbf61dd853120",
+  "profile-helper-entrypoint.sh": "36a12d7469c1033764888c384f285b8b83b1eb3b4f8e713bae651ce3949c4ddb",
+  "profile-preflight.mjs": "f9944cf17a3bf3c8f125d35c52cca52e5a1d50bb1cf9fe9e9cbcbf294797d755",
+  "profile-preflight-entrypoint.sh": "3a0bb954e15488f5292f3d9c28c93b5722809e2f9bf3a68f2949acef7d16c311",
+  "cdp-pipe.mjs": "52c1aac6a908d2b939be7beecc6976c98d5f63dd81b7821bb5a2a6d16317c83f",
+  "healthcheck.test.mjs": "1048ec200fe2307ccfffdb795467befd347aec45b528510151ff4e684589fef8"
+}

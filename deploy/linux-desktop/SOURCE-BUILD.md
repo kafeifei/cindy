@@ -1,0 +1,56 @@
+# Complete CN source build
+
+Use the `feat/cloud-settings-native-client` branch of `zhuoshaojian/cindy`.
+Required host tools: Git with full branch history, Python >= 3.12, and Docker
+Buildx. Run the final release build on native Linux amd64. Apple Silicon emulation
+is useful for preliminary recipe checks, not the final release artifact.
+
+From the repository root, with a committed, clean `deploy/linux-desktop/`:
+
+```sh
+python3 deploy/linux-desktop/build-image.py \
+  --tag cindy-runtime-cn:0.1.108-source-candidate-unique \
+  --output /absolute/private/cache/cindy-source-build-unique
+```
+
+Use a new tag and output directory. `--no-cache` forces both Dockerfiles to run
+again; `--prepare-only` exports the exact source context without starting Docker.
+The script never publishes images, creates ACS caches or updates instances.
+Network access is needed for pinned OS packages, npm dependencies and verified
+Electron/agent assets. No user HOME, credentials, business data or Docker socket
+is mounted into build stages. Use a full clone; frozen commits must be present.
+
+## Inputs and outputs
+
+- `source-freeze.json` selects v0.1.108 and six hash-checked fixes from the recorded
+  runtime commit. Current native-settings UI changes are a separate client output.
+- `runtime-base/Dockerfile` fixes the OS digest, snapshot dates, package versions
+  and external checksums. Its `runtime-base-slim` target removes only the three
+  duplicate Chromium packages; all agent development tools are retained.
+- `Dockerfile` compiles the frozen application in that base using its pnpm lock,
+  pinned development headers and verified external assets. It applies the existing
+  cloud overlays and builds maintenance/context bundles from the same source.
+- `assemble-runtime.py` installs the application once, the tracked helpers,
+  Xfce/Dock sources and the Chrome compatibility wrapper. It removes no user data.
+- `audit-runtime-layer.py` verifies permissions, required entrypoints and the two
+  explicit agent CLI links. `release_guard.py` checks architecture, non-root user,
+  command, source labels and the base-plus-one-application layout.
+
+The output contains clean source/recipe exports, their hashes and commits,
+Docker commands/logs, image configs, overlay hashes and a payload permission audit.
+`result.json` reports build success with runtime acceptance still pending. Image
+config IDs are local identifiers, not registry manifest digests.
+
+## Acceptance and promotion
+
+Use disposable data and synthetic identity/keyring material. Test normal startup,
+managed identity readiness, sandboxed renderers, Chrome authorization tab cleanup,
+terminal/browser Dock launch, minimize/restore, fullscreen, native mouse/keyboard,
+Emoji, legacy HOME migration and orderly maintenance shutdown. Native X11 tests
+are not DeviceLink end-to-end tests. Compare the final image and application
+payload with the accepted behavior and record any deliberate differences.
+
+Publish only after acceptance and within the authorized scope. Prepare ACS caches
+for the main image and every actual initContainer image before updating an
+instance. CIS owns task protection, stop/backup/upgrade/recovery. CI/CD automation
+is not implemented by this source-build command.

@@ -91,9 +91,8 @@ release built on this base is still required.
 These are reproduced as they are in the qualified base and need their own review:
 Chromium 152 is installed next to Chrome 155; the two remote-desktop libraries are
 copied sonames rather than installed packages; the base keeps the full
-`buildpack-deps` toolchain. The Cindy-owned files listed above are not yet all
-tracked in this repository, and `release_guard.py` must accept them in the
-application layer before a release uses this base.
+`buildpack-deps` toolchain. Cindy-owned files are tracked in `../runtime-support/` and the adjacent runtime
+directories. The complete assembly and layer checks are in [SOURCE-BUILD.md](../SOURCE-BUILD.md).
 
 To update a package, choose new snapshot runs, change the versions in the lock
 deliberately, rebuild and compare against the previous base; review every changed
@@ -102,3 +101,14 @@ path before qualifying the new base.
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s deploy/linux-desktop/runtime-base -p 'test_*.py' -v
 ```
+
+## Single-browser release target
+
+`runtime-base-slim` builds from the same pinned inputs, then purges exactly
+`chromium`, `chromium-common` and `chromium-sandbox`. It verifies the remaining
+603-package lock without autoremove or package upgrades and copies the result
+into one layer. Chrome, development tools and all other libraries remain. The
+application layer preserves the frozen `/usr/bin/chromium` invocation through
+a tracked wrapper to Google Chrome; private CDP and sandbox behavior require
+authorization regression testing. This variant intentionally differs from the
+606-package reference; its acceptance cannot use filesystem equality alone.

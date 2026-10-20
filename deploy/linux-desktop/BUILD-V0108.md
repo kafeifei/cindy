@@ -6,9 +6,8 @@ version-specific **Linux builder** programs, not commands to run on a developer'
 Mac or against an existing client checkout.
 
 This is an application build record, not a complete source-to-image entry point.
-The [dependency base Dockerfile](runtime-base/README.md) is now committed. The
-application builder, remaining runtime helper sources and final assembly recipe
-are still missing. The current requirements are in [README.md](README.md).
+The complete build entry is now [SOURCE-BUILD.md](SOURCE-BUILD.md). This page
+records the frozen application inputs, not the current build command.
 
 ## Source and builder layout
 
@@ -33,14 +32,15 @@ Do not substitute the whole current branch: it includes later native client UI
 work that was not part of this frozen ASAR. `source-freeze.json` is a historical
 build record, not a current deployment authorization.
 
-The original builder supplied Node 22, pnpm, a C/C++ toolchain, Python, Debian
+The historical builder supplied Node 22, pnpm, a C/C++ toolchain, Python, Debian
 bookworm package sources and the frozen workspace dependencies before running
 `prepare-linux.sh`. That script expects `node_modules/electron` to exist so it
 can install the verified offline Electron archive. `prepare-linux.sh` downloads
 development packages into the disposable sysroot and prepares the agent assets;
 `build-runtime.sh` then applies the overlays and packages Linux x64. The latter
 also builds the maintenance context and runtime wire bundles from the same source.
-The hardcoded `/home/cindy/.cache/node-gyp` is the **disposable builder account**.
+The current Dockerfile runs the builder as root with disposable header caches;
+no user HOME is mounted.
 
 | Asset | Version | Archive SHA-256 |
 | --- | --- | --- |
@@ -64,21 +64,10 @@ assembly, not in that base. The latest desktop source and package versions are
 recorded under `runtime-desktop-xfce/`; its `Dockerfile.r5` is the historical
 R4-to-R5 repair layer, not a complete runtime assembly.
 
-This archive does **not** claim a clean Debian-to-runtime reproducible build.
-The historical prepared workspace and application assets are not supplied by the
-new dependency-base Dockerfile. The old operational
-`kubectl` builders and publication scripts contained deployment-specific paths
-and are intentionally not source dependencies. Future CI must replace that
-external application-build setup with pinned, reproducible inputs, rather than relying
-on an operator's filesystem.
-
-The next release must rebuild the dependency base from its complete Dockerfile
-and recorded OS/package inputs, then build the application and helpers from the
-recorded source. It must not reuse the historical application image or a base
-extracted from that image as a substitute. Normalize directory/executable
-permissions with `release_guard.py`; audit hashes, runtime command, non-root user,
-source labels, external agent assets and font/license files. Build the supervisor
-and wire bundle together and include the desktop sources in the base recipe.
+The current source build supplies its own builder and runtime assembly from the
+pinned dependency base and these frozen sources. It uses Node 24.19.0, pinned
+Debian development packages, verified Electron archives and the frozen pnpm lock.
+The old operational builders and private workspace are not build inputs.
 
 [Filesystem compaction](IMAGE-PACKAGING.md) only compares an output to its input;
 it does not prove where that input came from. A fresh build and isolated local
