@@ -9,7 +9,7 @@
 
 | 阶段 | 本分支能力 | 启用/验收状态 |
 | --- | --- | --- |
-| PR / 分支推送检查 | 锁文件安装、云覆盖层与发布工具测试、双版本和上游 commit 校验 | 触发配置已接入，无云凭据；fork Actions 当前被平台禁用，未产生本分支 run |
+| 可信分支推送检查 | 锁文件安装、云覆盖层与发布工具测试、双版本和上游 commit 校验 | 触发配置已接入，无云凭据；fork Actions 当前被平台禁用，未产生本分支 run |
 | 候选镜像 | 完整源码构建、两层镜像审计、原生 Linux 隔离启动/停机、发布已测产物、digest 绑定 | 代码已接入，须配置专用 runner 和 Environment；尚无本流水线真实构建记录 |
 | ACS 缓存 | 遍历实际 Pod 模板中的主镜像和所有 init 镜像，按目标网络创建/复用并等待 Ready | 代码已接入，须配置 ACS 身份和模板清单；尚未真实调用 |
 | 产品验收与晋级 | 记录明确的 pending 状态 | 完整 OAuth、DeviceLink、Pod 实际缓存命中、灰度、签名信任及稳定通道准入尚未自动化 |
@@ -20,7 +20,9 @@
 candidate Environment 已配置精确 BuildKit 镜像与 ECI Pod 网络选项。
 维护者登录后确认 GitHub 已禁用仓库 Actions，要求联系 Support；API 的 `enabled=true` 未反映该限制；
 RAM 创建 OIDC provider 返回 `NoPermission`（`ram:CreateOIDCProvider`）。
-专用 runner、Registry 凭据、RAM OIDC 和首次真实运行仍待完成。环境存在不代表交付已通过；
+ACR 独立候选仓库、不可变标签和受保护 Environment 的 AK 配置已完成；本机临时登录、
+测试制品推送/读取及同标签覆盖拒绝已验证，测试标签已删除。仓库级 self-hosted runner、ACS RAM OIDC 和
+首次真实运行仍待完成。环境存在不代表交付已通过；
 后续以实际 workflow run、镜像 digest 和缓存回执更新此状态。
 目标 ACK + ECI 的 DinD、Buildx 实际构建/运行、已发布 R7 的桌面启动/沙箱/停机已通过，
 测试 Job 和临时命名空间已清理。默认 DNS 指向的代理在 ECI 和 ACK 对照 Pod 中均拒绝连接；
@@ -55,7 +57,8 @@ RAM 创建 OIDC provider 返回 `NoPermission`（`ram:CreateOIDCProvider`）。
 
 ## 执行链与凭据边界
 
-1. `verify` 在 GitHub hosted Linux 运行，无发布凭据；PR 不进入自建 runner。
+1. `verify` 在 fork 仓库专属的临时 self-hosted Linux 运行，无发布凭据。
+   本交付 workflow 只接受指定 fork 功能分支的 push/dispatch，不监听外部 PR；主仓工作流不变。
    fork 不必预先复制上游 tag：从 `makecindy/cindy` 拉取指定正式 tag，核对固定 commit，
    不使用上游最新分支或强制覆盖本地冲突 tag。
 2. `candidate` 只接受上述 fork 和分支，在 `cloud-image-candidate-cn` 环境运行。
@@ -66,7 +69,8 @@ RAM 创建 OIDC provider 返回 `NoPermission`（`ram:CreateOIDCProvider`）。
    原有 seccomp 入口。验证 Xfce/Plank、Cindy 可见窗口、renderer sandbox、正常停机。
    Docker 外层 seccomp/AppArmor 只在该一次性测试容器中交给运行时自带过滤器；不改变宿主
    系统策略、不使用 `--no-sandbox`、不代表业务身份就绪或 DeviceLink/OAuth 验收。
-4. 启动检查通过后才注入 Registry 凭据，推送已测 image ID 并读取 Registry 原始 manifest，
+4. 启动检查通过后才注入 Registry 凭据；可用固定 Registry 密码，或通过 ACR AK 换取
+   一小时的临时 Registry 凭据。推送已测 image ID 并读取 Registry 原始 manifest，
    按 digest 再读回验证 config ID；不重建产物、不覆盖冲突标签。
 5. GitHub artifact 保存候选记录、四份构建审计和 smoke 结果；不上传 HOME、密钥、整份
    构建上下文。跨 job 按不可变 artifact ID 传递，失败 job 重跑仍使用原产物。
@@ -94,7 +98,10 @@ RAM 创建 OIDC provider 返回 `NoPermission`（`ram:CreateOIDCProvider`）。
 | `cloud-image-candidate-cn` variable | `CLOUD_IMAGE_REPOSITORY` | Registry 主机和仓库路径，不含 tag/digest |
 | 同上 variable | `CLOUD_IMAGE_IMMUTABLE_TAGS=true` | 管理员确认仓库已启用 tag 不可变策略 |
 | 同上 variable | `CLOUD_IMAGE_BUILDX_DRIVER_OPTS` | 可选，多行 BuildKit driver 选项；ECI 使用已验证的镜像 digest 和 `network=host`，见接入手册 |
-| 同上 secrets | `CLOUD_IMAGE_REGISTRY_USER` / `CLOUD_IMAGE_REGISTRY_PASSWORD` | 只允许候选仓库读/推送的身份，禁用删除及生产部署权限 |
+| 同上 variable | `CLOUD_IMAGE_REGISTRY_AUTH` | `password`（默认）或 `acr-ak`；显式选择，不自动回退 |
+| 同上 secrets | `CLOUD_IMAGE_REGISTRY_USER` / `CLOUD_IMAGE_REGISTRY_PASSWORD` | `password` 模式的 Registry 登录身份 |
+| 同上 variable | `CLOUD_IMAGE_ACR_INSTANCE_ID` | `acr-ak` 模式的目标 ACR 企业版实例 |
+| 同上 secrets | `CLOUD_IMAGE_ACR_ACCESS_KEY_ID` / `CLOUD_IMAGE_ACR_ACCESS_KEY_SECRET` | `acr-ak` 模式的 ACR 身份；仅在发布登录步骤注入，见接入手册权限范围 |
 | `cloud-image-cache-cn` variables | `ACS_CACHE_RAM_ROLE_ARN` / `ACS_CACHE_OIDC_PROVIDER_ARN` | GitHub OIDC 换 STS 的专用缓存角色 |
 | 同上 secret | `CLOUD_IMAGE_CACHE_TARGETS` | 实际网络、允许的镜像仓库、完整主/init 模板清单 JSON |
 
@@ -105,14 +112,17 @@ RAM 创建 OIDC provider 返回 `NoPermission`（`ram:CreateOIDCProvider`）。
 Kubernetes RRSA，不借用用户的控制台 Cookie。私有 ACR 拉取须预先配置可用权限；
 当前适配器没有内联 Registry 密码字段，不要把凭据混进缓存配置。
 
-runner 标签为 `self-hosted, Linux, X64, cindy-cloud-build`，用专用、临时原生 amd64 Linux，
-安装 Docker/Buildx、Python ≥3.12、Git；建议至少 4 vCPU、16 GiB RAM、80 GiB 可用磁盘。
-可使用独立 VM 或 ACK 调度的临时 ECI；执行资源和身份与业务工作负载隔离，测试结束回收，
-不挂宿主 HOME、Docker socket、业务 PVC 或生产凭据。只有这个可信
-workflow 可以用该 runner；不可给任意 fork PR 或其它 workflow 开放。依赖下载和构建
-缓存不应共用不可信 PR 的缓存写入空间。本版复用单次 Bake 的缓存，尚未加入跨 run
-外部 BuildKit 缓存，也不自动修改 runner 的宿主安全策略。
+所有 job 都使用 **repository-scoped、仅注册到 `https://github.com/zhuoshaojian/cindy`**
+的临时 self-hosted runner。三个运行池标签分别为 `cindy-fork-cloud-check`、
+`cindy-fork-cloud-build`、`cindy-fork-cloud-cache`，均包含 `self-hosted, Linux, X64`。
+检查与缓存池不需要 Docker 特权；只有构建池使用独立 DinD。不得注册组织/企业级 runner，
+不改主仓、企业运行池或现有 GitLab Runner。标签是调度标记，不是访问控制；运行池的
+注册层级与 Environment 分支规则也须核验。
 
+运行环境需要 Python ≥3.12、Git；构建池另需 Docker/Buildx，建议至少 4 vCPU、16 GiB RAM、
+80 GiB 可用磁盘。可使用独立 VM 或 ACK 调度的临时 ECI，不挂宿主 HOME、Docker socket、
+业务 PVC 或生产凭据；一个 job 后回收整套工作盘与凭据。此运行池不运行外部 PR，
+也不与其共用缓存写入空间。本版尚未加入跨 run 的外部 BuildKit 缓存。
 当前 fork 默认分支仍为 `main`；GitHub 的 `workflow_dispatch` 要求 workflow 先存在于
 默认分支。本轮不改默认分支，也不往 main 推文件，因此初次启用使用本功能分支的 push
 触发，失败后可重新运行原 run。不要承诺刚提交功能分支就能从 Actions 手动启动。
@@ -140,8 +150,9 @@ actionlint -config-file deploy/linux-desktop/delivery/actionlint.yaml \
 （Bash 5.1 Linux 停机测试）；Python 配方/依赖基座/字体/交付测试共 56 通过；
 文档检查 10 通过；actionlint 1.7.7 通过。已实际从官方仓库读取上游 tag 并核对固定 commit。
 上述是 macOS 离线检查。后续新增的 ECI 实测已验证现有 R7 的 native smoke，详情见
-[验收记录](BOOTSTRAP.md#ack--eci-接入)；修正后的交付 Python 测试 15 项通过，文档检查
-10 项及 actionlint 通过。它仍不代表新候选已完成源码构建或首次 GitHub 交付。
+[验收记录](BOOTSTRAP.md#ack--eci-接入)；补齐鉴权和 runner 隔离后，交付 Python 测试
+21 项、缓存与 CLI 测试 12 项、文档检查 10 项及 actionlint 通过。它仍不代表新候选
+已完成源码构建或首次 GitHub 交付。
 扩展执行 `pnpm test:runner` 为 574 通过、6 失败、2 跳过；失败均来自既有
 `design-inventory.test.mjs` 中 `/cloud-settings` 与 `/cloud-settings-trial` 的路由台账缺项，
 对应 router、台账实现和测试与本轮修改前一致，未为此放宽门禁。

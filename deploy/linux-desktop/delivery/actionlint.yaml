@@ -1,2 +1,2 @@
 self-hosted-runner:
-  labels: [cindy-cloud-build]
+  labels: [cindy-fork-cloud-check, cindy-fork-cloud-build, cindy-fork-cloud-cache]

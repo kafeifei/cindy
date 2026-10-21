@@ -1,8 +1,6 @@
 name: cloud-image-delivery
 
 on:
-  pull_request:
-    paths: ['deploy/linux-desktop/**', '.github/workflows/cloud-image-delivery.yml']
   push:
     branches: ['feat/cloud-settings-native-client']
     paths: ['deploy/linux-desktop/**', '.github/workflows/cloud-image-delivery.yml']
@@ -20,7 +18,13 @@ env:
 
 jobs:
   verify:
-    runs-on: ubuntu-24.04
+    # This delivery workflow only schedules trusted fork-branch commits.
+    # External PR tests stay outside this repository's private runner pool.
+    if: >-
+      github.repository == 'zhuoshaojian/cindy' &&
+      github.ref == 'refs/heads/feat/cloud-settings-native-client' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: [self-hosted, Linux, X64, cindy-fork-cloud-check]
     timeout-minutes: 30
     env:
       XDT_SKIP_AGENT_BIN_INSTALL: '1'
@@ -69,7 +73,7 @@ jobs:
       github.event_name != 'pull_request' &&
       vars.CLOUD_IMAGE_DELIVERY_ENABLED == 'true' &&
       (needs.verify.outputs.changed == 'true' || github.event_name == 'workflow_dispatch')
-    runs-on: [self-hosted, Linux, X64, cindy-cloud-build]
+    runs-on: [self-hosted, Linux, X64, cindy-fork-cloud-build]
     environment: cloud-image-candidate-cn
     outputs:
       artifact_id: ${{ steps.records.outputs.artifact-id }}
@@ -114,15 +118,19 @@ jobs:
           python3 deploy/linux-desktop/build-image.py --tag "cindy-ci:$IMAGE_TAG" --builder "$BUILDER" --output "$RUNNER_TEMP/cloud-build"
       - name: Native isolated desktop startup, legacy HOME, sandbox and shutdown
         run: python3 deploy/linux-desktop/delivery/smoke.py --image "cindy-ci:$IMAGE_TAG" --output "$RUNNER_TEMP/native-smoke.json"
+      - uses: aliyun/setup-aliyun-cli-action@09a5f86915bb556e27bf050e9a5e339aeb073df5 # v1
+        if: vars.CLOUD_IMAGE_REGISTRY_AUTH == 'acr-ak'
+        with:
+          version: '3.5.0'
       - name: Login to the configured candidate repository
         env:
+          REGISTRY_AUTH: ${{ vars.CLOUD_IMAGE_REGISTRY_AUTH || 'password' }}
           REGISTRY_USER: ${{ secrets.CLOUD_IMAGE_REGISTRY_USER }}
           REGISTRY_PASSWORD: ${{ secrets.CLOUD_IMAGE_REGISTRY_PASSWORD }}
-        run: |
-          set -euo pipefail
-          test -n "$REGISTRY_USER"
-          test -n "$REGISTRY_PASSWORD"
-          printf '%s' "$REGISTRY_PASSWORD" | docker login "${IMAGE_REPOSITORY%%/*}" --username "$REGISTRY_USER" --password-stdin
+          ACR_INSTANCE_ID: ${{ vars.CLOUD_IMAGE_ACR_INSTANCE_ID }}
+          ALIBABA_CLOUD_ACCESS_KEY_ID: ${{ secrets.CLOUD_IMAGE_ACR_ACCESS_KEY_ID }}
+          ALIBABA_CLOUD_ACCESS_KEY_SECRET: ${{ secrets.CLOUD_IMAGE_ACR_ACCESS_KEY_SECRET }}
+        run: python3 deploy/linux-desktop/delivery/registry_login.py
       - name: Publish tested bytes and bind the registry manifest digest
         run: |
           python3 deploy/linux-desktop/delivery/publish.py --plan "$RUNNER_TEMP/delivery-plan.json" \
@@ -146,7 +154,7 @@ jobs:
   cache:
     needs: candidate
     if: vars.CLOUD_IMAGE_CACHE_ENABLED == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, cindy-fork-cloud-cache]
     environment: cloud-image-cache-cn
     timeout-minutes: 45
     permissions:

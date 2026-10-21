@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 const CACHE_ID = /^imc-[a-zA-Z0-9]+$/;
@@ -157,10 +160,10 @@ export async function prepareImageCache(plan, {
 // Use the vendor CLI for STS signing. RPC parameter shapes follow the official
 // acc/2024-04-02 SDK: Images is repeated, NetworkConfig is a JSON string. --force
 // selects that API version without depending on the CLI's bundled API catalog.
-export function callAliyun(operation, request) {
+export function callAliyun(operation, request, { env = process.env, execute = spawnSync } = {}) {
   if (!OPERATIONS.has(operation)) throw new Error('unsupported ACS operation');
   for (const key of ['ALIBABA_CLOUD_ACCESS_KEY_ID', 'ALIBABA_CLOUD_ACCESS_KEY_SECRET', 'ALIBABA_CLOUD_SECURITY_TOKEN']) {
-    if (!process.env[key]) throw new Error('apply requires explicit short-lived Alibaba Cloud STS credentials');
+    if (!env[key]) throw new Error('apply requires explicit short-lived Alibaba Cloud STS credentials');
   }
   const args = ['acc', operation, '--force', '--version', '2024-04-02',
     '--endpoint', `acc.${request.RegionId}.aliyuncs.com`, '--region', request.RegionId,
@@ -169,12 +172,31 @@ export function callAliyun(operation, request) {
     if (Array.isArray(value)) value.forEach((item, i) => args.push(`--${key}.${i + 1}`, String(item)));
     else args.push(`--${key}`, typeof value === 'object' ? JSON.stringify(value) : String(value));
   }
-  const result = spawnSync(process.platform === 'win32' ? 'aliyun.exe' : 'aliyun', args, {
-    encoding: 'utf8', timeout: 30_000, maxBuffer: 2 * 1024 * 1024, shell: false,
-    // CLI 3.5.0 otherwise prefers saved profile credentials to environment
-    // credentials. Override only this child process; never reconfigure ~/.aliyun.
-    env: { ...process.env, ALIBABA_CLOUD_IGNORE_PROFILE: 'TRUE', ALIBABACLOUD_IGNORE_PROFILE: 'TRUE' },
-  });
+  // CLI 3.5.0 validates the profile before loading credential environment
+  // variables. Use an explicit vendor-format temporary profile; never read or
+  // change ~/.aliyun, and never put STS credentials in process arguments.
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-acs-'));
+  let result;
+  try {
+    const profile = path.join(folder, 'config.json');
+    fs.writeFileSync(profile, JSON.stringify({ current: 'default', profiles: [{
+      name: 'default', mode: 'StsToken', region_id: request.RegionId,
+      access_key_id: env.ALIBABA_CLOUD_ACCESS_KEY_ID,
+      access_key_secret: env.ALIBABA_CLOUD_ACCESS_KEY_SECRET,
+      sts_token: env.ALIBABA_CLOUD_SECURITY_TOKEN,
+    }] }), { mode: 0o600, flag: 'wx' });
+    const childEnv = Object.fromEntries(Object.entries(env).filter(([key]) =>
+      !/^(?:ALIBABA_CLOUD_|ALIBABACLOUD_|ALICLOUD_)/.test(key)
+      && !['ACCESS_KEY_ID', 'ACCESS_KEY_SECRET', 'SECURITY_TOKEN'].includes(key)));
+    result = execute(process.platform === 'win32' ? 'aliyun.exe' : 'aliyun',
+      [...args, '--config-path', profile, '--profile', 'default'], {
+        encoding: 'utf8', timeout: 30_000, maxBuffer: 2 * 1024 * 1024, shell: false, env: childEnv,
+      });
+  } catch {
+    throw new Error(`${operation} failed; CLI details withheld`);
+  } finally {
+    fs.rmSync(folder, { recursive: true, force: true });
+  }
   // Do not echo the vendor's raw output: authentication errors may contain
   // request details. Cloud-side diagnostics are available in ActionTrail.
   if (result.error || result.status !== 0) throw new Error(`${operation} failed; inspect Alibaba Cloud diagnostics (CLI output withheld)`);

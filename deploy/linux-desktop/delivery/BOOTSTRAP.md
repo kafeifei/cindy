@@ -96,16 +96,41 @@ ACR 的不可变策略对 `latest` 有例外，本流水线不产生该标签。
 }
 ```
 
-ACR 推送身份必须在**该 Registry 所属账号**创建；ACS 缓存角色则在缓存所属账号创建，
-两者可能不同。控制台能看到某个 ACR 实例不代表能管理目标 Registry。当前浏览器账号
-无 `ram:CreateOIDCProvider`，且实例列表没有目标 Registry；不能据本机 Docker 已登录
-推断已取得专用身份的创建权限。
+ACR 推送身份必须来自**该 Registry 所属账号**；ACS 缓存角色来自缓存所属账号，两者可能不同。
+2026-10-21 用户指定的本地 ACR AK 已验证可管理目标实例，补建了独立、公开且 tag 不可变的
+候选仓库，未改变正式仓库的策略。AK 已写入 candidate Environment Secret；只允许
+`feat/cloud-settings-native-client` 分支。本机完成临时 Registry 登录、测试制品推送、
+匿名读取和同标签覆盖拒绝，测试标签已清理，尚未通过 GitHub Actions 执行。现有 AK 的 RAM 身份管理查询
+返回 `NoPermission`；这不代表缺少 ACR 权限，也不能将其宣称为新建的最小权限身份。
 
-按 ACR 的账户配置流程设置该身份的 Registry 登录密码，直接写入 candidate Environment 的
-`CLOUD_IMAGE_REGISTRY_USER`、`CLOUD_IMAGE_REGISTRY_PASSWORD`。这两个值是 Registry 登录
-凭据，不是 RAM AccessKey。不要上传个人已有的全局 Docker 凭据，不授予仓库删除、改设置、
-生产部署或其它仓库的推送权限。如果采用 API 获取临时 Registry token，需另行接入
-`cr:GetAuthorizationToken` 并补实测；当前 workflow 使用专用 Registry 密码。
+`CLOUD_IMAGE_REGISTRY_AUTH` 显式选择两种方式：
+
+- `password`（默认）：设置 `CLOUD_IMAGE_REGISTRY_USER` 和 `CLOUD_IMAGE_REGISTRY_PASSWORD`，
+  值为该身份的 Registry 登录凭据，不是 RAM AK。不上传个人 Docker 的全局配置。
+- `acr-ak`（当前 fork）：设置 `CLOUD_IMAGE_ACR_INSTANCE_ID`、
+  `CLOUD_IMAGE_ACR_ACCESS_KEY_ID` 与 `CLOUD_IMAGE_ACR_ACCESS_KEY_SECRET`。最后两个为
+  Environment Secret。发布前通过 `GetAuthorizationToken` 换取一小时临时凭据，不把临时
+  token 当长期 GitHub Secret。除目标仓库的 Pull/Push 权限，运行身份还需要：
+
+```json
+{"Effect":"Allow","Action":["cr:GetAuthorizationToken"],"Resource":"*"}
+```
+
+该 API 不支持资源级授权；实际 Registry 权限继承调用身份，临时 token 不自动收窄
+原 AK 的权限。管理员建立专用身份时，按前述 Pull/Push 策略限定候选仓库，另加此项。
+当前用户提供的 AK 只用于已授权的 fork 交付配置，不扩展到 ACS/OSS、其它仓库或业务服务。
+
+实现为 [registry_login.py](registry_login.py)，回归为 [test_registry_login.py](test_registry_login.py)。
+CLI 3.5.0 的 API 路径在加载 AK 环境变量前校验 profile；脚本因此在系统/runner 临时目录
+创建 0700 目录和 0600 vendor profile，换取 token 后立即清除，不读写默认 `~/.aliyun`。
+AK 不进入命令参数、源码、日志或 artifact；Docker 只通过 stdin 接收临时密码，
+只写当前 job 的 `DOCKER_CONFIG`，由 workflow 的 always 清理步骤删除登录配置。
+两种鉴权方式不会因失败自动切换；错误仅输出固定错误码，CLI 响应正文不外泄。
+ACS 的 [STS 调用](acs-api.mjs) 同样使用临时 vendor profile，保留 OIDC 换取的
+短期凭据和独立缓存身份，不复用 ACR AK；每次调用成功或失败后都清理。
+真实 CLI 3.5.0 已用假 STS 凭据和本地回环模拟服务验证请求签名、响应解析与默认 profile
+不被修改；模拟连接不涉及云服务，生产仍强制 HTTPS。这不替代真实 ACS 权限和创建缓存验收。
+依据：[ACR 临时凭据与权限继承](https://help.aliyun.com/zh/acr/developer-reference/api-cr-2018-12-01-getauthorizationtoken)。
 
 当前缓存适配器不接收 Registry 密码。私有候选仓库必须先接通 ACS 的 ACR 拉取授权；
 不能通过将仓库改公开来绕过已有私有策略。已有公开交付仓库则继续按原公开策略。
@@ -142,7 +167,7 @@ Image config:      sha256:715e2d8a03b778c877806579c205ca6088eb1dce092467093598ea
 
 这是运行池资格验收，**未在此运行池从完整 Cindy Dockerfile 构建新候选**，也不是 GitHub
 真实交付、OAuth 或 DeviceLink 验收。GitHub 出站已完成分路径诊断（见下文），
-尚未达到完整交付验收；Actions 平台禁用、专用发布身份和 OIDC 配置仍待解决。
+尚未达到完整交付验收；ACR 发布鉴权已另行接通，Actions 平台禁用与 ACS OIDC 配置仍待解决。
 启动探针的目录初始化和进程识别修正已纳入源码与回归测试。
 
 - GitHub runner 管理组件与 ECI 作业使用独立 namespace、ServiceAccount 和凭据；沿用
@@ -233,9 +258,20 @@ BuildKit 内分别验证下载。显式 HTTP 代理需要真实的 `https_proxy`
 覆盖注册/领任务、Actions 下载和 artifact 传输。根路径返回经过 TLS 验证的 404 仅证明
 该端点可达；不能替代 runner 注册、真实 job 或 artifact 上传。
 
-标签为 `self-hosted, Linux, X64, cindy-cloud-build`。标签本身不是授权边界；公开 fork 的外部
-PR 都应要求维护者批准，且交付环境只允许上述分支。若需要持续自动供给 runner，应在隔离的
-运行池配置按需创建与回收，不以一台长期在线、与业务网络互通的机器代替。
+三个 job 分别调度 `self-hosted, Linux, X64` 加以下标签：
+
+| job | 专属标签 | 权限 |
+| --- | --- | --- |
+| verify | `cindy-fork-cloud-check` | 无云发布凭据、无 Docker 特权 |
+| candidate | `cindy-fork-cloud-build` | 独立 DinD；最后发布步骤读取 candidate Environment |
+| cache | `cindy-fork-cloud-cache` | 无 Docker 特权；cache Environment 的 OIDC 最小权限 |
+
+runner **只注册到 fork 仓库 `https://github.com/zhuoshaojian/cindy`**，不注册组织或企业，
+不借用主仓、企业或已有 GitLab Runner。标签本身不是授权边界；核对注册 URL、仓库归属、
+短期注册/JIT token 和每个实例的单次 job 生命周期。创建 token/runner 的凭据不交给构建
+进程，runner 不挂业务凭据。只接收指定 fork 分支的 push/dispatch；本工作流不监听 PR，
+不把外部 PR 自动送入该 VPC 运行池。若需要持续自动供给，应在独立 namespace 配置
+按需创建与回收，不用长期在线、共享数据的机器代替。
 
 准备完成后核对 runner 架构、Docker daemon 架构和磁盘；再打开交付开关，让本次受信任
 运行完成完整构建、原生 smoke、推送和缓存 Ready。记录 workflow URL、recipe commit、
