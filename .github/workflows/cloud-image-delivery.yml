@@ -1,0 +1,189 @@
+name: cloud-image-delivery
+
+on:
+  pull_request:
+    paths: ['deploy/linux-desktop/**', '.github/workflows/cloud-image-delivery.yml']
+  push:
+    branches: ['feat/cloud-settings-native-client']
+    paths: ['deploy/linux-desktop/**', '.github/workflows/cloud-image-delivery.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloud-image-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      XDT_SKIP_AGENT_BIN_INSTALL: '1'
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+    outputs:
+      changed: ${{ steps.plan.outputs.changed }}
+      tag: ${{ steps.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          run_install: false
+      - name: Install locked test dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Validate dual version and upstream commit
+        id: plan
+        env:
+          PREVIOUS: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: python3 deploy/linux-desktop/delivery/plan.py --fetch-upstream --previous "$PREVIOUS" --output "$RUNNER_TEMP/delivery-plan.json"
+      - name: Run cloud recipe and delivery regressions without credentials
+        env:
+          CINDY_TEST_CLIENT_SOURCE: ${{ github.workspace }}
+          CINDY_ACTIVITY_TEST_SOURCE: ${{ github.workspace }}
+          CLOUD_UPDATE_TEST_SOURCE: ${{ github.workspace }}
+          CLOUD_WINDOW_TEST_SOURCE: ${{ github.workspace }}
+        run: |
+          node --test deploy/linux-desktop/runtime-*/*.test.mjs deploy/linux-desktop/download-build-assets.test.mjs deploy/linux-desktop/delivery/*.test.mjs
+          python3 -m unittest discover -s deploy/linux-desktop -p 'test_*.py' -v
+          python3 -m unittest discover -s deploy/linux-desktop/runtime-base -p 'test_*.py' -v
+          python3 -m unittest discover -s deploy/linux-desktop/delivery -p 'test_*.py' -v
+          python3 deploy/linux-desktop/runtime-fonts/test_stage_emoji_font.py
+
+  candidate:
+    needs: verify
+    # No PR code runs on a runner with Docker/publishing capabilities. Restrict
+    # both repository and ref; an Environment branch rule is also required.
+    if: >-
+      github.repository == 'zhuoshaojian/cindy' &&
+      github.ref == 'refs/heads/feat/cloud-settings-native-client' &&
+      github.event_name != 'pull_request' &&
+      vars.CLOUD_IMAGE_DELIVERY_ENABLED == 'true' &&
+      (needs.verify.outputs.changed == 'true' || github.event_name == 'workflow_dispatch')
+    runs-on: [self-hosted, Linux, X64, cindy-cloud-build]
+    environment: cloud-image-candidate-cn
+    outputs:
+      artifact_id: ${{ steps.records.outputs.artifact-id }}
+    timeout-minutes: 120
+    env:
+      IMAGE_TAG: ${{ needs.verify.outputs.tag }}
+      IMAGE_REPOSITORY: ${{ vars.CLOUD_IMAGE_REPOSITORY }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require explicit publish policy and native runner
+        env:
+          IMMUTABLE: ${{ vars.CLOUD_IMAGE_IMMUTABLE_TAGS }}
+          DOCKER_CONFIG: ${{ runner.temp }}/cloud-image-docker
+        run: |
+          set -euo pipefail
+          test "$IMMUTABLE" = true
+          test -n "$IMAGE_REPOSITORY"
+          test "$(uname -m)" = x86_64
+          python3 -c 'import sys; assert sys.version_info >= (3, 12)'
+          install -d -m 700 "$DOCKER_CONFIG"
+          echo "DOCKER_CONFIG=$DOCKER_CONFIG" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        id: builder
+        with:
+          buildkitd-flags: ''
+      - name: Freeze plan and build both Dockerfiles from source
+        env:
+          BUILDER: ${{ steps.builder.outputs.name }}
+        run: |
+          python3 deploy/linux-desktop/delivery/plan.py --fetch-upstream --output "$RUNNER_TEMP/delivery-plan.json"
+          python3 deploy/linux-desktop/build-image.py --tag "cindy-ci:$IMAGE_TAG" --builder "$BUILDER" --output "$RUNNER_TEMP/cloud-build"
+      - name: Native isolated desktop startup, legacy HOME, sandbox and shutdown
+        run: python3 deploy/linux-desktop/delivery/smoke.py --image "cindy-ci:$IMAGE_TAG" --output "$RUNNER_TEMP/native-smoke.json"
+      - name: Login to the configured candidate repository
+        env:
+          REGISTRY_USER: ${{ secrets.CLOUD_IMAGE_REGISTRY_USER }}
+          REGISTRY_PASSWORD: ${{ secrets.CLOUD_IMAGE_REGISTRY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$REGISTRY_USER"
+          test -n "$REGISTRY_PASSWORD"
+          printf '%s' "$REGISTRY_PASSWORD" | docker login "${IMAGE_REPOSITORY%%/*}" --username "$REGISTRY_USER" --password-stdin
+      - name: Publish tested bytes and bind the registry manifest digest
+        run: |
+          python3 deploy/linux-desktop/delivery/publish.py --plan "$RUNNER_TEMP/delivery-plan.json" \
+            --build "$RUNNER_TEMP/cloud-build" --smoke "$RUNNER_TEMP/native-smoke.json" \
+            --repository "$IMAGE_REPOSITORY" --output "$RUNNER_TEMP/candidate.json"
+      - name: Upload credential-free candidate records
+        id: records
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cloud-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/candidate.json
+            ${{ runner.temp }}/native-smoke.json
+            ${{ runner.temp }}/cloud-build/records/*.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Remove this job's registry credentials
+        if: ${{ always() && env.DOCKER_CONFIG != '' }}
+        run: rm -f "$DOCKER_CONFIG/config.json"
+
+  cache:
+    needs: candidate
+    if: vars.CLOUD_IMAGE_CACHE_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    environment: cloud-image-cache-cn
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.candidate.outputs.artifact_id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/candidate
+      - uses: aliyun/setup-aliyun-cli-action@09a5f86915bb556e27bf050e9a5e339aeb073df5 # v1
+        with:
+          version: '3.5.0'
+      - name: Require configured OIDC trust
+        env:
+          ROLE: ${{ vars.ACS_CACHE_RAM_ROLE_ARN }}
+          PROVIDER: ${{ vars.ACS_CACHE_OIDC_PROVIDER_ARN }}
+        run: test -n "$ROLE" && test -n "$PROVIDER"
+      - uses: aliyun/configure-aliyun-credentials-action@1e5248c8d5d93a8781ac344a68e19a43341e79e6 # v1
+        id: credentials
+        with:
+          role-to-assume: ${{ vars.ACS_CACHE_RAM_ROLE_ARN }}
+          oidc-provider-arn: ${{ vars.ACS_CACHE_OIDC_PROVIDER_ARN }}
+          role-session-name: cloud-cache-${{ github.run_id }}
+          role-session-expiration: 3600
+          audience: sts.aliyuncs.com
+      - name: Prepare main and every actual init image in each target network
+        env:
+          CLOUD_IMAGE_CACHE_TARGETS: ${{ secrets.CLOUD_IMAGE_CACHE_TARGETS }}
+          ALIBABA_CLOUD_ACCESS_KEY_ID: ${{ steps.credentials.outputs.aliyun-access-key-id }}
+          ALIBABA_CLOUD_ACCESS_KEY_SECRET: ${{ steps.credentials.outputs.aliyun-access-key-secret }}
+          ALIBABA_CLOUD_SECURITY_TOKEN: ${{ steps.credentials.outputs.aliyun-security-token }}
+        run: node deploy/linux-desktop/delivery/cache.mjs "$RUNNER_TEMP/candidate/candidate.json" "$RUNNER_TEMP/cache-status.json"
+      - name: Preserve cache outcome without network identifiers
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cloud-cache-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/cache-status.json
+          if-no-files-found: warn
+          retention-days: 30

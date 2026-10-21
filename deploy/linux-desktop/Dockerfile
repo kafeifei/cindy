@@ -30,12 +30,14 @@ FROM ${BASE_IMAGE} AS runtime
 ARG CINDY_SOURCE_COMMIT
 ARG CINDY_ENTRYPOINT_SHA256
 ARG CINDY_RUNTIME_VERSION
+ARG CINDY_CLOUD_REVISION
 COPY --from=build --chown=0:0 /layer/ /
 ENV HOME=/home/cindy DISPLAY=:99 XDG_RUNTIME_DIR=/tmp/runtime-cindy
 LABEL io.cindy.source-commit=${CINDY_SOURCE_COMMIT} \
       io.cindy.entrypoint-sha256=${CINDY_ENTRYPOINT_SHA256} \
       io.cindy.runtime-version=${CINDY_RUNTIME_VERSION} \
-      io.cindy.upstream-version=0.1.108 io.cindy.region=cn \
+      io.cindy.upstream-version=0.1.108 io.cindy.cloud-revision=${CINDY_CLOUD_REVISION} \
+      org.opencontainers.image.version=0.1.108-cloud.${CINDY_CLOUD_REVISION} io.cindy.region=cn \
       io.cindy.target-architecture=amd64
 USER cindy
 ENTRYPOINT ["/usr/local/bin/cindy-seccomp", "/usr/local/bin/cindy-linux-desktop"]

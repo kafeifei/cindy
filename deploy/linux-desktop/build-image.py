@@ -61,9 +61,11 @@ def run_build(output, name, args, cwd):
     if result.returncode:
         raise RuntimeError(f'{name} failed; see {output / (name + ".log")}')
 
-def bake_plan(output, tag, revision, entrypoint_sha, no_cache):
+def bake_plan(output, tag, revision, entrypoint_sha, no_cache, cloud_revision=None):
     """Connect both Dockerfiles without publishing an intermediate base image."""
     common = {'CINDY_SOURCE_COMMIT': revision, 'SOURCE_DATE_EPOCH': '1789344000'}
+    if cloud_revision is not None:
+        common['CINDY_CLOUD_REVISION'] = str(cloud_revision)
     base = {'context': 'recipe', 'dockerfile': 'runtime-base/Dockerfile',
             'target': 'runtime-base-slim', 'args': common,
             'platforms': ['linux/amd64'], 'no-cache': no_cache,
@@ -95,6 +97,10 @@ def main():
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     context, inputs = prepare(output, revision)
+    from delivery.versioning import load as load_version
+    version = load_version(context / 'recipe/delivery/version.json')
+    inputs['version'] = version
+    (context / 'recipe/build-inputs.json').write_text(json.dumps(inputs, indent=2) + '\n')
     (output / 'build-inputs.json').write_text(json.dumps(inputs, indent=2) + '\n')
     if args.prepare_only: return
     base_tag = args.tag + '-base'
@@ -103,11 +109,12 @@ def main():
             raise ValueError('LOCAL_TAG_EXISTS:' + tag)
     flags = ['--no-cache'] if args.no_cache else []
     build = ['docker', 'buildx', 'build', '--platform', 'linux/amd64', '--progress=plain', *flags]
-    common = ['--build-arg', 'CINDY_SOURCE_COMMIT=' + revision, '--build-arg', 'SOURCE_DATE_EPOCH=1789344000']
+    common = ['--build-arg', 'CINDY_SOURCE_COMMIT=' + revision, '--build-arg', 'SOURCE_DATE_EPOCH=1789344000',
+              '--build-arg', 'CINDY_CLOUD_REVISION=' + str(version['cloudRevision'])]
     entrypoint_sha = digest((context / 'recipe/runtime-desktop-xfce/cindy-linux-desktop').read_bytes())
     if args.builder:
         plan = output / 'docker-bake.json'
-        plan.write_text(json.dumps(bake_plan(output, args.tag, revision, entrypoint_sha, args.no_cache), indent=2) + '\n')
+        plan.write_text(json.dumps(bake_plan(output, args.tag, revision, entrypoint_sha, args.no_cache, version['cloudRevision']), indent=2) + '\n')
         run_build(output, 'full-build', ['docker', 'buildx', 'bake', '--builder', args.builder,
                   '--allow=fs.write=' + str(output),
                   '--progress=plain', '-f', str(plan), '--metadata-file', str(output / 'build-metadata.json'),

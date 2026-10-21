@@ -13,7 +13,8 @@ release checks. Ordinary desktop builds do not enable these overlays.
 | --- | --- |
 | [SOURCE-BUILD.md](SOURCE-BUILD.md), [R4 acceptance](ACCEPTANCE-NATIVE-INPUT-20261020.md) | Complete source-build entry and the R4 native input qualification |
 | [Clipboard and recovery follow-up](ACCEPTANCE-CLIPBOARD-RECOVERY-20261020.md) | R7 source-build and Mac clipboard acceptance, rollout results, and explicit phone-test limits |
-| [Dual-version update plan](DUAL-VERSION-UPDATES.md) | Proposed upstream/cloud revision model and release selection; not implemented CI/CD |
+| [Candidate delivery](delivery/README.md) | Fork workflow, dual-version metadata, source build, isolated smoke, candidate publication and ACS cache preparation; external setup still required |
+| [Dual-version update plan](DUAL-VERSION-UPDATES.md) | CIS release selection and stable promotion plan; not yet implemented |
 | [runtime-base/README.md](runtime-base/README.md), `runtime-base/Dockerfile`, `runtime-base/packages.lock` | Build the third-party CN dependency base from pinned OS, package and asset inputs; no Cindy application or helpers |
 | [BUILD-V0108.md](BUILD-V0108.md), `source-freeze.json` | Historical v0.1.108 application build inputs and limitations |
 | `prepare-linux.sh`, `prepare-codex.mjs`, `prepare-other-assets.mjs` | Prepare the isolated Linux builder and verify external assets |
@@ -57,11 +58,11 @@ is not a registry manifest digest.
 
 ## Release pipeline ownership
 
-**The paired cloud image/CIS CI/CD pipeline is not implemented.** Existing
-workflows for other client/server features do not provide this release pipeline.
-ACS image cache automation is a future client image CI/CD step; it is not
-implemented by these scripts or by a workflow in this change. The intended
-client release sequence is:
+**Client candidate delivery is implemented in [the fork workflow](delivery/README.md),
+but its external runner/registry/ACS setup and first live run are still pending.**
+It produces candidates and cache readiness receipts, not stable release admission.
+CIS consumption, complete product qualification and actual cache-hit automation
+remain unimplemented. The full release sequence is:
 
 1. Freeze the client source, upstream version, complete Dockerfile chain,
    dependency inputs and target platform; build from source and audit permissions.
@@ -79,7 +80,7 @@ client release sequence is:
 5. Hand CIS the qualified version and its release evidence only after all
    prerequisites pass. No ready cache means the release is not ready for rollout.
 
-The future pipeline must retain source/digest mappings, the complete image list,
+The completed delivery chain must retain source/digest mappings, the complete image list,
 platform, cache identity/Region, readiness and hit evidence, and rollback digest.
 This document assigns responsibilities; it does not introduce a new wire schema
 or claim that CIS already consumes an automated release manifest.

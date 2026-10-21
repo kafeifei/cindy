@@ -33,6 +33,8 @@ is mounted into build stages. Use a full clone; frozen commits must be present.
 
 ## Inputs and outputs
 
+- `delivery/version.json` records the complete upstream version, upstream commit and
+  independent cloud revision; these become image labels and build records.
 - `source-freeze.json` selects v0.1.108 and explicit hash-checked patches from the recorded
   runtime commit. Current native-settings UI changes are a separate client output.
 - `runtime-base/Dockerfile` fixes the OS digest, snapshot dates, package versions
@@ -73,5 +75,6 @@ runs on a separate Linux host, an authorized upload of a unique candidate digest
 may precede that test. It must remain outside formal version tags, CIS upgrade
 approvals and new-claim defaults until qualification passes. Prepare ACS caches
 for the main image and every actual initContainer image before updating an
-instance. CIS owns task protection, stop/backup/upgrade/recovery. CI/CD automation
-is not implemented by this source-build command.
+instance. CIS owns task protection, stop/backup/upgrade/recovery. This source-build command remains local-only;
+[the candidate delivery workflow](delivery/README.md) composes it with isolated
+smoke, candidate publication and ACS preparation. Stable promotion is not implemented.
