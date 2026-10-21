@@ -159,7 +159,6 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
-      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -175,25 +174,11 @@ jobs:
       - uses: aliyun/setup-aliyun-cli-action@09a5f86915bb556e27bf050e9a5e339aeb073df5 # v1
         with:
           version: '3.5.0'
-      - name: Require configured OIDC trust
-        env:
-          ROLE: ${{ vars.ACS_CACHE_RAM_ROLE_ARN }}
-          PROVIDER: ${{ vars.ACS_CACHE_OIDC_PROVIDER_ARN }}
-        run: test -n "$ROLE" && test -n "$PROVIDER"
-      - uses: aliyun/configure-aliyun-credentials-action@1e5248c8d5d93a8781ac344a68e19a43341e79e6 # v1
-        id: credentials
-        with:
-          role-to-assume: ${{ vars.ACS_CACHE_RAM_ROLE_ARN }}
-          oidc-provider-arn: ${{ vars.ACS_CACHE_OIDC_PROVIDER_ARN }}
-          role-session-name: cloud-cache-${{ github.run_id }}
-          role-session-expiration: 3600
-          audience: sts.aliyuncs.com
       - name: Prepare main and every actual init image in each target network
         env:
           CLOUD_IMAGE_CACHE_TARGETS: ${{ secrets.CLOUD_IMAGE_CACHE_TARGETS }}
-          ALIBABA_CLOUD_ACCESS_KEY_ID: ${{ steps.credentials.outputs.aliyun-access-key-id }}
-          ALIBABA_CLOUD_ACCESS_KEY_SECRET: ${{ steps.credentials.outputs.aliyun-access-key-secret }}
-          ALIBABA_CLOUD_SECURITY_TOKEN: ${{ steps.credentials.outputs.aliyun-security-token }}
+          ALIBABA_CLOUD_ACCESS_KEY_ID: ${{ secrets.CLOUD_IMAGE_CACHE_ACCESS_KEY_ID }}
+          ALIBABA_CLOUD_ACCESS_KEY_SECRET: ${{ secrets.CLOUD_IMAGE_CACHE_ACCESS_KEY_SECRET }}
         run: node deploy/linux-desktop/delivery/cache.mjs "$RUNNER_TEMP/candidate/candidate.json" "$RUNNER_TEMP/cache-status.json"
       - name: Preserve cache outcome without network identifiers
         if: always()

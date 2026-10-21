@@ -16,7 +16,7 @@ const env = {
 };
 const request = { RegionId: 'cn-shanghai', Images: ['registry.example.com/fixture@sha256:' + 'a'.repeat(64)] };
 
-test('ACS CLI gets isolated STS profile without credential arguments or inherited overrides', () => {
+test('ACS CLI gets isolated AK profile without credential arguments or inherited overrides', () => {
   let profile;
   const result = callAliyun('ListImageCaches', request, { env, execute(command, args, options) {
     assert.match(command, /^aliyun(?:\.exe)?$/);
@@ -25,14 +25,15 @@ test('ACS CLI gets isolated STS profile without credential arguments or inherite
     assert.equal(fs.statSync(path.dirname(profile)).mode & 0o777, 0o700);
     const data = JSON.parse(fs.readFileSync(profile, 'utf8'));
     assert.equal(data.current, 'default');
-    assert.deepEqual(data.profiles, [{ name: 'default', mode: 'StsToken', region_id: 'cn-shanghai',
+    assert.deepEqual(data.profiles, [{ name: 'default', mode: 'AK', region_id: 'cn-shanghai',
       access_key_id: env.ALIBABA_CLOUD_ACCESS_KEY_ID,
-      access_key_secret: env.ALIBABA_CLOUD_ACCESS_KEY_SECRET,
-      sts_token: env.ALIBABA_CLOUD_SECURITY_TOKEN }]);
+      access_key_secret: env.ALIBABA_CLOUD_ACCESS_KEY_SECRET }]);
     assert.deepEqual(options.env, { PATH: '/fixture/bin' });
     assert.ok(!args.join(' ').includes('invalid-'));
     assert.equal(args[args.indexOf('--Images.1') + 1], request.Images[0]);
     assert.ok(args.includes('--secure'));
+    assert.equal(args[args.indexOf('--mode') + 1], 'AK');
+    assert.ok(!JSON.stringify(data).includes('invalid-fixture-sts'));
     return { status: 0, stdout: '{"ImageCaches":[]}' };
   } });
   assert.deepEqual(result, { ImageCaches: [] });
@@ -53,10 +54,10 @@ test('ACS CLI failures clean temporary profile and suppress provider or process 
   }
 });
 
-test('ACS rejects unsupported operations and incomplete STS credentials without starting CLI', () => {
+test('ACS rejects unsupported operations and incomplete AK credentials without starting CLI', () => {
   const execute = () => assert.fail('must not start CLI');
   assert.throws(() => callAliyun('DeleteImageCache', request, { env, execute }), /unsupported/);
-  for (const key of ['ALIBABA_CLOUD_ACCESS_KEY_ID', 'ALIBABA_CLOUD_ACCESS_KEY_SECRET', 'ALIBABA_CLOUD_SECURITY_TOKEN']) {
-    assert.throws(() => callAliyun('ListImageCaches', request, { env: { ...env, [key]: '' }, execute }), /STS credentials/);
+  for (const key of ['ALIBABA_CLOUD_ACCESS_KEY_ID', 'ALIBABA_CLOUD_ACCESS_KEY_SECRET']) {
+    assert.throws(() => callAliyun('ListImageCaches', request, { env: { ...env, [key]: '' }, execute }), /AK credentials/);
   }
 });

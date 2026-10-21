@@ -118,6 +118,19 @@ class WorkflowRunnerBoundaryTest(unittest.TestCase):
         self.assertIn("github.ref == 'refs/heads/feat/cloud-settings-native-client'", verify)
         self.assertIn("github.event_name == 'push'", verify)
 
+    def test_cache_keys_stay_in_cache_step_without_oidc_or_registry_keys(self):
+        root = Path(__file__).resolve().parents[3]
+        workflow = (root / '.github/workflows/cloud-image-delivery.yml').read_text()
+        before, cache = workflow.split('  cache:', 1)
+        self.assertNotIn('id-token:', workflow)
+        self.assertNotIn('configure-aliyun-credentials-action', workflow)
+        self.assertNotIn('CLOUD_IMAGE_CACHE_ACCESS_KEY_', before)
+        self.assertNotIn('CLOUD_IMAGE_ACR_ACCESS_KEY_', cache)
+        prepare = cache.split('      - name: Prepare main', 1)[1].split('      - name:', 1)[0]
+        self.assertIn('secrets.CLOUD_IMAGE_CACHE_ACCESS_KEY_ID', prepare)
+        self.assertIn('secrets.CLOUD_IMAGE_CACHE_ACCESS_KEY_SECRET', prepare)
+        self.assertNotIn('ALIBABA_CLOUD_SECURITY_TOKEN', cache)
+
 
 if __name__ == '__main__':
     unittest.main()

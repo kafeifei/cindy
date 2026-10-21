@@ -20,7 +20,7 @@ ECI runner `cindy-fork-check-20261021-v2` 领取执行，但依赖安装下载 `
 `feat/cloud-settings-native-client`，不添加 tag 通配规则：
 
 - `cloud-image-candidate-cn`：镜像仓库配置与专用推送身份。
-- `cloud-image-cache-cn`：缓存角色、OIDC provider 和实际网络/模板清单。
+- `cloud-image-cache-cn`：缓存 AK 和实际网络/模板清单。
 
 变量与 Secret 名称见 [README 配置表](README.md#fork-一次性配置)。配置完成前两个开关均为
 `false`。2026-10-21 已通过 REST API 对已被 GitHub 索引的本分支 workflow 成功提交
@@ -30,38 +30,13 @@ ECI runner `cindy-fork-check-20261021-v2` 领取执行，但依赖安装下载 `
 如果首个版本提交发生在 Actions 暂停期间，应先让检查实际运行，再安排一次明确的交付触发；
 不要为了测试触发而反复递增云版本号或发布占位镜像。
 
-## ACS 缓存账号：RAM 管理员一次性配置
+## ACS 缓存账号：AK 与权限
 
-以下使用占位符，替换后在管理端执行。**管理员身份与流水线运行身份分开**：运行身份不需要
-创建用户、角色、权限策略、OIDC provider 或服务关联角色，也不需要 ECS/Kubernetes/OSS 权限。
-若配置操作返回 `NoPermission`，交给账号管理员执行，不借用业务服务的凭据。
+缓存直接使用 AK 调用 OpenAPI，不配置 OIDC provider、角色信任策略或 STS 交换。
+ACR 与 ACS 可以属于不同账号，必须独立配置；不复用 candidate Environment 的 ACR 凭据。
 
-1. 创建名为 `cindy-github-actions` 的 OIDC provider：issuer 为
-   `https://token.actions.githubusercontent.com`，客户端 ID 为 `sts.aliyuncs.com`。
-   使用 RAM 控制台的“验证指纹”读取并校验当前 TLS 证书，不复制历史文章中的指纹。
-2. 创建 `cindy-cloud-image-cache-cn` 角色，最大会话为 3600 秒，信任策略如下。
-   `ACCOUNT_ID` 替换为实际账号，issuer、audience 和 subject 必须精确匹配。
-   GitHub 环境分支规则必须先配置；使用 Environment 时 subject 不包含 branch。
-
-```json
-{
-  "Version": "1",
-  "Statement": [{
-    "Effect": "Allow",
-    "Action": "sts:AssumeRole",
-    "Principal": {"Federated": ["acs:ram::ACCOUNT_ID:oidc-provider/cindy-github-actions"]},
-    "Condition": {"StringEquals": {
-      "oidc:iss": "https://token.actions.githubusercontent.com",
-      "oidc:aud": "sts.aliyuncs.com",
-      "oidc:sub": "repo:zhuoshaojian/cindy:environment:cloud-image-cache-cn"
-    }}
-  }]
-}
-```
-
-3. 为该角色附加下面的自定义权限策略。四项 API 均支持 imagecache 资源范围；只开放目标
-   Region 和账号，包含创建、查询和清理缓存，不授予修改集群的权限。缓存 ID 是创建后分配，资源末尾需为 `*`。
-   ACS 缓存所需服务关联角色由管理员预先准备，不给 CI 添加 `ram:CreateServiceLinkedRole`。
+1. 在缓存所属账号，为获准用于交付的 RAM 用户附加以下自定义策略。
+   将 `ACCOUNT_ID` 替换为实际账号，Region 按目标调整。
 
 ```json
 {
@@ -74,32 +49,30 @@ ECI runner `cindy-fork-check-20261021-v2` 领取执行，但依赖安装下载 `
 }
 ```
 
-4. 将实际 role/provider ARN 填进 cache Environment 的两个变量。网络与主/init 镜像清单
-   放入 `CLOUD_IMAGE_CACHE_TARGETS` Secret，格式见 [示例](acs-targets.example.json)。
-   所有实际 init 都要登记；不要把 legacy init 自动改成新 runtime。策略不支持按缓存名称或
-   网络进一步缩小这些 API 的资源授权，网络约束由受保护的 Environment 配置与适配器校验。
+2. 在 `cloud-image-cache-cn` Environment 配置 Secrets：
+   `CLOUD_IMAGE_CACHE_ACCESS_KEY_ID`、`CLOUD_IMAGE_CACHE_ACCESS_KEY_SECRET`。
+   仅缓存步骤读取；不写入仓库、命令参数、日志或 artifact。
+3. 将实际网络和主/init 镜像清单存为 `CLOUD_IMAGE_CACHE_TARGETS` Secret，格式见
+   [示例](acs-targets.example.json)。所有实际 init 都要登记，不自动替换 legacy init。
+4. 用同一身份验收查询、创建、Ready 和清理，再开启 `CLOUD_IMAGE_CACHE_ENABLED`。
+   删除权限供缓存维护使用，发布流程不会自动删除已有缓存；删除使用 `Force=false`，
+   先核对所属交付和保留范围，不删除正在使用或仍须保留的回退镜像缓存。
 
-服务关联角色的首次创建可由管理员单独完成。若需要授权该初始化操作，使用以下限定
-服务名的语句；不要给流水线附加整套 RAM 管理权限：
+以上四项 API 的范围限于 imagecache；无需额外授权修改集群、ECS 或 OSS。
+已有 ACS 服务关联角色可直接复用；若账号首次使用缓存，由管理员创建服务关联角色。
+该初始化操作需要下列权限，日常缓存 AK 不需要 RAM 管理权限：
 
 ```json
 {
   "Effect": "Allow",
   "Action": "ram:CreateServiceLinkedRole",
   "Resource": "*",
-  "Condition": {
-    "StringEquals": {"ram:ServiceName": "imc.acc.aliyuncs.com"}
-  }
+  "Condition": {"StringEquals": {"ram:ServiceName": "imc.acc.aliyuncs.com"}}
 }
 ```
 
-此项与 OIDC provider 是不同资源：服务关联角色供 ACS 工作，OIDC provider 供 GitHub
-取得流水线角色的短期凭据。`ram:CreateOIDCProvider` 错误不代表缺少
-`acc:CreateImageCache`，也不应修改另一个账号的 ACR 权限来处理。
-依据：[ACS 服务角色策略中的服务名约束](https://www.alibabacloud.com/help/en/ram/developer-reference/aliyuncsmanagedimagecachediskrolepolicy)。
-
-管理员需要的配置操作为 `ram:CreateOIDCProvider`、`ram:CreateRole`、`ram:CreatePolicy`、
-`ram:AttachPolicyToRole` 及相应读取操作；这些权限无需授给流水线角色。
+依据：[ACS API 授权信息](https://help.aliyun.com/zh/cs/api-acc-2024-04-02-ram)、
+[服务关联角色](https://www.alibabacloud.com/help/en/ram/developer-reference/aliyuncsmanagedimagecachediskrolepolicy)。
 
 ## ACR 仓库账号：镜像仓库与推送身份
 
@@ -150,10 +123,9 @@ CLI 3.5.0 的 API 路径在加载 AK 环境变量前校验 profile；脚本因�
 AK 不进入命令参数、源码、日志或 artifact；Docker 只通过 stdin 接收临时密码，
 只写当前 job 的 `DOCKER_CONFIG`，由 workflow 的 always 清理步骤删除登录配置。
 两种鉴权方式不会因失败自动切换；错误仅输出固定错误码，CLI 响应正文不外泄。
-ACS 的 [STS 调用](acs-api.mjs) 同样使用临时 vendor profile，保留 OIDC 换取的
-短期凭据和独立缓存身份，不复用 ACR AK；每次调用成功或失败后都清理。
-真实 CLI 3.5.0 已用假 STS 凭据和本地回环模拟服务验证请求签名、响应解析与默认 profile
-不被修改；模拟连接不涉及云服务，生产仍强制 HTTPS。这不替代真实 ACS 权限和创建缓存验收。
+ACS 的 [AK 调用](acs-api.mjs) 同样使用临时 vendor profile，并剥离子进程环境中的其他
+阿里云凭据，避免环境覆盖所选身份；每次调用成功或失败后都清理。
+AK 由 cache Environment 注入，与 ACR 账号和 Secret 完全独立。
 依据：[ACR 临时凭据与权限继承](https://help.aliyun.com/zh/acr/developer-reference/api-cr-2018-12-01-getauthorizationtoken)。
 
 当前缓存适配器不接收 Registry 密码。私有候选仓库必须先接通 ACS 的 ACR 拉取授权；
@@ -191,7 +163,7 @@ Image config:      sha256:715e2d8a03b778c877806579c205ca6088eb1dce092467093598ea
 
 这是运行池资格验收，**未在此运行池从完整 Cindy Dockerfile 构建新候选**，也不是 GitHub
 真实交付、OAuth 或 DeviceLink 验收。GitHub 出站已完成分路径诊断（见下文），
-尚未达到完整交付验收；ACR 发布鉴权和 Actions 触发已接通，专属 runner 与 ACS OIDC 各自继续验收。
+尚未达到完整交付验收；ACR 发布鉴权和 Actions 触发已接通，专属 runner 与 ACS AK 各自继续验收。
 启动探针的目录初始化和进程识别修正已纳入源码与回归测试。
 
 - GitHub runner 管理组件与 ECI 作业使用独立 namespace、ServiceAccount 和凭据；沿用
@@ -306,7 +278,7 @@ SNI 转发地址完整下载该 9.9 MB 文件并计算 SHA-256；Docker Hub 鉴�
 | --- | --- | --- |
 | verify | `cindy-fork-cloud-check` | 无云发布凭据、无 Docker 特权 |
 | candidate | `cindy-fork-cloud-build` | 独立 DinD；最后发布步骤读取 candidate Environment |
-| cache | `cindy-fork-cloud-cache` | 无 Docker 特权；cache Environment 的 OIDC 最小权限 |
+| cache | `cindy-fork-cloud-cache` | 无 Docker 特权；cache Environment 的 AK 与缓存权限 |
 
 runner **只注册到 fork 仓库 `https://github.com/zhuoshaojian/cindy`**，不注册组织或企业，
 不借用主仓、企业或已有 GitLab Runner。标签本身不是授权边界；核对注册 URL、仓库归属、
@@ -321,7 +293,6 @@ runner **只注册到 fork 仓库 `https://github.com/zhuoshaojian/cindy`**，�
 首次真实交付；缓存 Ready 不能代替 Pod 命中或完整产品验收。
 
 依据：[GitHub runner 隔离与 JIT](https://docs.github.com/en/actions/reference/security/secure-use)、
-[OIDC subject](https://docs.github.com/en/actions/reference/security/oidc)、
 [ACR 权限资源](https://www.alibabacloud.com/help/en/acr/user-guide/ram-authorization-information)、
 [ACR 标签不可变](https://www.alibabacloud.com/help/en/acr/user-guide/turn-on-immutable-image-version)、
 [ACS 创建缓存](https://www.alibabacloud.com/help/en/cs/api-acc-2024-04-02-createimagecache)、

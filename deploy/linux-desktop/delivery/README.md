@@ -20,9 +20,9 @@
 仍为 `false`，等待独立 ACS 身份配置。
 candidate Environment 已配置精确 BuildKit 镜像与 ECI Pod 网络选项。
 Actions 已有指定分支的成功检查记录；旧记录使用 hosted runner，新配置仅使用 fork
-仓库级 self-hosted 池。ACS 缓存账号的 OIDC 初始化权限仍待单独配置，与 ACR 发布账号无关。
+仓库级 self-hosted 池。ACS 缓存直接使用独立 AK，与 ACR 发布账号分开配置。
 ACR 独立候选仓库、不可变标签和受保护 Environment 的 AK 配置已完成；本机临时登录、
-测试制品推送/读取及同标签覆盖拒绝已验证，测试标签已删除。仓库级 self-hosted runner 已接入；ACS RAM OIDC 和
+测试制品推送/读取及同标签覆盖拒绝已验证，测试标签已删除。仓库级 self-hosted runner 已接入；ACS AK 和
 首次完整交付仍待完成。环境存在不代表交付已通过；
 后续以实际 workflow run、镜像 digest 和缓存回执更新此状态。
 目标 ACK + ECI 的 DinD、Buildx 实际构建/运行、已发布 R7 的桌面启动/沙箱/停机已通过，
@@ -75,7 +75,7 @@ ACR 独立候选仓库、不可变标签和受保护 Environment 的 AK 配置�
    按 digest 再读回验证 config ID；不重建产物、不覆盖冲突标签。
 5. GitHub artifact 保存候选记录、四份构建审计和 smoke 结果；不上传 HOME、密钥、整份
    构建上下文。跨 job 按不可变 artifact ID 传递，失败 job 重跑仍使用原产物。
-6. `cache` 在独立环境取得 STS 临时身份，创建/复用缓存。`cache-status.json` 只记录摘要、
+6. `cache` 在独立 Environment 读取缓存 AK，创建/复用缓存。`cache-status.json` 只记录摘要、
    opaque cache ID 和结果，不公开 VSwitch / 安全组配置。`Ready` 仍保留
    `podMatchVerified: false` 和 `releaseApproved: false`。
 
@@ -103,12 +103,11 @@ ACR 独立候选仓库、不可变标签和受保护 Environment 的 AK 配置�
 | 同上 secrets | `CLOUD_IMAGE_REGISTRY_USER` / `CLOUD_IMAGE_REGISTRY_PASSWORD` | `password` 模式的 Registry 登录身份 |
 | 同上 variable | `CLOUD_IMAGE_ACR_INSTANCE_ID` | `acr-ak` 模式的目标 ACR 企业版实例 |
 | 同上 secrets | `CLOUD_IMAGE_ACR_ACCESS_KEY_ID` / `CLOUD_IMAGE_ACR_ACCESS_KEY_SECRET` | `acr-ak` 模式的 ACR 身份；仅在发布登录步骤注入，见接入手册权限范围 |
-| `cloud-image-cache-cn` variables | `ACS_CACHE_RAM_ROLE_ARN` / `ACS_CACHE_OIDC_PROVIDER_ARN` | GitHub OIDC 换 STS 的专用缓存角色 |
+| `cloud-image-cache-cn` secrets | `CLOUD_IMAGE_CACHE_ACCESS_KEY_ID` / `CLOUD_IMAGE_CACHE_ACCESS_KEY_SECRET` | 缓存 AK，仅在缓存步骤注入，与 ACR 身份独立 |
 | 同上 secret | `CLOUD_IMAGE_CACHE_TARGETS` | 实际网络、允许的镜像仓库、完整主/init 模板清单 JSON |
 
 两个 Environment 的部署分支限制均只放行 `feat/cloud-settings-native-client`；按团队政策
-设置 reviewer。RAM OIDC 信任绑定该 repository、cache Environment 和
-`sts.aliyuncs.com` audience；只授予目标区域/账号所需的 `acc:ListImageCaches`、
+设置 reviewer。缓存 AK 按目标区域/账号授予 `acc:ListImageCaches`、
 `acc:CreateImageCache`、`acc:GetImageCache`、`acc:DeleteImageCache`，预先准备服务关联角色。
 发布流程负责创建和就绪检查；清理权限供独立的缓存维护使用，当前发布任务不会自动删除缓存。这里不需要
 Kubernetes RRSA，不借用用户的控制台 Cookie。私有 ACR 拉取须预先配置可用权限；

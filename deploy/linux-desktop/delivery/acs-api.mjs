@@ -157,33 +157,32 @@ export async function prepareImageCache(plan, {
   throw new Error(`image cache ${imageCacheId} did not become Ready before timeout; creation may still be running`);
 }
 
-// Use the vendor CLI for STS signing. RPC parameter shapes follow the official
+// Use the vendor CLI for AK signing. RPC shapes follow the official
 // acc/2024-04-02 SDK: Images is repeated, NetworkConfig is a JSON string. --force
 // selects that API version without depending on the CLI's bundled API catalog.
 export function callAliyun(operation, request, { env = process.env, execute = spawnSync } = {}) {
   if (!OPERATIONS.has(operation)) throw new Error('unsupported ACS operation');
-  for (const key of ['ALIBABA_CLOUD_ACCESS_KEY_ID', 'ALIBABA_CLOUD_ACCESS_KEY_SECRET', 'ALIBABA_CLOUD_SECURITY_TOKEN']) {
-    if (!env[key]) throw new Error('apply requires explicit short-lived Alibaba Cloud STS credentials');
+  for (const key of ['ALIBABA_CLOUD_ACCESS_KEY_ID', 'ALIBABA_CLOUD_ACCESS_KEY_SECRET']) {
+    if (!env[key]) throw new Error('apply requires explicit Alibaba Cloud AK credentials');
   }
   const args = ['acc', operation, '--force', '--version', '2024-04-02',
     '--endpoint', `acc.${request.RegionId}.aliyuncs.com`, '--region', request.RegionId,
-    '--mode', 'StsToken', '--method', 'POST', '--secure'];
+    '--mode', 'AK', '--method', 'POST', '--secure'];
   for (const [key, value] of Object.entries(request)) {
     if (Array.isArray(value)) value.forEach((item, i) => args.push(`--${key}.${i + 1}`, String(item)));
     else args.push(`--${key}`, typeof value === 'object' ? JSON.stringify(value) : String(value));
   }
   // CLI 3.5.0 validates the profile before loading credential environment
   // variables. Use an explicit vendor-format temporary profile; never read or
-  // change ~/.aliyun, and never put STS credentials in process arguments.
+  // change ~/.aliyun, and never put AK credentials in process arguments.
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-acs-'));
   let result;
   try {
     const profile = path.join(folder, 'config.json');
     fs.writeFileSync(profile, JSON.stringify({ current: 'default', profiles: [{
-      name: 'default', mode: 'StsToken', region_id: request.RegionId,
+      name: 'default', mode: 'AK', region_id: request.RegionId,
       access_key_id: env.ALIBABA_CLOUD_ACCESS_KEY_ID,
       access_key_secret: env.ALIBABA_CLOUD_ACCESS_KEY_SECRET,
-      sts_token: env.ALIBABA_CLOUD_SECURITY_TOKEN,
     }] }), { mode: 0o600, flag: 'wx' });
     const childEnv = Object.fromEntries(Object.entries(env).filter(([key]) =>
       !/^(?:ALIBABA_CLOUD_|ALIBABACLOUD_|ALICLOUD_)/.test(key)
