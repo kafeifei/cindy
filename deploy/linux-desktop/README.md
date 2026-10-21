@@ -13,8 +13,8 @@ release checks. Ordinary desktop builds do not enable these overlays.
 | --- | --- |
 | [SOURCE-BUILD.md](SOURCE-BUILD.md), [R4 acceptance](ACCEPTANCE-NATIVE-INPUT-20261020.md) | Complete source-build entry and the R4 native input qualification |
 | [Clipboard and recovery follow-up](ACCEPTANCE-CLIPBOARD-RECOVERY-20261020.md) | R7 source-build and Mac clipboard acceptance, rollout results, and explicit phone-test limits |
-| [Candidate delivery](delivery/README.md) | Fork workflow, dual-version metadata, source build, isolated smoke, candidate publication and ACS cache preparation; external setup still required |
-| [Dual-version update plan](DUAL-VERSION-UPDATES.md) | CIS release selection and stable promotion plan; not yet implemented |
+| [Candidate delivery](delivery/README.md) | Fork-only self-hosted source build, isolated smoke, candidate publication and ACS cache preparation |
+| [Dual-version updates](DUAL-VERSION-UPDATES.md), [cloud.2 acceptance](ACCEPTANCE-CLOUD2-20261021.md) | Implemented CIS selection and owner-requested upgrades, application version display, live acceptance and remaining promotion work |
 | [runtime-base/README.md](runtime-base/README.md), `runtime-base/Dockerfile`, `runtime-base/packages.lock` | Build the third-party CN dependency base from pinned OS, package and asset inputs; no Cindy application or helpers |
 | [BUILD-V0108.md](BUILD-V0108.md), `source-freeze.json` | Historical v0.1.108 application build inputs and limitations |
 | `prepare-linux.sh`, `prepare-codex.mjs`, `prepare-other-assets.mjs` | Prepare the isolated Linux builder and verify external assets |
@@ -58,11 +58,13 @@ is not a registry manifest digest.
 
 ## Release pipeline ownership
 
-**Client candidate delivery is implemented in [the fork workflow](delivery/README.md),
-but its external runner/registry/ACS setup and first live run are still pending.**
+**Client candidate delivery is implemented and has run on fork-only self-hosted
+runners; see [the workflow records](delivery/README.md).**
 It produces candidates and cache readiness receipts, not stable release admission.
-CIS consumption, complete product qualification and actual cache-hit automation
-remain unimplemented. The full release sequence is:
+CIS qualified-version selection and owner-requested upgrades are implemented.
+Actual cache hits and one authorized instance upgrade were separately verified in
+[cloud.2 acceptance](ACCEPTANCE-CLOUD2-20261021.md); complete product qualification,
+stable promotion and automatic cache-hit testing remain separate work. The full release sequence is:
 
 1. Freeze the client source, upstream version, complete Dockerfile chain,
    dependency inputs and target platform; build from source and audit permissions.
