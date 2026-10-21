@@ -57,7 +57,7 @@ jobs:
           CLOUD_UPDATE_TEST_SOURCE: ${{ github.workspace }}
           CLOUD_WINDOW_TEST_SOURCE: ${{ github.workspace }}
         run: |
-          node --test deploy/linux-desktop/runtime-*/*.test.mjs deploy/linux-desktop/download-build-assets.test.mjs deploy/linux-desktop/delivery/*.test.mjs
+          node --test deploy/linux-desktop/build-version.test.mjs deploy/linux-desktop/runtime-*/*.test.mjs deploy/linux-desktop/download-build-assets.test.mjs deploy/linux-desktop/delivery/*.test.mjs
           python3 -m unittest discover -s deploy/linux-desktop -p 'test_*.py' -v
           python3 -m unittest discover -s deploy/linux-desktop/runtime-base -p 'test_*.py' -v
           python3 -m unittest discover -s deploy/linux-desktop/delivery -p 'test_*.py' -v

@@ -5,7 +5,7 @@ import hashlib
 import json
 import subprocess
 from pathlib import Path
-from versioning import REPOSITORY, image_tag, validate
+from versioning import REPOSITORY, image_tag, validate, cloud_version
 
 
 def run(*args):
@@ -44,6 +44,8 @@ def check_build(plan, info, result, smoke, records):
     for check in ['networkIsolated', 'readOnlyRoot', 'sandboxedRenderers', 'legacyHome', 'desktopReady', 'shutdown']:
         if smoke.get(check) is not True:
             raise ValueError('NATIVE_SMOKE_INCOMPLETE:' + check)
+    if smoke.get('applicationVersion') != cloud_version(version):
+        raise ValueError('APPLICATION_VERSION_MISMATCH')
     required = ['runtime-layer-audit.json', 'agent-source-proof.json', 'overlay-application.json', 'build-inputs.json']
     hashes = {name: hashlib.sha256((records / name).read_bytes()).hexdigest() for name in required}
     inputs = json.loads((records / 'build-inputs.json').read_text())

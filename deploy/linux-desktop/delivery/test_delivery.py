@@ -96,12 +96,12 @@ class PublishTest(unittest.TestCase):
                 'io.cindy.source-commit': 'a'*40, 'io.cindy.upstream-version': VERSION['upstreamVersion'],
                 'io.cindy.cloud-revision': str(VERSION['cloudRevision']), 'io.cindy.region': 'cn', 'io.cindy.target-architecture': 'amd64'}}}
             result = {'imageId': image_id, 'recipeCommit': 'a'*40}
-            proof = {'imageId': image_id, 'passed': True, 'nativeArchitecture': 'x86_64', **{k:True for k in ['networkIsolated','readOnlyRoot','sandboxedRenderers','legacyHome','desktopReady','shutdown']}}
+            proof = {'imageId': image_id, 'passed': True, 'nativeArchitecture': 'x86_64', 'applicationVersion': '0.1.108-cloud.1', **{k:True for k in ['networkIsolated','readOnlyRoot','sandboxedRenderers','legacyHome','desktopReady','shutdown']}}
             for n in ['runtime-layer-audit.json','agent-source-proof.json','overlay-application.json']:
                 (records/n).write_text('{}')
             (records/'build-inputs.json').write_text(json.dumps({'recipeCommit':'a'*40,'version':VERSION}))
             self.assertEqual(len(check_build(p,info,result,proof,records)),4)
-            for key,value in [('imageId','sha256:'+'b'*64),('networkIsolated',False),('nativeArchitecture','arm64'),('shutdown',False)]:
+            for key,value in [('imageId','sha256:'+'b'*64),('networkIsolated',False),('nativeArchitecture','arm64'),('shutdown',False),('applicationVersion','0.1.108')]:
                 with self.subTest(key=key), self.assertRaises(ValueError): check_build(p,info,result,{**proof,key:value},records)
             broken = copy.deepcopy(info);broken['Config']['Labels']['io.cindy.cloud-revision']='99'
             with self.assertRaisesRegex(ValueError, 'LABEL'): check_build(p,broken,result,proof,records)

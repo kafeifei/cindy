@@ -208,3 +208,10 @@ DeviceLink、各模板的实际缓存命中和本人灰度记录；再接可信�
 官方依据：[GitHub 手动触发条件](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)、
 [ACS CreateImageCache](https://www.alibabacloud.com/help/en/cs/api-acc-2024-04-02-createimagecache)、
 [ACS GetImageCache](https://www.alibabacloud.com/help/en/cs/api-acc-2024-04-02-getimagecache)。
+
+### 云内应用版本
+
+`version.json` 的上游版本与云修订号同时决定镜像标签、OCI 标签和 Electron 包版本。
+包内 Cindy 的“关于”与运行期 `app.getVersion()` 显示 `0.1.108-cloud.2` 形式；镜像标签另附区域与架构。
+发布检查读取实际 `app.asar` 的包版本并与发行计划比对，防止镜像已更新而云内仍只显示上游版本。
+普通本地客户端的版本策略不变。

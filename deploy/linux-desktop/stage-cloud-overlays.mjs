@@ -1,4 +1,5 @@
 import { transformCloudUpdateSource, targets as updateTargets } from './runtime-updates/overlay.mjs';
+import { cloudAppVersion } from './build-version.mjs';
 // Applies the four cloud runtime overlays to the frozen client source before packaging.
 // Order matches the main-process Vite plugin order already qualified for cloud.5/6:
 // guidance -> window controls -> task activity -> maintenance.
@@ -10,7 +11,7 @@ import { transformCloudWindowSource, targets as windowTargets } from './runtime-
 import { transformCloudActivitySource, targets as activityTargets } from './runtime-activity/overlay.mjs';
 import { transformMaintenanceSource, cloudMaintenancePlugin, targets as maintenanceTargets } from './runtime-maintenance/overlay.mjs';
 
-const APP_VERSION = '0.1.108';
+const APP_VERSION = cloudAppVersion(process.env.APP_VERSION, '0.1.108');
 const root = '/workspace/source', recipe = '/workspace/recipe', records = [];
 const freeze = JSON.parse(fs.readFileSync(recipe + '/source-freeze.json'));
 if (freeze.packagingAllowed !== true || freeze.upstream !== 'v0.1.108') throw Error('SOURCE_NOT_QUALIFIED');

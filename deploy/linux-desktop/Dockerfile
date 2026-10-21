@@ -16,6 +16,8 @@ RUN --mount=type=cache,id=cindy-linux-build-assets,target=/var/cache/cindy-build
 RUN ELECTRON_SKIP_BINARY_DOWNLOAD=1 pnpm install --frozen-lockfile
 RUN /bin/sh /workspace/recipe/prepare-linux.sh
 COPY build-recipe/ /workspace/recipe/
+ARG CINDY_CLOUD_REVISION
+ENV APP_VERSION=0.1.108-cloud.${CINDY_CLOUD_REVISION}
 RUN /bin/sh /workspace/recipe/build-runtime.sh
 RUN python3 /workspace/recipe/assemble-runtime.py /workspace/artifact /layer \
     && python3 /workspace/recipe/audit-runtime-layer.py /layer > /workspace/artifact/runtime-layer-audit.json

@@ -28,7 +28,7 @@ os.chown(h,10001,10001);h.chmod(0o2700)
 os.execv('/usr/bin/setpriv',['setpriv','--reuid=10001','--regid=10001','--clear-groups','--bounding-set=-all','--inh-caps=-all','--ambient-caps=-all','--no-new-privs','/usr/local/bin/cindy-seccomp','/usr/local/bin/cindy-linux-desktop','/bin/sh','-c','exec /opt/cindy/Cindy --password-store=gnome-libsecret --disable-dev-shm-usage --cindy-cloud-main-window'])
 '''
 CHECK = r'''
-import pathlib,subprocess,os,stat,json
+import pathlib,subprocess,os,stat,json,struct
 def is_cindy_renderer(cmdline):
  args=[a for a in cmdline.split(b'\x00') if a]
  # Chromium may rewrite argv into one space-separated process title. Match its
@@ -59,7 +59,15 @@ for p in pathlib.Path('/proc').iterdir():
 assert renderers
 for n in ['com.cindy.cloud-terminal.desktop','com.cindy.cloud-chrome.desktop']:
  assert (pathlib.Path('/usr/share/applications')/n).is_file()
-print(json.dumps({'desktopReady':True,'sandboxedRenderers':True,'legacyHome':True}))
+with open('/opt/cindy/resources/app.asar','rb') as archive:
+ prefix=archive.read(16)
+ header_size=struct.unpack_from('<I',prefix,4)[0];json_size=struct.unpack_from('<I',prefix,12)[0]
+ assert 0<json_size<=header_size<64*1024*1024
+ header=json.loads(archive.read(json_size));package=header['files']['package.json']
+ assert not package.get('unpacked') and 0<package['size']<1024*1024
+ archive.seek(8+header_size+int(package['offset']))
+ version=json.loads(archive.read(package['size']))['version']
+print(json.dumps({'desktopReady':True,'sandboxedRenderers':True,'legacyHome':True,'applicationVersion':version}))
 '''
 
 
@@ -73,7 +81,9 @@ def smoke(image, output):
     daemon = json.loads(command('info', '--format', '{{json .}}', check=True).stdout)
     if daemon['Architecture'] not in ['x86_64', 'amd64'] or daemon['OSType'] != 'linux':
         raise ValueError('NATIVE_DOCKER_DAEMON_REQUIRED')
-    image_id = json.loads(command('image', 'inspect', image, check=True).stdout)[0]['Id']
+    image_info = json.loads(command('image', 'inspect', image, check=True).stdout)[0]
+    image_id = image_info['Id']
+    expected_version = image_info['Config']['Labels']['org.opencontainers.image.version']
     name = 'cindy-delivery-smoke-' + uuid.uuid4().hex[:12]
     report = {'schemaVersion': 1, 'imageId': image_id, 'nativeArchitecture': 'x86_64', 'passed': False}
     try:
@@ -102,6 +112,8 @@ def smoke(image, output):
                 report['lastCheckError'] = check.stderr[-2000:]
                 raise ValueError('SMOKE_DESKTOP_TIMEOUT')
             time.sleep(2)
+        if report.get('applicationVersion') != expected_version:
+            raise ValueError('APPLICATION_VERSION_MISMATCH')
         report.update(networkIsolated=state['HostConfig']['NetworkMode'] == 'none',
                       readOnlyRoot=state['HostConfig']['ReadonlyRootfs'] is True)
         command('stop', '--time=60', name, check=True)

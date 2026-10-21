@@ -28,7 +28,7 @@ class RendererIdentityTest(unittest.TestCase):
 
 
 class SmokeLifecycleTest(unittest.TestCase):
-    def exercise(self, *, starts=True, check_passes=True, shutdown_code=0, oom=False):
+    def exercise(self, *, starts=True, check_passes=True, shutdown_code=0, oom=False, app_version="0.1.108-cloud.2"):
         calls = []
         stopped = False
 
@@ -39,7 +39,7 @@ class SmokeLifecycleTest(unittest.TestCase):
             if args[0] == 'info':
                 value = {'Architecture': 'x86_64', 'OSType': 'linux'}
             elif args[:2] == ('image', 'inspect'):
-                value = [{'Id': 'sha256:' + 'a' * 64}]
+                value = [{'Id': 'sha256:' + 'a' * 64, 'Config': {'Labels': {'org.opencontainers.image.version': '0.1.108-cloud.2'}}}]
             elif args[0] == 'inspect':
                 value = [{'State': {'Running': starts and not stopped,
                                     'ExitCode': shutdown_code if stopped else 1,
@@ -48,7 +48,7 @@ class SmokeLifecycleTest(unittest.TestCase):
             elif args[0] == 'exec':
                 if not check_passes:
                     return subprocess.CompletedProcess(args, 1, '', 'synthetic failed permission check')
-                value = {'desktopReady': True, 'sandboxedRenderers': True, 'legacyHome': True}
+                value = {'desktopReady': True, 'sandboxedRenderers': True, 'legacyHome': True, 'applicationVersion': app_version}
             elif args[0] == 'stop':
                 stopped = True
             elif args[0] == 'logs':
@@ -78,6 +78,11 @@ class SmokeLifecycleTest(unittest.TestCase):
                     'networkIsolated', 'readOnlyRoot', 'shutdown']:
             self.assertIs(proof[key], True)
         self.assertEqual(sum(c[0] == 'stop' for c in calls), 1)
+
+    def test_old_application_version_blocks_release(self):
+        proof, error, _ = self.exercise(app_version='0.1.108')
+        self.assertEqual(error, 'APPLICATION_VERSION_MISMATCH')
+        self.assertFalse(proof['passed'])
 
     def test_early_exit_preserves_failure_and_diagnostics_before_cleanup(self):
         proof, error, calls = self.exercise(starts=False)
