@@ -7,11 +7,10 @@
 
 仓库：`zhuoshaojian/cindy`；可信分支：`feat/cloud-settings-native-client`。
 
-Actions 已启用，运行只接受本 fork 的上述分支。2026-10-21 已验证仓库级
-self-hosted ECI runner 注册、领取任务及依赖/测试执行；[39562132924](https://github.com/zhuoshaojian/cindy/actions/runs/39562132924) 的检查、完整
-Dockerfile 构建和隔离启动/停机通过；发布前旧 CLI action 要求 sudo，被 runner 禁止提权
-设置阻止，因此该次未推送候选。现改为校验固定安装包、在 job 临时目录无提权安装，并在
-构建前验证 CLI；首次完整交付仍待修复后的运行收尾。
+Actions 已启用，运行只接受本 fork 的上述分支。首次候选交付运行为
+[39566954585](https://github.com/zhuoshaojian/cindy/actions/runs/39566954585)，
+镜像、检查与实测边界集中记录在 [README](README.md#已实现与尚未接通)。
+CLI 在构建前验证，校验固定安装包并安装到 job 临时目录，不要求提权。
 不需要修改主仓、默认分支或企业 runner。
 
 创建两个 Environment，均配置 **Selected branches and tags → branch**，精确允许
@@ -51,7 +50,9 @@ ACR 与 ACS 可以属于不同账号，必须独立配置；不复用 candidate 
    `CLOUD_IMAGE_CACHE_ACCESS_KEY_ID`、`CLOUD_IMAGE_CACHE_ACCESS_KEY_SECRET`。
    仅缓存步骤读取；不写入仓库、命令参数、日志或 artifact。
 3. 将实际网络和主/init 镜像清单存为 `CLOUD_IMAGE_CACHE_TARGETS` Secret，格式见
-   [示例](acs-targets.example.json)。所有实际 init 都要登记，不自动替换 legacy init。
+   [示例](acs-targets.example.json)。主容器与 Cindy init 的正常目标使用同一 `$runtime`。
+   清点中发现旧 init 时显式登记现状并修复 CIS 升级遗漏，不把旧镜像留作长期默认；
+   缓存步骤本身不修改实例模板。
 4. 用同一身份验收查询、创建、Ready 和清理，再开启 `CLOUD_IMAGE_CACHE_ENABLED`。
    删除权限供缓存维护使用，发布流程不会自动删除已有缓存；删除使用 `Force=false`，
    先核对所属交付和保留范围，不删除正在使用或仍须保留的回退镜像缓存。
@@ -95,7 +96,7 @@ ACR 推送身份必须来自**该 Registry 所属账号**；ACS 缓存 AK 来自
 2026-10-21 用户指定的本地 ACR AK 已验证可管理目标实例，补建了独立、公开且 tag 不可变的
 候选仓库，未改变正式仓库的策略。AK 已写入 candidate Environment Secret；只允许
 `feat/cloud-settings-native-client` 分支。本机完成临时 Registry 登录、测试制品推送、
-匿名读取和同标签覆盖拒绝，测试标签已清理；GitHub 发布仍待修复后的完整运行。现有 AK 的 RAM 身份管理查询
+匿名读取和同标签覆盖拒绝，测试标签已清理；GitHub 候选发布也已通过。现有 AK 的 RAM 身份管理查询
 返回 `NoPermission`；这不代表缺少 ACR 权限，也不能将其宣称为新建的最小权限身份。
 
 `CLOUD_IMAGE_REGISTRY_AUTH` 显式选择两种方式：
@@ -162,7 +163,7 @@ Image config:      sha256:715e2d8a03b778c877806579c205ca6088eb1dce092467093598ea
 ```
 
 这是运行池资格验收，不是 GitHub 交付、OAuth 或 DeviceLink 验收。后续新候选的
-完整源码构建和隔离 smoke 已在 GitHub job 通过，但发布尚未完成；GitHub 出站已完成分路径诊断（见下文），
+完整源码构建、隔离 smoke 和候选发布已在 GitHub job 通过。GitHub 出站诊断见下文；
 完整源码交付另见本页顶部运行；ACR 发布鉴权、Actions 触发和 ACS AK 创建/清理已接通。
 启动探针的目录初始化和进程识别修正已纳入源码与回归测试。
 

@@ -3,14 +3,29 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { plans, prepareAll } from './cache.mjs';
 import { prepareImageCache } from './acs-api.mjs';
-const config = JSON.parse(fs.readFileSync(new URL('./acs-targets.example.json', import.meta.url)));
+const exampleConfig = JSON.parse(fs.readFileSync(new URL('./acs-targets.example.json', import.meta.url)));
+// Existing drift still needs complete inventory; it is not a recommended target.
+const config = structuredClone(exampleConfig);
+config.targets[0].profiles.push({ name:'observed-init-drift', main:'$runtime',
+  initContainers:[{ name:'initialize-persistent-volume',
+    image:`registry.example.com/cindy/cloud-runtime-cn:legacy@sha256:${'a'.repeat(64)}` }] });
 const manifest = { channel:'candidate', releaseApproved:false, version:{region:'cn',platform:'linux/amd64'},
   image:{reference:`registry.example.com/cindy/cloud-runtime-cn:0.1.108-cloud.1-cn-amd64@sha256:${'b'.repeat(64)}`,digest:`sha256:${'b'.repeat(64)}`} };
 const list = () => plans(manifest, structuredClone(config));
 function ready(p) { return {ImageCacheId:'imc-example',ImageCacheName:p.request.ImageCacheName,Status:'Ready',Images:[p.imageReference],
   RegionId:p.request.RegionId,Platform:p.request.Platform,NetworkConfig:p.request.NetworkConfig}; }
 
-test('covers new claims, verified init and legacy native init, deduplicating exact references', () => {
+test('default new-claim and verified templates share one runtime for main and init', () => {
+  const [target] = plans(manifest, exampleConfig);
+  assert.equal(target.profiles.length,2);
+  assert.equal(target.plans.length,1);
+  for (const profile of target.profiles) {
+    assert.equal(profile.main,manifest.image.reference);
+    assert.equal(profile.initContainers.length,1);
+    assert.equal(profile.initContainers[0].image,manifest.image.reference);
+  }
+});
+test('explicit observed init drift remains covered without rewriting the inventory', () => {
   const [target] = list();
   assert.equal(target.profiles.length,3);
   assert.equal(target.plans.length,2);

@@ -5,26 +5,50 @@
 这里属于 `cindy`；`cindy-server` 的 CIS 负责消费合格镜像、备份、升级和恢复。
 本目录不会访问业务 PVC、修改实例或新认领默认。
 
+每个版本交付一份云运行时镜像。主容器和本仓提供的 init 应使用这份镜像的同一精确引用；
+Runner、DinD、BuildKit 是构建工具，不是云实例需要安装的额外产品。
+
 ## 已实现与尚未接通
 
 | 阶段 | 本分支能力 | 启用/验收状态 |
 | --- | --- | --- |
 | 可信分支推送检查 | 锁文件安装、云覆盖层与发布工具测试、双版本和上游 commit 校验 | 触发与实际检查已运行；专属 self-hosted ECI runner 已在线并实际执行检查，见接入手册 |
-| 候选镜像 | 完整源码构建、两层镜像审计、原生 Linux 隔离启动/停机、发布已测产物、digest 绑定 | 完整构建和隔离 smoke 已通过；修复 CLI 安装后须重跑推送 |
-| ACS 缓存 | 遍历实际 Pod 模板中的主镜像和所有 init 镜像，按目标网络创建/复用并等待 Ready | AK 与实际模板清单已配置；独立创建/Ready/删除已实测，待本轮候选回执 |
+| 候选镜像 | 完整源码构建、两层镜像审计、原生 Linux 隔离启动/停机、发布已测产物、digest 绑定 | 完整构建、隔离 smoke、ACR 推送及产物上传已在 self-hosted runner 通过 |
+| ACS 缓存 | 按目标网络准备主镜像和全部实际 init 镜像，检查精确引用与 Ready | 本轮 3/3 Ready；同一 AK 的独立创建/Ready/非强制删除已实测 |
 | 产品验收与晋级 | 记录明确的 pending 状态 | 完整 OAuth、DeviceLink、Pod 实际缓存命中、灰度、签名信任及稳定通道准入尚未自动化 |
 | CIS 自动更新 | [双版本方案](../DUAL-VERSION-UPDATES.md) | 统一选择器和新认领消费尚未接入，不因 tag 存在就升级 |
 
-2026-10-21：两组 Environment、分支限制与 fork 专属 self-hosted ECI runner 已配置；
-ACR 和 ACS 使用独立账号的 AK。ACR 临时登录、测试制品推送/读取、同标签覆盖拒绝已通过；
-ACS 测试缓存创建、Ready、`Force=false` 删除和查询无残留已通过。两个交付开关均已开启。
-完整交付运行：[39562132924](https://github.com/zhuoshaojian/cindy/actions/runs/39562132924)，
-固定本分支 `48ed3dfd45`。检查、完整构建及隔离 smoke 已通过，但发布前旧 CLI action
-因 sudo 被禁止而失败，未推送候选。已改为固定校验的无提权安装，待修复后的全链验收。
+2026-10-21 首次真实候选交付运行：
+[39566954585](https://github.com/zhuoshaojian/cindy/actions/runs/39566954585)。
+检查、完整构建、隔离启动/停机、ACR 推送及 ACS 缓存全部通过。
 
-运行池已验证 DinD/Buildx 实际构建和已发布 R7 的隔离桌面启动、沙箱与停机；GitHub
-出站通过作业内 DNS 指向 SNI 转发地址，不修改共享 DNS、主仓、企业或 GitLab runner。
-新候选的完整构建与隔离 smoke 已通过，仍须完成推送和缓存回执；配置与证据边界见 [接入手册](BOOTSTRAP.md)。
+| 记录 | 本轮结果 |
+| --- | --- |
+| 配方提交 | `20a5d28118c591510e0816983bd578df6c54cfdd` |
+| 上游版本 / 云修订 | `0.1.108` / `cloud.1` |
+| 候选标签 | `0.1.108-cloud.1-cn-amd64` |
+| Registry manifest | `sha256:8786ec5e6bc45b774cec3fbcdfe1f75b650a4ab8129b620252cd2d738c80be91` |
+| Image config | `sha256:6c055d245327fd0272b781bb4e7bd5f7b85382901f3dde21ba3549c69eda6709` |
+| 未压缩大小 / 层数 | `3,704,673,538` bytes / 2 |
+| Linux 检查 | Node 125、Python 77 全部通过 |
+| 原生 smoke | Xfce/Plank、Cindy 可见窗口、老 HOME 权限、UID 10001 renderer 沙箱、无网络/只读根、正常停机通过 |
+| 候选记录 | artifact `12332016020`；四份构建记录哈希及构建/smoke/发布 image ID 已复核一致 |
+| ACS | artifact `12332726934`，3/3 Ready；全部镜像引用及计划哈希已复核一致 |
+
+本轮缓存覆盖一份新候选和现场模板引用的两份旧 init 镜像，不代表交付三份新运行时。
+现场 12 台中有 1 台主容器已为 R7、init 仍为 `0.1.103`：已部署 CIS 的 native 维护升级
+只替换主容器镜像，并把 init 固定在原模板。这是升级遗漏，须在 CIS 同步升级与绑定校验
+修复后消除，不能视为永久依赖。该 init 只执行数据目录创建和属主设置，不运行旧版 Cindy。
+本轮缓存回执如实保留现场引用；缓存就绪不表示批准该不一致模板上线，也没有修复线上实例。
+
+两组 Environment 的分支限制均只允许本 fork 的功能分支；ACR 与 ACS 使用独立账号的 AK。
+CLI 校验固定安装包后以普通用户装入 job 临时目录，不需要 OIDC 或 sudo。所有 job 使用
+仓库级临时 self-hosted ECI runner；网络配置仅作用于作业 Pod。没有修改主仓、企业、
+GitLab runner、共享 DNS、云实例或新认领默认。
+
+此运行完成的是候选交付。产品验收、Pod 实际缓存命中、灰度及稳定通道晋级仍独立进行；
+runner 的队列自动供给控制器也尚未接入，不能把一次性注册写成持续弹性运行池。
+配置与证据边界见 [接入手册](BOOTSTRAP.md)。
 
 ## 双版本：上游完整版本 + 云修订
 
@@ -76,9 +100,10 @@ ACS 测试缓存创建、Ready、`Force=false` 删除和查询无残留已通过
    `podMatchVerified: false` 和 `releaseApproved: false`。
 
 缓存 API 每个请求只支持一个镜像，所以每个目标中按**精确引用**去重后逐个建缓存。
-`$runtime` 展开为本轮精确引用，保留旧 init 的模板必须登记旧镜像 digest，不能一律替换。
-新认领、verified profile、legacy native 三种模板见
-[`acs-targets.example.json`](acs-targets.example.json)，使用前必须换成实际模板清单。
+`$runtime` 展开为本轮精确引用。正常目标模板中的主容器与 Cindy init 均使用 `$runtime`，
+见 [`acs-targets.example.json`](acs-targets.example.json)。现场发现旧 init 时须显式登记其
+digest 以免漏算现状，同时登记并修复升级遗漏；缓存步骤没有修改实例模板的职责。
+不要把现场旧引用复制成长期默认配置。由独立组件提供的 init 则使用其自身审核过的精确引用。
 缓存发现、权限、网络或任一镜像失败即停止；超时可能仍在云端创建，重跑按同一请求 token
 和缓存名称恢复，不自动删除重建。Ready 时再次核对镜像、Region、平台、网络及资源组。
 缓存命中 probe 和生产准入仍需后续补齐，单凭回执不能切实例。
@@ -143,18 +168,13 @@ actionlint -config-file deploy/linux-desktop/delivery/actionlint.yaml \
 网络/鉴权读取失败、旧 init 遗漏、分页失败、缓存超时、Ready 错配及部分失败停止。
 这些测试使用合成数据，不能当作真实 ACR/ACS 发布成功。
 
-本次本地验证（2026-10-21，macOS）：Node 云覆盖层/交付测试 121 通过、1 跳过
-（Bash 5.1 Linux 停机测试）；Python 配方/依赖基座/字体/交付测试共 56 通过；
-文档检查 10 通过；actionlint 1.7.7 通过。已实际从官方仓库读取上游 tag 并核对固定 commit。
-上述是 macOS 离线检查。后续新增的 ECI 实测已验证现有 R7 的 native smoke，详情见
-[验收记录](BOOTSTRAP.md#ack--eci-接入)；补齐鉴权和 runner 隔离后，交付 Python 测试
-21 项、缓存与 CLI 测试 12 项、文档检查 10 项及 actionlint 通过。它仍不代表新候选
-已完成源码构建或首次 GitHub 交付。
-扩展执行 `pnpm test:runner` 为 574 通过、6 失败、2 跳过；失败均来自既有
+本轮 Linux 实测检查与发布结果见页首记录。默认配置统一主/init 镜像后，本地交付 Node
+测试 13 项及文档检查 10 项通过；现场旧 init 的显式清点、缓存覆盖和失败停止测试仍保留。
+此前扩展执行 `pnpm test:runner` 为 574 通过、6 失败、2 跳过；失败均来自既有
 `design-inventory.test.mjs` 中 `/cloud-settings` 与 `/cloud-settings-trial` 的路由台账缺项，
 对应 router、台账实现和测试与本轮修改前一致，未为此放宽门禁。
 
-上线前还须完成第一轮真实 CI 构建和缓存运行，补上完整原生 Linux 功能、真实 OAuth、
+上线前仍须修复上述 init 升级遗漏，并补上新候选的完整原生 Linux 功能、真实 OAuth、
 DeviceLink、各模板的实际缓存命中和本人灰度记录；再接可信签名、长期发行目录及 CIS
 统一选择器。当前 GitHub 产物保留 30 天，仅作候选交接，不能作为永久稳定发行目录。
 
