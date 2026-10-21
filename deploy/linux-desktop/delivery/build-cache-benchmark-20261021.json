@@ -1,0 +1,275 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-21",
+  "method": "Two disposable native-amd64 ACK/ECI Pods; same Dockerfile Bake graph as delivery, run directly without GitHub scheduling or candidate publication.",
+  "recipeCommit": "61e4395a910683627b0f5a8f97d01e6a7cf5b041",
+  "sourceArchiveSha256": "0b6986f1b142b6d5621176eceea42aeda3442eab9660ae4abd207dfbdd0006e3",
+  "resources": {
+    "runner": {
+      "limits": {
+        "cpu": "1750m",
+        "memory": "3584Mi"
+      },
+      "requests": {
+        "cpu": "1750m",
+        "memory": "3584Mi"
+      }
+    },
+    "dns": {
+      "limits": {
+        "cpu": "250m",
+        "memory": "512Mi"
+      },
+      "requests": {
+        "cpu": "250m",
+        "memory": "512Mi"
+      }
+    },
+    "dind": {
+      "limits": {
+        "cpu": "6",
+        "memory": "28Gi"
+      },
+      "requests": {
+        "cpu": "6",
+        "memory": "28Gi"
+      }
+    }
+  },
+  "coldBuildSeconds": 1427.142,
+  "warmBuildSeconds": 1120.004,
+  "savedSeconds": 307.138,
+  "timeReductionPercent": 21.52,
+  "speedup": 1.274,
+  "scope": {
+    "includes": [
+      "dependency download and install",
+      "application packaging and image audit in Dockerfiles",
+      "local base and runtime image export/import",
+      "mode=max registry cache export",
+      "build record export"
+    ],
+    "excludes": [
+      "ECI provisioning",
+      "source preparation and transfer",
+      "BuildKit bootstrap",
+      "independent runtime smoke",
+      "GitHub queue and checkout",
+      "runtime publication",
+      "ACS image-cache creation"
+    ]
+  },
+  "cacheOutcome": "Base reused, but application WORKDIR and following steps executed again despite successful cache import; complete application cache reuse has not passed. No causal root cause confirmed.",
+  "verification": {
+    "freshPods": true,
+    "freshDaemons": true,
+    "emptyBuildKitBeforeEachRun": true,
+    "sameResources": true,
+    "sameBuildInputs": true,
+    "sameImageConfig": false,
+    "sameImageLayers": false,
+    "sameFourBuildRecords": false,
+    "independentSmokePassedBothRuns": true
+  },
+  "images": {
+    "cold": {
+      "imageId": "sha256:f1a66c661dcfe80e68153fbea8c046836a4a4c37472234046f20b76c9129640a",
+      "baseImageId": "sha256:4fbf56565f45095ca7243cf49e1a8cab2af40b3bb46f8a316d63a95824f93bc0",
+      "layers": [
+        "sha256:4f991dcb3e5e1b5b359525cbd98fd0982ff3df550106561a2cb165f9d0d2d391",
+        "sha256:bd18dc098392e7b8480bd8d84e1f81b2720817c46b44110c2a1e70e777da0f49"
+      ],
+      "bytes": 3704833227
+    },
+    "warm": {
+      "imageId": "sha256:39ddf248776a725a978254af9323264a4fc0c2e97df98e72be3cdff23a0a0562",
+      "baseImageId": "sha256:4fbf56565f45095ca7243cf49e1a8cab2af40b3bb46f8a316d63a95824f93bc0",
+      "layers": [
+        "sha256:4f991dcb3e5e1b5b359525cbd98fd0982ff3df550106561a2cb165f9d0d2d391",
+        "sha256:22c6901a4279b2d7cbf9a448a8b67c4eaf29e6812eb722a061b7e0a8f34d7793"
+      ],
+      "bytes": 3704833227
+    }
+  },
+  "recordSha256": {
+    "cold": {
+      "agent-source-proof.json": "0a033bebcfbd27af6264a82ec9acac27a404ffe920f7a83ad44f1b18475cee49",
+      "build-inputs.json": "44e979ec40260130e4fdf401b5ee207fe93dd3b8f34e7b67ba111ae24ab47b6f",
+      "overlay-application.json": "01cd5385d2cdabef76105883e40b535bbd5fcee6c82ea76d3ff8af35f8eda230",
+      "runtime-layer-audit.json": "7f5a8ec713620631fa5702e1797da4fb60eeed6667cbf55761fcc0fa289331f8"
+    },
+    "warm": {
+      "agent-source-proof.json": "0a033bebcfbd27af6264a82ec9acac27a404ffe920f7a83ad44f1b18475cee49",
+      "build-inputs.json": "44e979ec40260130e4fdf401b5ee207fe93dd3b8f34e7b67ba111ae24ab47b6f",
+      "overlay-application.json": "01cd5385d2cdabef76105883e40b535bbd5fcee6c82ea76d3ff8af35f8eda230",
+      "runtime-layer-audit.json": "1a60d77e01d8f6fdcf4fc257b545f2aa297618d84d3982b0b5162d90d1fdd616"
+    }
+  },
+  "runs": {
+    "cold": {
+      "startedAt": "2026-10-21T09:30:07Z",
+      "finishedAt": "2026-10-21T09:53:54Z",
+      "sourceExtractSeconds": 1.618,
+      "builderBootstrapSeconds": 3.387,
+      "smokeSeconds": 5.025,
+      "smoke": {
+        "schemaVersion": 1,
+        "imageId": "sha256:f1a66c661dcfe80e68153fbea8c046836a4a4c37472234046f20b76c9129640a",
+        "nativeArchitecture": "x86_64",
+        "passed": true,
+        "desktopReady": true,
+        "sandboxedRenderers": true,
+        "legacyHome": true,
+        "networkIsolated": true,
+        "readOnlyRoot": true,
+        "shutdown": true
+      },
+      "cpuModel": "Intel(R) Xeon(R) Platinum 8575C",
+      "imageId": "sha256:f1a66c661dcfe80e68153fbea8c046836a4a4c37472234046f20b76c9129640a",
+      "layers": [
+        "sha256:4f991dcb3e5e1b5b359525cbd98fd0982ff3df550106561a2cb165f9d0d2d391",
+        "sha256:bd18dc098392e7b8480bd8d84e1f81b2720817c46b44110c2a1e70e777da0f49"
+      ],
+      "bytes": 3704833227,
+      "buildLogSha256": "42e9ce3d8c8a2245806ca4150d2832627b42cff850d2aa4d8ed84a342efaf90e",
+      "cacheManifestSha256": {
+        "base": "32d7fa8555aa70ad903d89cb06400e45461095d5c61d2d113dc2b0709e6aedf1",
+        "runtime": "fff9c24a69e188434b4c4589004722d3b2b03357164e7055fc3ba3ee156b2f21"
+      }
+    },
+    "warm": {
+      "startedAt": "2026-10-21T10:00:00Z",
+      "finishedAt": "2026-10-21T10:18:40Z",
+      "sourceExtractSeconds": 1.615,
+      "builderBootstrapSeconds": 3.332,
+      "smokeSeconds": 4.938,
+      "smoke": {
+        "schemaVersion": 1,
+        "imageId": "sha256:39ddf248776a725a978254af9323264a4fc0c2e97df98e72be3cdff23a0a0562",
+        "nativeArchitecture": "x86_64",
+        "passed": true,
+        "desktopReady": true,
+        "sandboxedRenderers": true,
+        "legacyHome": true,
+        "networkIsolated": true,
+        "readOnlyRoot": true,
+        "shutdown": true
+      },
+      "cpuModel": "Intel(R) Xeon(R) Platinum 8575C",
+      "imageId": "sha256:39ddf248776a725a978254af9323264a4fc0c2e97df98e72be3cdff23a0a0562",
+      "layers": [
+        "sha256:4f991dcb3e5e1b5b359525cbd98fd0982ff3df550106561a2cb165f9d0d2d391",
+        "sha256:22c6901a4279b2d7cbf9a448a8b67c4eaf29e6812eb722a061b7e0a8f34d7793"
+      ],
+      "bytes": 3704833227,
+      "buildLogSha256": "7d7ecef580ae3bfbfa9205d96a9555087d70a0a56d480b10310ad807f66fd5bf",
+      "cacheManifestSha256": {
+        "base": "7b76f57ad80316f811e095f1df4d28cea557bf658c2621f22b27ec87af54d307",
+        "runtime": "7d792abbd5db395066950859b65936a4cff1c95c49ec6587067830a57a1ad8db"
+      }
+    }
+  },
+  "limitations": [
+    "Single paired measurement with unchanged inputs; not the timing of a source/dependency change.",
+    "Uses the same isolated ECI runner image and DinD resources as delivery; not a separate GitHub Actions release run.",
+    "Native isolated smoke is not OAuth or DeviceLink acceptance."
+  ],
+  "initialFailedAttempt": {
+    "recipeCommit": "989a2a2e66e49999f6a2536fd8ff56987e652ea0",
+    "includedInSpeedup": false,
+    "reason": "Dockerfile.dockerignore omitted build-recipe; fixed in measured commit with regression coverage."
+  },
+  "warmRetry": {
+    "discardedAttemptReason": "ACR manifest HEAD returned 429; BuildKit fell back to rebuilding. The attempt was stopped and preserved separately.",
+    "successfulAttempt": 2,
+    "freshPodForRetry": true,
+    "cacheManifestsUnchangedBeforeRetry": true,
+    "discardedAttemptIncludedInSpeedup": false
+  },
+  "artifactComparison": {
+    "entriesCompared": 941,
+    "added": [],
+    "removed": [],
+    "changed": [
+      {
+        "path": "opt/cindy/resources/app.asar",
+        "cold": {
+          "path": "opt/cindy/resources/app.asar",
+          "mode": 420,
+          "sha256": "6df279eaf15c9f5153375723839877cc4b1fadb685c90710fc69ed9df9ea2dfd"
+        },
+        "warm": {
+          "path": "opt/cindy/resources/app.asar",
+          "mode": 420,
+          "sha256": "f928fb6cc176a01aa640141428484d9606666515f691fd1a9eb3af1ea5648f75"
+        }
+      },
+      {
+        "path": "opt/cindy/resources/app.asar.unpacked/node_modules/node-pty/build/Makefile",
+        "cold": {
+          "path": "opt/cindy/resources/app.asar.unpacked/node_modules/node-pty/build/Makefile",
+          "mode": 420,
+          "sha256": "b6603d9f0b78ba10336f508b8973e2da83315f57ba165519a985f24ce32639bd"
+        },
+        "warm": {
+          "path": "opt/cindy/resources/app.asar.unpacked/node_modules/node-pty/build/Makefile",
+          "mode": 420,
+          "sha256": "ebead23aadef17a70a048f396e9c25198ce91087beb6da0e1be7054cc0e03cf3"
+        }
+      },
+      {
+        "path": "opt/cindy/resources/cindy-source.json",
+        "cold": {
+          "path": "opt/cindy/resources/cindy-source.json",
+          "mode": 420,
+          "sha256": "594c033b25a8cd9d4437b90366bb8e28259ab8397209af08428d582fdc320209"
+        },
+        "warm": {
+          "path": "opt/cindy/resources/cindy-source.json",
+          "mode": 420,
+          "sha256": "1a74b73e580850da696f8676b019938ee7302a9aa635cb71255517b3af023035"
+        }
+      }
+    ]
+  },
+  "stepSeconds": {
+    "baseAssemble": {
+      "cold": 128.9,
+      "warm": null,
+      "warmCached": true
+    },
+    "downloadBuildAssets": {
+      "cold": 96.2,
+      "warm": 89.9,
+      "warmCached": false
+    },
+    "pnpmInstall": {
+      "cold": 189.5,
+      "warm": 202.6,
+      "warmCached": false
+    },
+    "prepareLinux": {
+      "cold": 44.7,
+      "warm": 63.7,
+      "warmCached": false
+    },
+    "buildRuntime": {
+      "cold": 164.4,
+      "warm": 164.6,
+      "warmCached": false
+    },
+    "runtimeDockerExport": {
+      "cold": 218.9,
+      "warm": 157.3
+    },
+    "baseRegistryCacheExport": {
+      "cold": 178.1,
+      "warm": 1.2
+    },
+    "runtimeRegistryCacheExport": {
+      "cold": 431.6,
+      "warm": 351.1
+    }
+  },
+  "stepTimingNote": "BuildKit steps overlap; their durations must not be added to derive wall-clock time. CACHED means instruction reuse, not zero layer transfer time."
+}
