@@ -22,11 +22,15 @@ python3 deploy/linux-desktop/build-image.py \
 
 Use a new tag and output directory. `--no-cache` forces both Dockerfiles to run
 again; `--prepare-only` exports the exact source context without starting Docker.
-The script never publishes images, creates ACS caches or updates instances.
+The script never publishes runtime images, creates ACS caches or updates instances.
 Pass `--builder NAME` to use an existing native amd64 Buildx builder from a Mac
 or another host. Bake connects the freshly built base directly to the application
 and records targets; it does not fetch a historical Cindy image or publish an
 intermediate base. The resulting images and records are returned to the host.
+With a protected, job-private Registry login, `--cache-repository REGISTRY/REPO`
+exports/imports intermediate BuildKit layers between disposable builders. It
+requires `--builder` and a separate private repository with mutable cache tags;
+never use the immutable runtime release repository. See [build cache](delivery/README.md#构建缓存).
 Network access is needed for pinned OS packages, npm dependencies and verified
 Electron/agent assets. No user HOME, credentials, business data or Docker socket
 is mounted into build stages. Use a full clone; frozen commits must be present.
@@ -75,6 +79,6 @@ runs on a separate Linux host, an authorized upload of a unique candidate digest
 may precede that test. It must remain outside formal version tags, CIS upgrade
 approvals and new-claim defaults until qualification passes. Prepare ACS caches
 for the main image and every actual initContainer image before updating an
-instance. CIS owns task protection, stop/backup/upgrade/recovery. This source-build command remains local-only;
+instance. CIS owns task protection, stop/backup/upgrade/recovery. Runtime outputs from this command remain local;
 [the candidate delivery workflow](delivery/README.md) composes it with isolated
 smoke, candidate publication and ACS preparation. Stable promotion is not implemented.

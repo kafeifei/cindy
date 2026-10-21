@@ -104,6 +104,24 @@ class RegistryLoginTest(unittest.TestCase):
 
 
 class WorkflowRunnerBoundaryTest(unittest.TestCase):
+    def test_build_cache_login_is_step_scoped_and_smoke_still_precedes_publication(self):
+        root = Path(__file__).resolve().parents[3]
+        workflow = (root / '.github/workflows/cloud-image-delivery.yml').read_text()
+        candidate = workflow.split('  candidate:',1)[1].split('  cache:',1)[0]
+        self.assertIn('--cache-repository "$BUILD_CACHE_REPOSITORY"', candidate)
+        self.assertIn('test "$BUILD_CACHE_REPOSITORY" != "$IMAGE_REPOSITORY"', candidate)
+        before_build = candidate.index('      - name: Login for the isolated build cache')
+        build = candidate.index('      - name: Freeze plan')
+        smoke = candidate.index('      - name: Native isolated')
+        publish_login = candidate.index('      - name: Login to the configured candidate')
+        publish = candidate.index('      - name: Publish tested bytes')
+        self.assertLess(before_build, build)
+        self.assertLess(build, smoke)
+        self.assertLess(smoke, publish_login)
+        self.assertLess(publish_login, publish)
+        self.assertNotIn('ACCESS_KEY', candidate[build:smoke])
+        self.assertNotIn('ACCESS_KEY', candidate.split('    steps:',1)[0])
+
     def test_only_fork_private_runner_pools_and_no_external_pr_trigger(self):
         root = Path(__file__).resolve().parents[3]
         workflow = (root / '.github/workflows/cloud-image-delivery.yml').read_text()

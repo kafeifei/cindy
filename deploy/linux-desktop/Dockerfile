@@ -15,7 +15,7 @@ RUN --mount=type=cache,id=cindy-linux-build-assets,target=/var/cache/cindy-build
     && node /workspace/recipe/prepare-other-assets.mjs
 RUN ELECTRON_SKIP_BINARY_DOWNLOAD=1 pnpm install --frozen-lockfile
 RUN /bin/sh /workspace/recipe/prepare-linux.sh
-COPY recipe/ /workspace/recipe/
+COPY build-recipe/ /workspace/recipe/
 RUN /bin/sh /workspace/recipe/build-runtime.sh
 RUN python3 /workspace/recipe/assemble-runtime.py /workspace/artifact /layer \
     && python3 /workspace/recipe/audit-runtime-layer.py /layer > /workspace/artifact/runtime-layer-audit.json
@@ -24,7 +24,8 @@ FROM scratch AS build-records
 COPY --from=build /workspace/artifact/runtime-layer-audit.json /
 COPY --from=build /workspace/artifact/agent-source-proof.json /
 COPY --from=build /workspace/recipe/overlay-application.json /
-COPY --from=build /workspace/recipe/build-inputs.json /
+# Commit/evidence changes do not invalidate dependency installation or packaging.
+COPY recipe/build-inputs.json /
 
 FROM ${BASE_IMAGE} AS runtime
 ARG CINDY_SOURCE_COMMIT

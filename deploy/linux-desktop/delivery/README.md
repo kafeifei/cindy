@@ -90,7 +90,8 @@ runner 的队列自动供给控制器也尚未接入，不能把一次性注册�
    Docker 外层 seccomp/AppArmor 只在该一次性测试容器中交给运行时自带过滤器；不改变宿主
    系统策略、不使用 `--no-sandbox`、不代表业务身份就绪或 DeviceLink/OAuth 验收。
 4. CLI 在构建前以普通用户安装到 job 临时目录，校验固定 SHA-256 和版本；不使用 sudo。
-   启动检查通过后才注入 Registry 凭据；可用固定 Registry 密码，或通过 ACR AK 换取
+   构建前登录独立的私有构建缓存仓库；启动检查通过后重新登录候选仓库再发布。
+   AK 只注入两个登录步骤，不传入 Dockerfile、build arg 或构建环境。可用 Registry 密码，或通过 ACR AK 换取
    一小时的临时 Registry 凭据。推送已测 image ID 并读取 Registry 原始 manifest，
    按 digest 再读回验证 config ID；不重建产物、不覆盖冲突标签。
 5. GitHub artifact 保存候选记录、四份构建审计和 smoke 结果；不上传 HOME、密钥、整份
@@ -118,12 +119,13 @@ digest 以免漏算现状，同时登记并修复升级遗漏；缓存步骤没�
 | Repository variable | `CLOUD_IMAGE_DELIVERY_ENABLED=true` | 开启可信分支候选交付 |
 | Repository variable | `CLOUD_IMAGE_CACHE_ENABLED=true` | 开启候选发布后的缓存步骤 |
 | `cloud-image-candidate-cn` variable | `CLOUD_IMAGE_REPOSITORY` | Registry 主机和仓库路径，不含 tag/digest |
+| 同上 variable | `CLOUD_IMAGE_BUILD_CACHE_REPOSITORY` | 独立私有、允许更新标签的构建缓存仓库；不得等于候选仓库 |
 | 同上 variable | `CLOUD_IMAGE_IMMUTABLE_TAGS=true` | 管理员确认仓库已启用 tag 不可变策略 |
 | 同上 variable | `CLOUD_IMAGE_BUILDX_DRIVER_OPTS` | 可选，多行 BuildKit driver 选项；ECI 使用已验证的镜像 digest 和 `network=host`，见接入手册 |
 | 同上 variable | `CLOUD_IMAGE_REGISTRY_AUTH` | `password`（默认）或 `acr-ak`；显式选择，不自动回退 |
 | 同上 secrets | `CLOUD_IMAGE_REGISTRY_USER` / `CLOUD_IMAGE_REGISTRY_PASSWORD` | `password` 模式的 Registry 登录身份 |
 | 同上 variable | `CLOUD_IMAGE_ACR_INSTANCE_ID` | `acr-ak` 模式的目标 ACR 企业版实例 |
-| 同上 secrets | `CLOUD_IMAGE_ACR_ACCESS_KEY_ID` / `CLOUD_IMAGE_ACR_ACCESS_KEY_SECRET` | `acr-ak` 模式的 ACR 身份；仅在发布登录步骤注入，见接入手册权限范围 |
+| 同上 secrets | `CLOUD_IMAGE_ACR_ACCESS_KEY_ID` / `CLOUD_IMAGE_ACR_ACCESS_KEY_SECRET` | `acr-ak` 模式的 ACR 身份；仅在构建缓存和候选发布的登录步骤注入，见接入手册权限范围 |
 | `cloud-image-cache-cn` secrets | `CLOUD_IMAGE_CACHE_ACCESS_KEY_ID` / `CLOUD_IMAGE_CACHE_ACCESS_KEY_SECRET` | 缓存 AK，仅在缓存步骤注入，与 ACR 身份独立 |
 | 同上 secret | `CLOUD_IMAGE_CACHE_TARGETS` | 实际网络、允许的镜像仓库、完整主/init 模板清单 JSON |
 
@@ -144,10 +146,34 @@ Kubernetes RRSA，不借用用户的控制台 Cookie。私有 ACR 拉取须预�
 运行环境需要 Python ≥3.12、Git；构建池另需 Docker/Buildx，建议至少 4 vCPU、16 GiB RAM、
 80 GiB 可用磁盘。可使用独立 VM 或 ACK 调度的临时 ECI，不挂宿主 HOME、Docker socket、
 业务 PVC 或生产凭据；一个 job 后回收整套工作盘与凭据。此运行池不运行外部 PR，
-也不与其共用缓存写入空间。本版尚未加入跨 run 的外部 BuildKit 缓存。
+也不与其共用缓存写入空间。跨 run 的 BuildKit 缓存见下节。
 当前 fork 默认分支仍为 `main`。已实测通过 REST API 对 GitHub 已索引的
 `cloud-image-delivery.yml` 指定 `feat/cloud-settings-native-client` 触发 `workflow_dispatch`，
 无需改默认分支或向 main 推文件；网页按钮是否出现须另行核对。API 接受触发不等于交付成功；最新运行和限制见 [接入手册](BOOTSTRAP.md)。
+
+## 构建缓存
+
+临时 runner 不保留本地 Docker 磁盘。Buildx 把依赖基座和应用中间层以 `mode=max`
+保存到同区域的私有 ACR 构建缓存仓库；新 runner 从这里恢复。两个标签按 fork 分支、
+CN/amd64 和缓存格式隔离，base/runtime 分开写，records 只读，避免并发覆盖。
+这些是构建缓存，不是新的云实例版本，不进入 CIS 或 ACS 镜像清单。
+
+基座只读取 Dockerfile、包锁、包校验器和字体安装器四份输入，记录这组文件最后变更的
+Git commit；修改交付文档、云修订号或应用补丁不再令 apt 安装重跑。应用的源码与依赖
+安装层保持可复用；完整提交记录在独立 records 阶段写入，云端指引和运行时代码仍参与
+打包缓存校验。缓存命中仍执行发布审计、独立启动/停机验收和 digest 绑定。
+
+首次构建、输入变更或缓存被清理时按完整 Dockerfile 重建。`--no-cache` 禁止导入旧缓存，
+仍可导出新缓存；缓存导出失败不忽略。普通 cache mount 的下载目录不自动跨 runner 保存，
+不能把它当成持久缓存；这里持久化的是可校验的构建层。
+本次配置不重发已发布的 `cloud.1`；完整镜像的冷/热构建耗时须在后续版本实际记录。
+
+2026-10-21 已配置私有 ACR 缓存仓库与 fork Environment。在 Mac Colima 的 Linux arm64
+上用合成 COPY 层验证：两个全新 BuildKit builder 之间能恢复远端缓存，依赖层命中，
+输出与缓存 manifest 一致；临时 builder 和测试 manifest 已清理。配方/交付 Python
+59 项和文档检查 10 项通过。这是缓存后端与失效范围验证，不是完整 amd64 云镜像热构建计时。
+
+实现依据：[Docker Registry cache](https://docs.docker.com/build/cache/backends/registry/)。
 
 ## 本地检查与后续验收
 

@@ -63,6 +63,57 @@ class AgentStagingTest(unittest.TestCase):
         self.assertFalse(self.artifact.exists())
 
 class BuildGraphTest(unittest.TestCase):
+    def test_registry_cache_survives_runner_replacement_without_overlapping_writers(self):
+        targets = build.bake_plan(Path('/records'), 'example:unique', 'app-commit', 'sha', False,
+            2, 'base-commit', 'registry.example.com/cindy/build-cache')['target']
+        self.assertEqual(targets['base']['args']['CINDY_SOURCE_COMMIT'], 'base-commit')
+        self.assertEqual(targets['runtime']['args']['CINDY_SOURCE_COMMIT'], 'app-commit')
+        exports = [t['cache-to'][0] for t in targets.values() if 'cache-to' in t]
+        self.assertEqual(len(exports), 2)
+        self.assertEqual(len(set(exports)), 2)
+        self.assertTrue(all('mode=max' in x and 'ignore-error' not in x for x in exports))
+        self.assertEqual(targets['records']['cache-from'], targets['runtime']['cache-from'])
+        self.assertNotIn('cache-to', targets['records'])
+
+    def test_cold_rebuild_does_not_import_cache_or_accept_injected_options(self):
+        targets = build.bake_plan(Path('/records'), 'example:unique', 'commit', 'sha', True,
+            cache_repository='registry.example.com/cindy/build-cache')['target']
+        self.assertTrue(all(t['cache-from'] == [] for t in targets.values()))
+        for bad in ['https://registry.example.com/repo', 'user:password@registry.example.com/repo',
+                    'registry.example.com/repo:latest', 'registry.example.com/repo,mode=min', '../repo']:
+            with self.subTest(value=bad), self.assertRaises(ValueError): build.registry_cache(bad)
+
+    def test_docs_and_provenance_do_not_invalidate_base_or_application_inputs(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            recipe = root / 'recipe'
+            files = {p: 'locked input' for p in build.BASE_INPUTS}
+            files.update({'README.md': 'docs', 'delivery/version.json': 'version',
+                'build-inputs.json': 'commit metadata', 'runtime-base/README.md': 'base docs',
+                'runtime-guidance/default.md': 'runtime prompt',
+                'runtime-input/bridge.mjs': 'runtime code', 'runtime-input/bridge.test.mjs': 'test'})
+            for name, data in files.items():
+                p=recipe/name; p.parent.mkdir(parents=True,exist_ok=True); p.write_text(data)
+            build.stage_recipe_contexts(root)
+            def snapshot(directory):
+                return {p.relative_to(directory).as_posix():p.read_bytes() for p in directory.rglob('*') if p.is_file()}
+            base=snapshot(root/'base-recipe'); app=snapshot(root/'build-recipe')
+            self.assertEqual(set(base), set(build.BASE_INPUTS))
+            self.assertIn('runtime-guidance/default.md', app)
+            self.assertNotIn('build-inputs.json',app)
+            for name in ['README.md','build-inputs.json','delivery/version.json','runtime-base/README.md']:
+                (recipe/name).write_text('changed unrelated input')
+            shutil.rmtree(root/'base-recipe'); shutil.rmtree(root/'build-recipe')
+            build.stage_recipe_contexts(root)
+            self.assertEqual(base,snapshot(root/'base-recipe'))
+            self.assertEqual(app,snapshot(root/'build-recipe'))
+            (recipe/'runtime-base/packages.lock').write_text('changed lock')
+            (recipe/'runtime-guidance/default.md').write_text('changed prompt')
+            shutil.rmtree(root/'base-recipe'); shutil.rmtree(root/'build-recipe')
+            build.stage_recipe_contexts(root)
+            self.assertNotEqual(base,snapshot(root/'base-recipe'))
+            self.assertNotEqual(app,snapshot(root/'build-recipe'))
+
     def test_remote_targets_use_fresh_base_without_registry_roundtrip(self):
         plan = build.bake_plan(Path('/private/records'), 'example:unique', 'commit', 'entrysha', True)['target']
         self.assertEqual(plan['base']['target'], 'runtime-base-slim')

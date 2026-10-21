@@ -31,6 +31,10 @@ qualified base. The final apt sources point at the canonical snapshot URLs.
 Use a native `linux/amd64` builder with network access to the pinned sources.
 The context is `deploy/linux-desktop`; `Dockerfile.dockerignore` limits it to the
 three tracked inputs. `CINDY_SOURCE_COMMIT` must be the full commit of this recipe.
+The complete `build-image.py` entry records the last commit affecting this
+Dockerfile, package lock, verifier or emoji staging helper, so unrelated application
+and delivery changes do not invalidate the base. Its context contains only those
+four inputs; the full application recipe commit remains in the final image and records.
 
 ```sh
 cd deploy/linux-desktop

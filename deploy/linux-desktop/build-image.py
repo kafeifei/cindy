@@ -1,16 +1,46 @@
 #!/usr/bin/env python3
-"""Build a local CN image from committed sources. Never publish or deploy."""
+"""Build a local CN image from Git; optionally export build cache, never publish a runtime."""
 import argparse
 import hashlib
 import io
 import json
 import re
+import shutil
 import subprocess
 import tarfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
+BASE_INPUTS = ('runtime-base/Dockerfile', 'runtime-base/packages.lock',
+               'runtime-base/base_lock.py', 'runtime-fonts/stage-emoji-font.py')
+
+def stage_recipe_contexts(context):
+    """Keep unrelated docs/delivery metadata out of expensive filesystem inputs."""
+    recipe = context / 'recipe'
+    for name in BASE_INPUTS:
+        target = context / 'base-recipe' / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(recipe / name, target)
+    for source in recipe.rglob('*'):
+        relative = source.relative_to(recipe)
+        if relative.parts[0] in ('delivery', 'runtime-base') or not source.is_file():
+            continue
+        if (source.name == 'build-inputs.json' or source.name.startswith('test_')
+                or '.test.' in source.name or source.name.endswith('.pyc')
+                or source.name == 'README.md'
+                or (len(relative.parts) == 1 and source.suffix == '.md')):
+            continue
+        target = context / 'build-recipe' / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+
+def registry_cache(repository):
+    # No tag, digest, URL credentials, or Buildx CSV options in the input.
+    if not re.fullmatch(r'[a-z0-9][a-z0-9.-]+(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)+', repository):
+        raise ValueError('INVALID_BUILD_CACHE_REPOSITORY')
+    return {name: repository + ':fork-cloud-settings-cn-amd64-v1-' + name
+            for name in ('base', 'runtime')}
 
 def git(*args):
     return subprocess.check_output(['git', *args], cwd=REPO)
@@ -49,6 +79,12 @@ def prepare(output, revision):
               'recipeFiles': {p.relative_to(recipe).as_posix(): digest(p.read_bytes())
                               for p in sorted(recipe.rglob('*')) if p.is_file()}}
     (recipe / 'build-inputs.json').write_text(json.dumps(inputs, indent=2) + '\n')
+    inputs['baseRecipeCommit'] = git('log', '-1', '--format=%H', revision, '--',
+        *('deploy/linux-desktop/' + p for p in BASE_INPUTS)).decode().strip()
+    if not re.fullmatch('[a-f0-9]{40}', inputs['baseRecipeCommit']):
+        raise ValueError('BASE_RECIPE_COMMIT_REQUIRED')
+    inputs['baseInputs'] = {p: inputs['recipeFiles'][p] for p in BASE_INPUTS}
+    stage_recipe_contexts(context)
     return context, inputs
 
 def docker(*args):
@@ -61,13 +97,15 @@ def run_build(output, name, args, cwd):
     if result.returncode:
         raise RuntimeError(f'{name} failed; see {output / (name + ".log")}')
 
-def bake_plan(output, tag, revision, entrypoint_sha, no_cache, cloud_revision=None):
+def bake_plan(output, tag, revision, entrypoint_sha, no_cache, cloud_revision=None,
+              base_revision=None, cache_repository=None):
     """Connect both Dockerfiles without publishing an intermediate base image."""
     common = {'CINDY_SOURCE_COMMIT': revision, 'SOURCE_DATE_EPOCH': '1789344000'}
     if cloud_revision is not None:
         common['CINDY_CLOUD_REVISION'] = str(cloud_revision)
-    base = {'context': 'recipe', 'dockerfile': 'runtime-base/Dockerfile',
-            'target': 'runtime-base-slim', 'args': common,
+    base = {'context': 'base-recipe', 'dockerfile': 'runtime-base/Dockerfile',
+            'target': 'runtime-base-slim',
+            'args': {'CINDY_SOURCE_COMMIT': base_revision or revision, 'SOURCE_DATE_EPOCH': '1789344000'},
             'platforms': ['linux/amd64'], 'no-cache': no_cache,
             'output': [f'type=docker,name={tag}-base,rewrite-timestamp=true']}
     runtime = {'context': '.', 'dockerfile': 'recipe/Dockerfile',
@@ -79,6 +117,15 @@ def bake_plan(output, tag, revision, entrypoint_sha, no_cache, cloud_revision=No
                'output': [f'type=docker,name={tag},rewrite-timestamp=true']}
     records = {**runtime, 'target': 'build-records',
                'output': ['type=local,dest=' + str(output / 'records')]}
+    if cache_repository:
+        refs = registry_cache(cache_repository)
+        for name, target in [('base', base), ('runtime', runtime)]:
+            target['cache-from'] = [] if no_cache else ['type=registry,ref=' + refs[name]]
+            target['cache-to'] = ['type=registry,ref=' + refs[name]
+                + ',mode=max,image-manifest=true,oci-mediatypes=true']
+        # The runtime build already includes the records' expensive parent stages.
+        # Only one target writes each cache ref; parallel records must not overwrite it.
+        records['cache-from'] = list(runtime['cache-from'])
     return {'target': {'base': base, 'runtime': runtime, 'records': records}}
 
 def main():
@@ -88,7 +135,11 @@ def main():
     parser.add_argument('--no-cache', action='store_true')
     parser.add_argument('--prepare-only', action='store_true')
     parser.add_argument('--builder', help='existing native amd64 Buildx builder; exports images to local Docker')
+    parser.add_argument('--cache-repository', help='dedicated mutable Registry cache repository, requires --builder')
     args = parser.parse_args()
+    if args.cache_repository:
+        registry_cache(args.cache_repository)
+        if not args.builder: parser.error('--cache-repository requires --builder')
     if not re.fullmatch(r'[a-z0-9._/-]+:[a-zA-Z0-9_.-]+', args.tag) or re.search(r':\d+\.\d+\.\d+$', args.tag):
         parser.error('use a unique candidate tag')
     if git('status', '--porcelain', '--', 'deploy/linux-desktop').strip():
@@ -114,7 +165,8 @@ def main():
     entrypoint_sha = digest((context / 'recipe/runtime-desktop-xfce/cindy-linux-desktop').read_bytes())
     if args.builder:
         plan = output / 'docker-bake.json'
-        plan.write_text(json.dumps(bake_plan(output, args.tag, revision, entrypoint_sha, args.no_cache, version['cloudRevision']), indent=2) + '\n')
+        plan.write_text(json.dumps(bake_plan(output, args.tag, revision, entrypoint_sha, args.no_cache,
+            version['cloudRevision'], inputs['baseRecipeCommit'], args.cache_repository), indent=2) + '\n')
         run_build(output, 'full-build', ['docker', 'buildx', 'bake', '--builder', args.builder,
                   '--allow=fs.write=' + str(output),
                   '--progress=plain', '-f', str(plan), '--metadata-file', str(output / 'build-metadata.json'),
@@ -130,8 +182,9 @@ def main():
                   'runtimeAcceptance': 'pending', 'buildOnly': True}, indent=2) + '\n')
         print(json.dumps({'imageId': info['Id'], 'output': str(output), 'runtimeAcceptance': 'pending'}))
         return
-    run_build(output, 'base-build', build + ['-f', 'runtime-base/Dockerfile', *common,
-              '--target', 'runtime-base-slim', '--output', f'type=docker,name={base_tag},rewrite-timestamp=true', '.'], context / 'recipe')
+    run_build(output, 'base-build', build + ['-f', 'runtime-base/Dockerfile',
+              '--build-arg', 'CINDY_SOURCE_COMMIT=' + inputs['baseRecipeCommit'], '--build-arg', 'SOURCE_DATE_EPOCH=1789344000',
+              '--target', 'runtime-base-slim', '--output', f'type=docker,name={base_tag},rewrite-timestamp=true', '.'], context / 'base-recipe')
     base = json.loads(docker('image', 'inspect', base_tag))[0]
     (output / 'base-image.json').write_text(json.dumps(base, indent=2) + '\n')
     runtime_args = ['-f', 'recipe/Dockerfile', *common, '--build-arg', 'BASE_IMAGE=' + base_tag,

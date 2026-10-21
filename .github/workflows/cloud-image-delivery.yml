@@ -81,6 +81,7 @@ jobs:
     env:
       IMAGE_TAG: ${{ needs.verify.outputs.tag }}
       IMAGE_REPOSITORY: ${{ vars.CLOUD_IMAGE_REPOSITORY }}
+      BUILD_CACHE_REPOSITORY: ${{ vars.CLOUD_IMAGE_BUILD_CACHE_REPOSITORY }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -94,6 +95,8 @@ jobs:
           set -euo pipefail
           test "$IMMUTABLE" = true
           test -n "$IMAGE_REPOSITORY"
+          test -n "$BUILD_CACHE_REPOSITORY"
+          test "$BUILD_CACHE_REPOSITORY" != "$IMAGE_REPOSITORY"
           test "$(uname -m)" = x86_64
           python3 -c 'import sys; assert sys.version_info >= (3, 12)'
           # The current release records bind image ID to config digest. Pin the
@@ -109,6 +112,16 @@ jobs:
         run: |
           python3 deploy/linux-desktop/delivery/install_aliyun_cli.py --directory "$RUNNER_TEMP/aliyun-cli"
           echo "$RUNNER_TEMP/aliyun-cli" >> "$GITHUB_PATH"
+      - name: Login for the isolated build cache
+        env:
+          REGISTRY_AUTH: ${{ vars.CLOUD_IMAGE_REGISTRY_AUTH || 'password' }}
+          REGISTRY_USER: ${{ secrets.CLOUD_IMAGE_REGISTRY_USER }}
+          REGISTRY_PASSWORD: ${{ secrets.CLOUD_IMAGE_REGISTRY_PASSWORD }}
+          ACR_INSTANCE_ID: ${{ vars.CLOUD_IMAGE_ACR_INSTANCE_ID }}
+          ALIBABA_CLOUD_ACCESS_KEY_ID: ${{ secrets.CLOUD_IMAGE_ACR_ACCESS_KEY_ID }}
+          ALIBABA_CLOUD_ACCESS_KEY_SECRET: ${{ secrets.CLOUD_IMAGE_ACR_ACCESS_KEY_SECRET }}
+          IMAGE_REPOSITORY: ${{ vars.CLOUD_IMAGE_BUILD_CACHE_REPOSITORY }}
+        run: python3 deploy/linux-desktop/delivery/registry_login.py
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         id: builder
         with:
@@ -120,7 +133,8 @@ jobs:
           BUILDER: ${{ steps.builder.outputs.name }}
         run: |
           python3 deploy/linux-desktop/delivery/plan.py --fetch-upstream --output "$RUNNER_TEMP/delivery-plan.json"
-          python3 deploy/linux-desktop/build-image.py --tag "cindy-ci:$IMAGE_TAG" --builder "$BUILDER" --output "$RUNNER_TEMP/cloud-build"
+          python3 deploy/linux-desktop/build-image.py --tag "cindy-ci:$IMAGE_TAG" --builder "$BUILDER" \
+            --cache-repository "$BUILD_CACHE_REPOSITORY" --output "$RUNNER_TEMP/cloud-build"
       - name: Native isolated desktop startup, legacy HOME, sandbox and shutdown
         run: python3 deploy/linux-desktop/delivery/smoke.py --image "cindy-ci:$IMAGE_TAG" --output "$RUNNER_TEMP/native-smoke.json"
       - name: Login to the configured candidate repository
