@@ -115,10 +115,27 @@ ACR 的不可变策略对 `latest` 有例外，本流水线不产生该标签。
 ### ACK + ECI 接入
 
 先核对现有 Runner 的生效配置和实际 ECI 作业，不因文档标注内测就推断目标账号未开通。
-2026-10-21 已在目标 ACK 的独立临时命名空间实测：Pod 调度到 ECI 虚拟节点，架构为
-`x86_64`，`privileged: true` 生效，临时 tmpfs 挂载、写入、卸载通过，退出码为 0；
-Job 与命名空间已清理。这仅证明该环境的特权容器能力，不代表 DinD、Buildx、Cindy smoke
-或 GitHub 交付已通过。
+2026-10-21 已在目标 ACK 的独立临时命名空间完成原生 `x86_64` 验收，使用 4 vCPU /
+16 GiB 和 100 GiB 临时存储；没有修改现有 GitLab Runner 或云实例。
+
+| 验收项 | 实测结果 |
+| --- | --- |
+| ECI 特权能力 | tmpfs 挂载、写入、卸载通过 |
+| DinD / Buildx | Docker 29.9.1（overlay2）、Buildx 0.38.0、BuildKit 0.30.0；实际构建含 cache mount 的小镜像，加载并运行通过 |
+| 镜像搬运 | 官方 DinD、Python 3.12 slim-bookworm、BuildKit 的 amd64 manifest 搬至已有 public 命名空间；manifest、config、layers 一致，ECI 拉取通过 |
+| 已发布 R7 启动 | `smoke.py` 验证 Xfce/Plank、Cindy 可见窗口、root-owned 老 HOME、UID 10001 渲染进程、零 capabilities、NoNewPrivs 与 seccomp 通过 |
+| 隔离与停机 | 无网络、只读根、合成 tmpfs 数据；Cindy 正常退出，验收容器和 DinD 均退出 0，重启次数 0；Job 与临时命名空间已清理 |
+
+测试对象为 `0.1.108-source-r7.20261020`：
+
+```text
+Registry manifest: sha256:76d51e58368b53870df9a9b5018659e56cd1e9fc67d81dffaa8a43e8986e560d
+Image config:      sha256:715e2d8a03b778c877806579c205ca6088eb1dce092467093598eaf84a9dcb70
+```
+
+这是运行池资格验收，**未在此运行池从完整 Cindy Dockerfile 构建新候选**，也不是 GitHub
+真实交付、OAuth 或 DeviceLink 验收。GitHub 出站访问仍失败；Actions 启用、专用发布
+身份和 OIDC 配置仍待完成。启动探针的目录初始化和进程识别修正已纳入源码与回归测试。
 
 - GitHub runner 管理组件与 ECI 作业使用独立 namespace、ServiceAccount 和凭据；沿用
   现有 ECI 调度方式，不修改现有 GitLab Runner，也不复用其注册或缓存身份。
@@ -129,6 +146,39 @@ Job 与命名空间已清理。这仅证明该环境的特权容器能力，不�
   完整验收须仍验证镜像中的 UID 10001、无 capabilities 和 seccomp，不能放宽应用沙箱。
 - 接入前实际运行 Docker/Buildx、完整 Dockerfile 和 `smoke.py`，确认嵌套运行及清理可用。
   通过后才将该运行池用于真实候选交付，不能以 Runner 显示 online 替代这些检查。
+
+### 依赖镜像与构建网络
+
+本交付链使用 Docker image ID 作为 config digest。Docker 29 新安装默认启用
+[containerd image store](https://docs.docker.com/engine/storage/containerd/)，本次实测触发了
+config ID 不一致门禁；尚未兼容该后端。此运行池的 DinD
+须显式设置 `--feature=containerd-snapshotter=false --storage-driver=overlay2`，并在构建前
+核对 `docker info` 的 Driver 为 `overlay2`。这是一次性 runner 的存储配置，不修改 Cindy
+镜像、不放宽已测产物与 Registry config 的一致性校验，也不调整共享 Docker daemon。
+后续切换后端须同时适配构建、smoke 和发布记录，不能只改某处摘要比较。
+
+ECI 无法拉取 Docker Hub 时，可由已有登录的开发机将**官方精确 digest**搬到自有镜像
+仓库，再让 ECI 按搬运后的 digest 拉取。使用追加的版本/架构标签，保留源映射；不覆盖
+旧标签、不换成来源不明的旧基座。公开依赖可以放在已有 `public` 命名空间，私有产物
+仍保留原访问策略。开发机的个人 Registry 登录只用于本次搬运，不注入 runner。
+
+例如使用 `crane copy --no-clobber "$source_ref" "$mirror_tag"` 保留 manifest，随后核对
+两端 `crane digest`、config 与全部 layer digest 一致；再验证目标访问方式。验证范围
+须包括外层 DinD/runner 镜像、DinD 内的 BuildKit 镜像和 Dockerfile 的基础镜像。
+只搬外层镜像不能解决内部构建仍访问 Docker Hub 的问题。
+
+本次 ECI 实测中，DinD 默认 bridge 内的 BuildKit 无法访问集群 DNS。使用
+`docker buildx create --driver docker-container --driver-opt "image=$buildkit_ref" --driver-opt network=host`
+后，镜像解析和实际构建通过。这里的 `host` 是**本次 ECI Pod 的网络命名空间**，
+不是 ACK 节点；Pod 不设置 `hostNetwork`，Cindy smoke 仍使用 `--network=none`。
+真实 runner 接入时需显式带上该 BuildKit 配置，现有 workflow 尚未自动配置此 ECI 选项。
+
+GitHub 连通性单独验收：镜像拉取成功不证明 runner 能注册、领取任务、下载 Actions 或
+上传产物。2026-10-21 该 ECI 环境中 `github.com`、`api.github.com` 解析到私网地址，
+HTTPS 返回 `Connection refused`；需先修复或提供可用的出站代理，不修改共享集群 DNS
+来让单次测试通过，也不通过关闭 TLS 校验绕过。
+网络准备按 [GitHub 官方出站域名清单](https://docs.github.com/en/actions/reference/runners/self-hosted-runners#requirements-for-communication-with-github)
+覆盖领任务、Actions 下载和 artifact 传输；只放行 GitHub 首页不足以完成交付。
 
 标签为 `self-hosted, Linux, X64, cindy-cloud-build`。标签本身不是授权边界；公开 fork 的外部
 PR 都应要求维护者批准，且交付环境只允许上述分支。若需要持续自动供给 runner，应在隔离的

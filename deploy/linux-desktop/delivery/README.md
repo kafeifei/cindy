@@ -21,8 +21,10 @@
 RAM 创建 OIDC provider 返回 `NoPermission`（`ram:CreateOIDCProvider`）。
 专用 runner、Registry 凭据、RAM OIDC 和首次真实运行仍待完成。环境存在不代表交付已通过；
 后续以实际 workflow run、镜像 digest 和缓存回执更新此状态。
-目标 ACK + ECI 的特权容器与临时挂载探针已通过；优先沿用该作业模式接入独立 GitHub
-runner，DinD、Buildx 和完整 smoke 尚未验证，详见 [接入手册](BOOTSTRAP.md#ack--eci-接入)。
+目标 ACK + ECI 的 DinD、Buildx 实际构建/运行、已发布 R7 的桌面启动/沙箱/停机已通过，
+测试 Job 和临时命名空间已清理。ECI 到 GitHub 的 HTTPS 连接仍被拒绝，尚未注册 runner，
+也未在此运行池从完整 Dockerfile 构建新候选；配置与实测边界见
+[接入手册](BOOTSTRAP.md#ack--eci-接入)。
 
 ## 双版本：上游完整版本 + 云修订
 
@@ -134,7 +136,9 @@ actionlint -config-file deploy/linux-desktop/delivery/actionlint.yaml \
 本次本地验证（2026-10-21，macOS）：Node 云覆盖层/交付测试 121 通过、1 跳过
 （Bash 5.1 Linux 停机测试）；Python 配方/依赖基座/字体/交付测试共 56 通过；
 文档检查 10 通过；actionlint 1.7.7 通过。已实际从官方仓库读取上游 tag 并核对固定 commit。
-这不是新的 Linux 镜像启动验收，native smoke 会在配置好的 Linux runner 上执行。
+上述是 macOS 离线检查。后续新增的 ECI 实测已验证现有 R7 的 native smoke，详情见
+[验收记录](BOOTSTRAP.md#ack--eci-接入)；修正后的交付 Python 测试 15 项通过，文档检查
+10 项及 actionlint 通过。它仍不代表新候选已完成源码构建或首次 GitHub 交付。
 扩展执行 `pnpm test:runner` 为 574 通过、6 失败、2 跳过；失败均来自既有
 `design-inventory.test.mjs` 中 `/cloud-settings` 与 `/cloud-settings-trial` 的路由台账缺项，
 对应 router、台账实现和测试与本轮修改前一致，未为此放宽门禁。
