@@ -9,7 +9,7 @@
 
 | 阶段 | 本分支能力 | 启用/验收状态 |
 | --- | --- | --- |
-| PR / 分支推送检查 | 锁文件安装、云覆盖层与发布工具测试、双版本和上游 commit 校验 | 推送可触发，无云凭据 |
+| PR / 分支推送检查 | 锁文件安装、云覆盖层与发布工具测试、双版本和上游 commit 校验 | 触发配置已接入，无云凭据；fork Actions 当前被平台禁用，未产生本分支 run |
 | 候选镜像 | 完整源码构建、两层镜像审计、原生 Linux 隔离启动/停机、发布已测产物、digest 绑定 | 代码已接入，须配置专用 runner 和 Environment；尚无本流水线真实构建记录 |
 | ACS 缓存 | 遍历实际 Pod 模板中的主镜像和所有 init 镜像，按目标网络创建/复用并等待 Ready | 代码已接入，须配置 ACS 身份和模板清单；尚未真实调用 |
 | 产品验收与晋级 | 记录明确的 pending 状态 | 完整 OAuth、DeviceLink、Pod 实际缓存命中、灰度、签名信任及稳定通道准入尚未自动化 |
@@ -17,12 +17,14 @@
 
 2026-10-21 接入进度：已创建 `cloud-image-candidate-cn`、`cloud-image-cache-cn` 两个 Environment，
 部署分支规则均只允许 `feat/cloud-settings-native-client`；两个交付开关当前保持 `false`。
-当前 GitHub 页面显示 fork Actions 因使用规模被暂停，API 的 `enabled=true` 未反映该限制；
+candidate Environment 已配置精确 BuildKit 镜像与 ECI Pod 网络选项。
+维护者登录后确认 GitHub 已禁用仓库 Actions，要求联系 Support；API 的 `enabled=true` 未反映该限制；
 RAM 创建 OIDC provider 返回 `NoPermission`（`ram:CreateOIDCProvider`）。
 专用 runner、Registry 凭据、RAM OIDC 和首次真实运行仍待完成。环境存在不代表交付已通过；
 后续以实际 workflow run、镜像 digest 和缓存回执更新此状态。
 目标 ACK + ECI 的 DinD、Buildx 实际构建/运行、已发布 R7 的桌面启动/沙箱/停机已通过，
-测试 Job 和临时命名空间已清理。ECI 到 GitHub 的 HTTPS 连接仍被拒绝，尚未注册 runner，
+测试 Job 和临时命名空间已清理。默认 DNS 指向的代理在 ECI 和 ACK 对照 Pod 中均拒绝连接；
+单 Pod 自定义 DNS 已恢复主要 GitHub 端点和 Action 下载，但 raw 域名仍有失败，尚未注册 runner，
 也未在此运行池从完整 Dockerfile 构建新候选；配置与实测边界见
 [接入手册](BOOTSTRAP.md#ack--eci-接入)。
 
@@ -91,6 +93,7 @@ RAM 创建 OIDC provider 返回 `NoPermission`（`ram:CreateOIDCProvider`）。
 | Repository variable | `CLOUD_IMAGE_CACHE_ENABLED=true` | 开启候选发布后的缓存步骤 |
 | `cloud-image-candidate-cn` variable | `CLOUD_IMAGE_REPOSITORY` | Registry 主机和仓库路径，不含 tag/digest |
 | 同上 variable | `CLOUD_IMAGE_IMMUTABLE_TAGS=true` | 管理员确认仓库已启用 tag 不可变策略 |
+| 同上 variable | `CLOUD_IMAGE_BUILDX_DRIVER_OPTS` | 可选，多行 BuildKit driver 选项；ECI 使用已验证的镜像 digest 和 `network=host`，见接入手册 |
 | 同上 secrets | `CLOUD_IMAGE_REGISTRY_USER` / `CLOUD_IMAGE_REGISTRY_PASSWORD` | 只允许候选仓库读/推送的身份，禁用删除及生产部署权限 |
 | `cloud-image-cache-cn` variables | `ACS_CACHE_RAM_ROLE_ARN` / `ACS_CACHE_OIDC_PROVIDER_ARN` | GitHub OIDC 换 STS 的专用缓存角色 |
 | 同上 secret | `CLOUD_IMAGE_CACHE_TARGETS` | 实际网络、允许的镜像仓库、完整主/init 模板清单 JSON |

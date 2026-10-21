@@ -7,10 +7,12 @@
 
 仓库：`zhuoshaojian/cindy`；可信分支：`feat/cloud-settings-native-client`。
 
-先查看仓库 Actions 页面是否提示 fork 的工作流被暂停。`actions/permissions` 返回
-`enabled: true` 不能排除 GitHub 另行暂停 fork；2026-10-21 实际出现过
-“Workflows are not currently being run on this fork due to the scale of GitHub Actions usage”。
-此时由仓库维护者在页面重新启用，不能将无 run 记录当作检查通过，也不用改默认分支来规避。
+先登录仓库 Actions 页面，区分普通 fork 暂停与 GitHub 平台禁用。`actions/permissions`
+返回 `enabled: true` 不能排除后者。2026-10-21 未登录页面只提示使用规模导致暂停；
+维护者登录后实际显示 **“GitHub Actions is currently disabled for this repository”**，
+并要求联系 [GitHub Support](https://support.github.com/contact?tags=dotcom-actions)，没有启用按钮。
+此状态须由仓库所有者联系 Support 解除；不要反复修改 API 开关、默认分支或推送试探，
+也不要把无 run 记录当作检查通过。
 
 创建两个 Environment，均配置 **Selected branches and tags → branch**，精确允许
 `feat/cloud-settings-native-client`，不添加 tag 通配规则：
@@ -94,6 +96,11 @@ ACR 的不可变策略对 `latest` 有例外，本流水线不产生该标签。
 }
 ```
 
+ACR 推送身份必须在**该 Registry 所属账号**创建；ACS 缓存角色则在缓存所属账号创建，
+两者可能不同。控制台能看到某个 ACR 实例不代表能管理目标 Registry。当前浏览器账号
+无 `ram:CreateOIDCProvider`，且实例列表没有目标 Registry；不能据本机 Docker 已登录
+推断已取得专用身份的创建权限。
+
 按 ACR 的账户配置流程设置该身份的 Registry 登录密码，直接写入 candidate Environment 的
 `CLOUD_IMAGE_REGISTRY_USER`、`CLOUD_IMAGE_REGISTRY_PASSWORD`。这两个值是 Registry 登录
 凭据，不是 RAM AccessKey。不要上传个人已有的全局 Docker 凭据，不授予仓库删除、改设置、
@@ -134,8 +141,9 @@ Image config:      sha256:715e2d8a03b778c877806579c205ca6088eb1dce092467093598ea
 ```
 
 这是运行池资格验收，**未在此运行池从完整 Cindy Dockerfile 构建新候选**，也不是 GitHub
-真实交付、OAuth 或 DeviceLink 验收。GitHub 出站访问仍失败；Actions 启用、专用发布
-身份和 OIDC 配置仍待完成。启动探针的目录初始化和进程识别修正已纳入源码与回归测试。
+真实交付、OAuth 或 DeviceLink 验收。GitHub 出站已完成分路径诊断（见下文），
+尚未达到完整交付验收；Actions 平台禁用、专用发布身份和 OIDC 配置仍待解决。
+启动探针的目录初始化和进程识别修正已纳入源码与回归测试。
 
 - GitHub runner 管理组件与 ECI 作业使用独立 namespace、ServiceAccount 和凭据；沿用
   现有 ECI 调度方式，不修改现有 GitLab Runner，也不复用其注册或缓存身份。
@@ -171,14 +179,59 @@ ECI 无法拉取 Docker Hub 时，可由已有登录的开发机将**官方精�
 `docker buildx create --driver docker-container --driver-opt "image=$buildkit_ref" --driver-opt network=host`
 后，镜像解析和实际构建通过。这里的 `host` 是**本次 ECI Pod 的网络命名空间**，
 不是 ACK 节点；Pod 不设置 `hostNetwork`，Cindy smoke 仍使用 `--network=none`。
-真实 runner 接入时需显式带上该 BuildKit 配置，现有 workflow 尚未自动配置此 ECI 选项。
+workflow 通过受保护的 candidate Environment 变量 `CLOUD_IMAGE_BUILDX_DRIVER_OPTS`
+接入这些选项，每行一个；不用 ECI 时可留空。ECI 示例（仓库地址用实际镜像替换）：
 
-GitHub 连通性单独验收：镜像拉取成功不证明 runner 能注册、领取任务、下载 Actions 或
-上传产物。2026-10-21 该 ECI 环境中 `github.com`、`api.github.com` 解析到私网地址，
-HTTPS 返回 `Connection refused`；需先修复或提供可用的出站代理，不修改共享集群 DNS
-来让单次测试通过，也不通过关闭 TLS 校验绕过。
-网络准备按 [GitHub 官方出站域名清单](https://docs.github.com/en/actions/reference/runners/self-hosted-runners#requirements-for-communication-with-github)
-覆盖领任务、Actions 下载和 artifact 传输；只放行 GitHub 首页不足以完成交付。
+```text
+image=registry.example.com/public/buildkit@sha256:57269d1784e49b46228c45a1a1b870fbe40e0a639ab60b37b032d83af5bccdfc
+network=host
+```
+
+这只配置 BuildKit 的镜像和网络，不创建 runner，也不改变 Pod DNS。
+
+### ECI 出站与 CustomDNSConfig
+
+`CustomDNSConfig` CR 修改的是 ACK 托管 DNS 的共享规则；
+`k8s.aliyun.com/eci-custom-dnsconfig` annotation 则作用于单个 ECI Pod，二者不同。
+DNS 可将域名指向现有 SNI 转发服务，但不会创建代理、打开监听端口或配置 HTTP CONNECT。
+先读现有规则、检查 `/etc/resolv.conf`，再分别验证 DNS、TCP、TLS 和真实下载。
+
+2026-10-21 独立作业实测：
+
+| 路径 | 结果 |
+| --- | --- |
+| ECI 默认 ClusterFirst | 共享 `CustomDNSConfig/default` 将 GitHub 指向内网代理，连接 443 被拒绝 |
+| 独立 ACK 普通 Pod 对照 | 同一个代理路径也被拒绝；不能归因于 ECI 专有问题 |
+| ECI 单 Pod 自定义 DNS | GitHub 首页/API、codeload、GHCR、Actions 控制端点通过 TLS；Action 压缩包完整下载，runner 安装包前 64 KiB 分段下载通过 |
+| raw.githubusercontent.com | 普通解析访问仍重置；四个地址中仅一个定向测试成功，不应固定 CDN IP 作为修复 |
+
+以下是本次验证的 **Pod 模板片段**，不修改共享 DNS，也不宣称它是完整网络修复：
+
+```yaml
+metadata:
+  labels:
+    alibabacloud.com/eci: "true"
+  annotations:
+    k8s.aliyun.com/eci-image-cache: "false"
+    k8s.aliyun.com/eci-custom-dnsconfig: '{"nameservers":"100.100.2.136,100.100.2.138","options":"ndots:1,timeout:2,attempts:1"}'
+spec:
+  dnsPolicy: Default
+  automountServiceAccountToken: false
+```
+
+实测容器使用了这两个 nameserver，但 ECI 将有效 `ndots` 设为 `6`，应以容器内结果为准。
+此方式不经集群 DNS，不能假定它仍解析 Kubernetes Service；需要集群服务的任务应另验分域
+解析。本次临时作业不依赖业务 Service、PVC 或凭据。Annotation 说明见
+[阿里云 ECI 自定义 DNS](https://help.aliyun.com/zh/eci/user-guide/configure-custom-dns-for-eci-pods)。
+
+完整交付仍须修复内网代理的 443 路径或提供可用的专用出站代理，并从 runner 进程及
+BuildKit 内分别验证下载。显式 HTTP 代理需要真实的 `https_proxy` / `http_proxy` 与
+`no_proxy` 配置；不能把 DNS 服务器地址直接当 HTTP 代理。保留 TLS 校验，不将 CDN IP
+写进永久 hosts，不把个人代理凭据放入源码。
+
+按 [GitHub 官方出站域名清单](https://docs.github.com/en/actions/reference/runners/self-hosted-runners#requirements-for-communication-with-github)
+覆盖注册/领任务、Actions 下载和 artifact 传输。根路径返回经过 TLS 验证的 404 仅证明
+该端点可达；不能替代 runner 注册、真实 job 或 artifact 上传。
 
 标签为 `self-hosted, Linux, X64, cindy-cloud-build`。标签本身不是授权边界；公开 fork 的外部
 PR 都应要求维护者批准，且交付环境只允许上述分支。若需要持续自动供给 runner，应在隔离的
