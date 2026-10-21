@@ -21,6 +21,8 @@
 RAM 创建 OIDC provider 返回 `NoPermission`（`ram:CreateOIDCProvider`）。
 专用 runner、Registry 凭据、RAM OIDC 和首次真实运行仍待完成。环境存在不代表交付已通过；
 后续以实际 workflow run、镜像 digest 和缓存回执更新此状态。
+目标 ACK + ECI 的特权容器与临时挂载探针已通过；优先沿用该作业模式接入独立 GitHub
+runner，DinD、Buildx 和完整 smoke 尚未验证，详见 [接入手册](BOOTSTRAP.md#ack--eci-接入)。
 
 ## 双版本：上游完整版本 + 云修订
 
@@ -100,7 +102,8 @@ Kubernetes RRSA，不借用用户的控制台 Cookie。私有 ACR 拉取须预�
 
 runner 标签为 `self-hosted, Linux, X64, cindy-cloud-build`，用专用、临时原生 amd64 Linux，
 安装 Docker/Buildx、Python ≥3.12、Git；建议至少 4 vCPU、16 GiB RAM、80 GiB 可用磁盘。
-与业务集群和个人电脑隔离，测试结束销毁，不挂宿主 HOME 或生产凭据。只有这个可信
+可使用独立 VM 或 ACK 调度的临时 ECI；执行资源和身份与业务工作负载隔离，测试结束回收，
+不挂宿主 HOME、Docker socket、业务 PVC 或生产凭据。只有这个可信
 workflow 可以用该 runner；不可给任意 fork PR 或其它 workflow 开放。依赖下载和构建
 缓存不应共用不可信 PR 的缓存写入空间。本版复用单次 Bake 的缓存，尚未加入跨 run
 外部 BuildKit 缓存，也不自动修改 runner 的宿主安全策略。

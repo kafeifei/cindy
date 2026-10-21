@@ -105,10 +105,30 @@ ACR 的不可变策略对 `latest` 有例外，本流水线不产生该标签。
 
 ## 原生 Linux runner
 
-需要独立的 Linux x86_64 VM，Docker/Buildx、Python ≥3.12、Git，建议 4 vCPU / 16 GiB / 80 GiB
-可用磁盘。不得将业务 Kubernetes 节点、业务实例或个人 Mac 注册为此 runner。
-用 GitHub **ephemeral runner**，只执行一个 job 后退出，并销毁 VM/工作盘；不安装常驻
-自动重启服务，不复用上一次 job 的 Docker、HOME、凭据或缓存目录。
+需要独立的 Linux x86_64 执行环境，Docker/Buildx、Python ≥3.12、Git，建议 4 vCPU / 16 GiB /
+80 GiB 可用磁盘。可以使用一次性 VM，也可以由现有 ACK 调度一次性 ECI 作业；不要求额外
+购买常驻 ECS。不得将业务 Kubernetes 节点、业务实例或个人 Mac 注册为此 runner。
+用 GitHub **ephemeral runner**，只执行一个 job 后退出，再回收整个 VM 或 ECI 作业及工作盘；
+不复用上一次 job 的 Docker、HOME、凭据或缓存目录。runner 注销不等于 ECI 已停止，
+还须处理 Docker sidecar 的退出、任务超时和异常回收。
+
+### ACK + ECI 接入
+
+先核对现有 Runner 的生效配置和实际 ECI 作业，不因文档标注内测就推断目标账号未开通。
+2026-10-21 已在目标 ACK 的独立临时命名空间实测：Pod 调度到 ECI 虚拟节点，架构为
+`x86_64`，`privileged: true` 生效，临时 tmpfs 挂载、写入、卸载通过，退出码为 0；
+Job 与命名空间已清理。这仅证明该环境的特权容器能力，不代表 DinD、Buildx、Cindy smoke
+或 GitHub 交付已通过。
+
+- GitHub runner 管理组件与 ECI 作业使用独立 namespace、ServiceAccount 和凭据；沿用
+  现有 ECI 调度方式，不修改现有 GitLab Runner，也不复用其注册或缓存身份。
+- ECI 作业 Pod 使用 `alibabacloud.com/eci: "true"` 标签；工作目录和 Docker 数据目录
+  使用本次作业的临时卷。按实测峰值配置临时存储，不挂宿主 Docker socket 或业务 PVC。
+- 当前 workflow 需要 Docker daemon，采用 DinD 时只向其构建容器授予所需特权。
+  runner 使用共享 Unix socket 或受保护连接访问 daemon，不对外暴露 Docker API。
+  完整验收须仍验证镜像中的 UID 10001、无 capabilities 和 seccomp，不能放宽应用沙箱。
+- 接入前实际运行 Docker/Buildx、完整 Dockerfile 和 `smoke.py`，确认嵌套运行及清理可用。
+  通过后才将该运行池用于真实候选交付，不能以 Runner 显示 online 替代这些检查。
 
 标签为 `self-hosted, Linux, X64, cindy-cloud-build`。标签本身不是授权边界；公开 fork 的外部
 PR 都应要求维护者批准，且交付环境只允许上述分支。若需要持续自动供给 runner，应在隔离的
