@@ -17,6 +17,8 @@
 
 2026-10-21 接入进度：已创建 `cloud-image-candidate-cn`、`cloud-image-cache-cn` 两个 Environment，
 部署分支规则均只允许 `feat/cloud-settings-native-client`；两个交付开关当前保持 `false`。
+当前 GitHub 页面显示 fork Actions 因使用规模被暂停，API 的 `enabled=true` 未反映该限制；
+RAM 创建 OIDC provider 返回 `NoPermission`（`ram:CreateOIDCProvider`）。
 专用 runner、Registry 凭据、RAM OIDC 和首次真实运行仍待完成。环境存在不代表交付已通过；
 后续以实际 workflow run、镜像 digest 和缓存回执更新此状态。
 
@@ -76,7 +78,8 @@
 
 ## fork 一次性配置
 
-先配置再开开关；这些值不放在源码或聊天中。
+先配置再开开关；这些值不放在源码或聊天中。管理员操作和最小权限示例见
+[首次接入手册](BOOTSTRAP.md)。
 
 | 位置 | 名称 | 用途 |
 | --- | --- | --- |
