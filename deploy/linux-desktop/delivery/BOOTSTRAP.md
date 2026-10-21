@@ -12,7 +12,8 @@
 在指定功能分支完成检查；该次仍使用旧的 hosted runner 配置，未执行候选发布或缓存。
 切到 fork 专属 self-hosted 标签后的
 [39557306942](https://github.com/zhuoshaojian/cindy/actions/runs/39557306942) 已由仓库级
-ECI runner `cindy-fork-check-20261021-v2` 领取执行；旧排队 run 已取消。
+ECI runner `cindy-fork-check-20261021-v2` 领取执行，但依赖安装下载 `nodejs.org` 头文件超时；
+不能将领取成功记为检查通过。旧排队 run 已取消。
 不需要修改主仓、默认分支或企业 runner。
 
 创建两个 Environment，均配置 **Selected branches and tags → branch**，精确允许
@@ -22,7 +23,10 @@ ECI runner `cindy-fork-check-20261021-v2` 领取执行；旧排队 run 已取消
 - `cloud-image-cache-cn`：缓存角色、OIDC provider 和实际网络/模板清单。
 
 变量与 Secret 名称见 [README 配置表](README.md#fork-一次性配置)。配置完成前两个开关均为
-`false`。`workflow_dispatch` 仍要求工作流先存在于默认分支；本功能分支以 push 验证触发链。
+`false`。2026-10-21 已通过 REST API 对已被 GitHub 索引的本分支 workflow 成功提交
+`workflow_dispatch`（[39558810251](https://github.com/zhuoshaojian/cindy/actions/runs/39558810251)）；
+无需修改默认分支。该次因下载网络问题主动取消，触发成功不代表交付通过。
+网页是否显示 Run workflow 按钮与 API 接受指定 ref 应分别检查。
 如果首个版本提交发生在 Actions 暂停期间，应先让检查实际运行，再安排一次明确的交付触发；
 不要为了测试触发而反复递增云版本号或发布占位镜像。
 
@@ -283,6 +287,12 @@ AAAA 查询不回落到公共地址。真实地址只在部署配置中，源码
 `CustomDNSConfig`，不关闭 TLS 校验，不注入个人代理凭据。启动、正常退出、取消与
 超时都必须回收 sidecar 和临时卷，详见 [runner 说明](runner/README.md)。
 
+依赖安装曾在 `nodejs.org` 下载 Node 22 头文件时超时。随后独立 ECI 探针通过同一
+SNI 转发地址完整下载该 9.9 MB 文件并计算 SHA-256；Docker Hub 鉴权端点、Chrome 下载
+域名和 Debian 快照站也通过 TLS 可达检查。需要下载 Node 头文件的 check Pod 显式将
+`nodejs.org` 加入 `SNI_FORWARD_DOMAINS`，不能只配置 GitHub。这些连接检查不替代
+镜像层与完整安装包下载验收。
+
 完整交付仍须从 runner 进程及 BuildKit 内分别验证实际下载；Pod 中简单 HTTPS 请求
 成功不能替代注册、领任务或构建网络验收。
 
@@ -316,4 +326,5 @@ runner **只注册到 fork 仓库 `https://github.com/zhuoshaojian/cindy`**，�
 [ACR 标签不可变](https://www.alibabacloud.com/help/en/acr/user-guide/turn-on-immutable-image-version)、
 [ACS 创建缓存](https://www.alibabacloud.com/help/en/cs/api-acc-2024-04-02-createimagecache)、
 [ACS 查询列表](https://www.alibabacloud.com/help/en/cs/api-acc-2024-04-02-listimagecaches)、
-[ACS 查询详情](https://www.alibabacloud.com/help/en/cs/api-acc-2024-04-02-getimagecache)。
+[ACS 查询详情](https://www.alibabacloud.com/help/en/cs/api-acc-2024-04-02-getimagecache)、
+[ACS 删除缓存](https://help.aliyun.com/zh/cs/api-acc-2024-04-02-deleteimagecache)。

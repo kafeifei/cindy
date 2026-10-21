@@ -16,7 +16,8 @@
 | CIS 自动更新 | [双版本方案](../DUAL-VERSION-UPDATES.md) | 统一选择器和新认领消费尚未接入，不因 tag 存在就升级 |
 
 2026-10-21 接入进度：已创建 `cloud-image-candidate-cn`、`cloud-image-cache-cn` 两个 Environment，
-部署分支规则均只允许 `feat/cloud-settings-native-client`；两个交付开关当前保持 `false`。
+部署分支规则均只允许 `feat/cloud-settings-native-client`；候选交付开关已启用，缓存开关
+仍为 `false`，等待独立 ACS 身份配置。
 candidate Environment 已配置精确 BuildKit 镜像与 ECI Pod 网络选项。
 Actions 已有指定分支的成功检查记录；旧记录使用 hosted runner，新配置仅使用 fork
 仓库级 self-hosted 池。ACS 缓存账号的 OIDC 初始化权限仍待单独配置，与 ACR 发布账号无关。
@@ -124,9 +125,10 @@ Kubernetes RRSA，不借用用户的控制台 Cookie。私有 ACR 拉取须预�
 80 GiB 可用磁盘。可使用独立 VM 或 ACK 调度的临时 ECI，不挂宿主 HOME、Docker socket、
 业务 PVC 或生产凭据；一个 job 后回收整套工作盘与凭据。此运行池不运行外部 PR，
 也不与其共用缓存写入空间。本版尚未加入跨 run 的外部 BuildKit 缓存。
-当前 fork 默认分支仍为 `main`；GitHub 的 `workflow_dispatch` 要求 workflow 先存在于
-默认分支。本轮不改默认分支，也不往 main 推文件，因此初次启用使用本功能分支的 push
-触发，失败后可重新运行原 run。不要承诺刚提交功能分支就能从 Actions 手动启动。
+当前 fork 默认分支仍为 `main`。已实测通过 REST API 对 GitHub 已索引的
+`cloud-image-delivery.yml` 指定 `feat/cloud-settings-native-client` 触发 `workflow_dispatch`，
+无需改默认分支或向 main 推文件；网页按钮是否出现须另行核对。首次 API 触发后因下载
+网络问题取消，尚不构成交付成功；最新运行和限制见 [接入手册](BOOTSTRAP.md)。
 
 ## 本地检查与后续验收
 
