@@ -7,12 +7,12 @@
 
 仓库：`zhuoshaojian/cindy`；可信分支：`feat/cloud-settings-native-client`。
 
-先登录仓库 Actions 页面，区分普通 fork 暂停与 GitHub 平台禁用。`actions/permissions`
-返回 `enabled: true` 不能排除后者。2026-10-21 未登录页面只提示使用规模导致暂停；
-维护者登录后实际显示 **“GitHub Actions is currently disabled for this repository”**，
-并要求联系 [GitHub Support](https://support.github.com/contact?tags=dotcom-actions)，没有启用按钮。
-此状态须由仓库所有者联系 Support 解除；不要反复修改 API 开关、默认分支或推送试探，
-也不要把无 run 记录当作检查通过。
+先核对真实 workflow run，不能仅凭 `actions/permissions` 的 `enabled` 判断。
+2026-10-21 Actions 已恢复运行：[39551699196](https://github.com/zhuoshaojian/cindy/actions/runs/39551699196)
+在指定功能分支完成检查；该次仍使用旧的 hosted runner 配置，未执行候选发布或缓存。
+切到 fork 专属 self-hosted 标签后的
+[39554210463](https://github.com/zhuoshaojian/cindy/actions/runs/39554210463) 已进入队列，等待新 runner。
+不需要修改主仓、默认分支或企业 runner。
 
 创建两个 Environment，均配置 **Selected branches and tags → branch**，精确允许
 `feat/cloud-settings-native-client`，不添加 tag 通配规则：
@@ -25,7 +25,7 @@
 如果首个版本提交发生在 Actions 暂停期间，应先让检查实际运行，再安排一次明确的交付触发；
 不要为了测试触发而反复递增云版本号或发布占位镜像。
 
-## RAM 管理员一次性配置
+## ACS 缓存账号：RAM 管理员一次性配置
 
 以下使用占位符，替换后在管理端执行。**管理员身份与流水线运行身份分开**：运行身份不需要
 创建用户、角色、权限策略、OIDC provider 或服务关联角色，也不需要 ECS/Kubernetes/OSS 权限。
@@ -74,10 +74,29 @@
    所有实际 init 都要登记；不要把 legacy init 自动改成新 runtime。策略不支持按缓存名称或
    网络进一步缩小这三项 API 的资源授权，网络约束由受保护的 Environment 配置与适配器校验。
 
+服务关联角色的首次创建可由管理员单独完成。若需要授权该初始化操作，使用以下限定
+服务名的语句；不要给流水线附加整套 RAM 管理权限：
+
+```json
+{
+  "Effect": "Allow",
+  "Action": "ram:CreateServiceLinkedRole",
+  "Resource": "*",
+  "Condition": {
+    "StringEquals": {"ram:ServiceName": "imc.acc.aliyuncs.com"}
+  }
+}
+```
+
+此项与 OIDC provider 是不同资源：服务关联角色供 ACS 工作，OIDC provider 供 GitHub
+取得流水线角色的短期凭据。`ram:CreateOIDCProvider` 错误不代表缺少
+`acc:CreateImageCache`，也不应修改另一个账号的 ACR 权限来处理。
+依据：[ACS 服务角色策略中的服务名约束](https://www.alibabacloud.com/help/en/ram/developer-reference/aliyuncsmanagedimagecachediskrolepolicy)。
+
 管理员需要的配置操作为 `ram:CreateOIDCProvider`、`ram:CreateRole`、`ram:CreatePolicy`、
 `ram:AttachPolicyToRole` 及相应读取操作；这些权限无需授给流水线角色。
 
-## 镜像仓库与推送身份
+## ACR 仓库账号：镜像仓库与推送身份
 
 选择专用候选仓库，并在 ACR 读取确认 **Tag 不可变** 后才设置
 `CLOUD_IMAGE_IMMUTABLE_TAGS=true`。不可变策略会影响整个仓库，不为试跑而修改其它业务仓库。
@@ -167,7 +186,7 @@ Image config:      sha256:715e2d8a03b778c877806579c205ca6088eb1dce092467093598ea
 
 这是运行池资格验收，**未在此运行池从完整 Cindy Dockerfile 构建新候选**，也不是 GitHub
 真实交付、OAuth 或 DeviceLink 验收。GitHub 出站已完成分路径诊断（见下文），
-尚未达到完整交付验收；ACR 发布鉴权已另行接通，Actions 平台禁用与 ACS OIDC 配置仍待解决。
+尚未达到完整交付验收；ACR 发布鉴权和 Actions 触发已接通，专属 runner 与 ACS OIDC 各自继续验收。
 启动探针的目录初始化和进程识别修正已纳入源码与回归测试。
 
 - GitHub runner 管理组件与 ECI 作业使用独立 namespace、ServiceAccount 和凭据；沿用
@@ -249,10 +268,22 @@ spec:
 解析。本次临时作业不依赖业务 Service、PVC 或凭据。Annotation 说明见
 [阿里云 ECI 自定义 DNS](https://help.aliyun.com/zh/eci/user-guide/configure-custom-dns-for-eci-pods)。
 
-完整交付仍须修复内网代理的 443 路径或提供可用的专用出站代理，并从 runner 进程及
-BuildKit 内分别验证下载。显式 HTTP 代理需要真实的 `https_proxy` / `http_proxy` 与
-`no_proxy` 配置；不能把 DNS 服务器地址直接当 HTTP 代理。保留 TLS 校验，不将 CDN IP
-写进永久 hosts，不把个人代理凭据放入源码。
+后续对用户提供的三个内网 SNI 转发地址做了独立 ECI 测试：其中两个地址的 GitHub
+首页、API、raw、codeload 均返回 200，三个地址都完整下载了同一 Actions 压缩包并通过
+归档解析和 SHA-256 比对；第三个地址的 GitHub 首页返回 403，未选用。24 次 HTTPS
+握手全部保留证书校验。GHCR 未登录返回 401、Actions 控制端点根路径返回 404，分别
+只证明服务可达。三个地址的 UDP DNS 查询均超时，它们是域名 A 记录的目标，不能当作
+nameserver。
+
+[专属 runner 镜像](runner/Dockerfile) 使用官方精确 digest 加 Python 3.12 和编译工具。
+可选 [DNS sidecar](runner/dns-sidecar.py) 仅在该作业 Pod 的回环地址提供解析：将 GitHub
+相关域名指向 operator 配置的 SNI 转发地址，其他域名交给配置的 DNS 上游；匹配域名的
+AAAA 查询不回落到公共地址。真实地址只在部署配置中，源码不写内部 IP；不修改共享
+`CustomDNSConfig`，不关闭 TLS 校验，不注入个人代理凭据。启动、正常退出、取消与
+超时都必须回收 sidecar 和临时卷，详见 [runner 说明](runner/README.md)。
+
+完整交付仍须从 runner 进程及 BuildKit 内分别验证实际下载；Pod 中简单 HTTPS 请求
+成功不能替代注册、领任务或构建网络验收。
 
 按 [GitHub 官方出站域名清单](https://docs.github.com/en/actions/reference/runners/self-hosted-runners#requirements-for-communication-with-github)
 覆盖注册/领任务、Actions 下载和 artifact 传输。根路径返回经过 TLS 验证的 404 仅证明
