@@ -1,6 +1,7 @@
 import importlib.util
 import hashlib
 import json
+import shlex
 import shutil
 import subprocess
 import sys
@@ -63,6 +64,26 @@ class AgentStagingTest(unittest.TestCase):
         self.assertFalse(self.artifact.exists())
 
 class BuildGraphTest(unittest.TestCase):
+    def test_local_copy_inputs_are_allowed_through_dockerignore(self):
+        # COPY inputs may exist on disk yet disappear from BuildKit's context.
+        # Check the real Dockerfile's input roots, including parent directories.
+        rules = (HERE / 'Dockerfile.dockerignore').read_text().splitlines()
+        self.assertEqual(rules[0], '*')
+        roots = set()
+        for line in (HERE / 'Dockerfile').read_text().splitlines():
+            if not line.startswith('COPY '):
+                continue
+            parts = shlex.split(line)
+            if parts and parts[0] == 'COPY' and not any(p.startswith('--from=') for p in parts):
+                roots.update(p.split('/')[0] for p in parts[1:-1] if not p.startswith('--'))
+        for root in roots:
+            with self.subTest(root=root):
+                self.assertIn('!' + root + '/', rules)
+                self.assertIn('!' + root + '/**', rules)
+        # Dependency caches and Git metadata remain excluded after the allowlist.
+        for excluded in ['**/node_modules', '**/.git', '**/__pycache__']:
+            self.assertGreater(rules.index(excluded), max(i for i, r in enumerate(rules) if r.startswith('!')))
+
     def test_registry_cache_survives_runner_replacement_without_overlapping_writers(self):
         targets = build.bake_plan(Path('/records'), 'example:unique', 'app-commit', 'sha', False,
             2, 'base-commit', 'registry.example.com/cindy/build-cache')['target']

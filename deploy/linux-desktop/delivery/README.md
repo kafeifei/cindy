@@ -83,7 +83,7 @@ runner 的队列自动供给控制器也尚未接入，不能把一次性注册�
    不使用上游最新分支或强制覆盖本地冲突 tag。
 2. `candidate` 只接受上述 fork 和分支，在 `cloud-image-candidate-cn` 环境运行。
    使用新建 base + runtime 的 Bake 图，编译、瘦身和审计仍由现有完整 Dockerfile 完成。
-   不继承历史 Cindy 成品镜像，也不向 Registry 推送中间构建层。
+   不继承历史 Cindy 成品镜像；中间构建层只写入私有构建缓存，不发布为云运行时版本。
 3. `smoke.py` 使用一次性 tmpfs、无网络、只读根，模拟 root-owned 老 HOME 目录。
    初始化仅持有建测试目录所需权限，应用切到 UID 10001、清空 capabilities，执行镜像内
    原有 seccomp 入口。验证 Xfce/Plank、Cindy 可见窗口、renderer sandbox、正常停机。
