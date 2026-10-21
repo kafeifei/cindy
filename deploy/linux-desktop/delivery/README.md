@@ -10,26 +10,21 @@
 | 阶段 | 本分支能力 | 启用/验收状态 |
 | --- | --- | --- |
 | 可信分支推送检查 | 锁文件安装、云覆盖层与发布工具测试、双版本和上游 commit 校验 | 触发与实际检查已运行；专属 self-hosted ECI runner 已在线并实际执行检查，见接入手册 |
-| 候选镜像 | 完整源码构建、两层镜像审计、原生 Linux 隔离启动/停机、发布已测产物、digest 绑定 | 代码已接入，须配置专用 runner 和 Environment；尚无本流水线真实构建记录 |
-| ACS 缓存 | 遍历实际 Pod 模板中的主镜像和所有 init 镜像，按目标网络创建/复用并等待 Ready | 代码已接入，须配置 ACS 身份和模板清单；尚未真实调用 |
+| 候选镜像 | 完整源码构建、两层镜像审计、原生 Linux 隔离启动/停机、发布已测产物、digest 绑定 | 完整构建和隔离 smoke 已通过；修复 CLI 安装后须重跑推送 |
+| ACS 缓存 | 遍历实际 Pod 模板中的主镜像和所有 init 镜像，按目标网络创建/复用并等待 Ready | AK 与实际模板清单已配置；独立创建/Ready/删除已实测，待本轮候选回执 |
 | 产品验收与晋级 | 记录明确的 pending 状态 | 完整 OAuth、DeviceLink、Pod 实际缓存命中、灰度、签名信任及稳定通道准入尚未自动化 |
 | CIS 自动更新 | [双版本方案](../DUAL-VERSION-UPDATES.md) | 统一选择器和新认领消费尚未接入，不因 tag 存在就升级 |
 
-2026-10-21 接入进度：已创建 `cloud-image-candidate-cn`、`cloud-image-cache-cn` 两个 Environment，
-部署分支规则均只允许 `feat/cloud-settings-native-client`；候选交付开关已启用，缓存开关
-仍为 `false`，等待独立 ACS 身份配置。
-candidate Environment 已配置精确 BuildKit 镜像与 ECI Pod 网络选项。
-Actions 已有指定分支的成功检查记录；旧记录使用 hosted runner，新配置仅使用 fork
-仓库级 self-hosted 池。ACS 缓存直接使用独立 AK，与 ACR 发布账号分开配置。
-ACR 独立候选仓库、不可变标签和受保护 Environment 的 AK 配置已完成；本机临时登录、
-测试制品推送/读取及同标签覆盖拒绝已验证，测试标签已删除。仓库级 self-hosted runner 已接入；ACS AK 和
-首次完整交付仍待完成。环境存在不代表交付已通过；
-后续以实际 workflow run、镜像 digest 和缓存回执更新此状态。
-目标 ACK + ECI 的 DinD、Buildx 实际构建/运行、已发布 R7 的桌面启动/沙箱/停机已通过，
-测试 Job 和临时命名空间已清理。默认 DNS 指向的代理在 ECI 和 ACK 对照 Pod 中均拒绝连接；
-后续独立 ECI 探针已验证可用 SNI 转发地址，覆盖 raw 和实际 Action 下载；runner 已注册并实际领取检查任务，
-也未在此运行池从完整 Dockerfile 构建新候选；配置与实测边界见
-[接入手册](BOOTSTRAP.md#ack--eci-接入)。
+2026-10-21：两组 Environment、分支限制与 fork 专属 self-hosted ECI runner 已配置；
+ACR 和 ACS 使用独立账号的 AK。ACR 临时登录、测试制品推送/读取、同标签覆盖拒绝已通过；
+ACS 测试缓存创建、Ready、`Force=false` 删除和查询无残留已通过。两个交付开关均已开启。
+完整交付运行：[39562132924](https://github.com/zhuoshaojian/cindy/actions/runs/39562132924)，
+固定本分支 `48ed3dfd45`。检查、完整构建及隔离 smoke 已通过，但发布前旧 CLI action
+因 sudo 被禁止而失败，未推送候选。已改为固定校验的无提权安装，待修复后的全链验收。
+
+运行池已验证 DinD/Buildx 实际构建和已发布 R7 的隔离桌面启动、沙箱与停机；GitHub
+出站通过作业内 DNS 指向 SNI 转发地址，不修改共享 DNS、主仓、企业或 GitLab runner。
+新候选的完整构建与隔离 smoke 已通过，仍须完成推送和缓存回执；配置与证据边界见 [接入手册](BOOTSTRAP.md)。
 
 ## 双版本：上游完整版本 + 云修订
 
@@ -70,7 +65,8 @@ ACR 独立候选仓库、不可变标签和受保护 Environment 的 AK 配置�
    原有 seccomp 入口。验证 Xfce/Plank、Cindy 可见窗口、renderer sandbox、正常停机。
    Docker 外层 seccomp/AppArmor 只在该一次性测试容器中交给运行时自带过滤器；不改变宿主
    系统策略、不使用 `--no-sandbox`、不代表业务身份就绪或 DeviceLink/OAuth 验收。
-4. 启动检查通过后才注入 Registry 凭据；可用固定 Registry 密码，或通过 ACR AK 换取
+4. CLI 在构建前以普通用户安装到 job 临时目录，校验固定 SHA-256 和版本；不使用 sudo。
+   启动检查通过后才注入 Registry 凭据；可用固定 Registry 密码，或通过 ACR AK 换取
    一小时的临时 Registry 凭据。推送已测 image ID 并读取 Registry 原始 manifest，
    按 digest 再读回验证 config ID；不重建产物、不覆盖冲突标签。
 5. GitHub artifact 保存候选记录、四份构建审计和 smoke 结果；不上传 HOME、密钥、整份
@@ -126,8 +122,7 @@ Kubernetes RRSA，不借用用户的控制台 Cookie。私有 ACR 拉取须预�
 也不与其共用缓存写入空间。本版尚未加入跨 run 的外部 BuildKit 缓存。
 当前 fork 默认分支仍为 `main`。已实测通过 REST API 对 GitHub 已索引的
 `cloud-image-delivery.yml` 指定 `feat/cloud-settings-native-client` 触发 `workflow_dispatch`，
-无需改默认分支或向 main 推文件；网页按钮是否出现须另行核对。首次 API 触发后因下载
-网络问题取消，尚不构成交付成功；最新运行和限制见 [接入手册](BOOTSTRAP.md)。
+无需改默认分支或向 main 推文件；网页按钮是否出现须另行核对。API 接受触发不等于交付成功；最新运行和限制见 [接入手册](BOOTSTRAP.md)。
 
 ## 本地检查与后续验收
 

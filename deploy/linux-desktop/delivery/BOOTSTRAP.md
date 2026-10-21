@@ -7,13 +7,11 @@
 
 仓库：`zhuoshaojian/cindy`；可信分支：`feat/cloud-settings-native-client`。
 
-先核对真实 workflow run，不能仅凭 `actions/permissions` 的 `enabled` 判断。
-2026-10-21 Actions 已恢复运行：[39551699196](https://github.com/zhuoshaojian/cindy/actions/runs/39551699196)
-在指定功能分支完成检查；该次仍使用旧的 hosted runner 配置，未执行候选发布或缓存。
-切到 fork 专属 self-hosted 标签后的
-[39557306942](https://github.com/zhuoshaojian/cindy/actions/runs/39557306942) 已由仓库级
-ECI runner `cindy-fork-check-20261021-v2` 领取执行，但依赖安装下载 `nodejs.org` 头文件超时；
-不能将领取成功记为检查通过。旧排队 run 已取消。
+Actions 已启用，运行只接受本 fork 的上述分支。2026-10-21 已验证仓库级
+self-hosted ECI runner 注册、领取任务及依赖/测试执行；[39562132924](https://github.com/zhuoshaojian/cindy/actions/runs/39562132924) 的检查、完整
+Dockerfile 构建和隔离启动/停机通过；发布前旧 CLI action 要求 sudo，被 runner 禁止提权
+设置阻止，因此该次未推送候选。现改为校验固定安装包、在 job 临时目录无提权安装，并在
+构建前验证 CLI；首次完整交付仍待修复后的运行收尾。
 不需要修改主仓、默认分支或企业 runner。
 
 创建两个 Environment，均配置 **Selected branches and tags → branch**，精确允许
@@ -23,12 +21,12 @@ ECI runner `cindy-fork-check-20261021-v2` 领取执行，但依赖安装下载 `
 - `cloud-image-cache-cn`：缓存 AK 和实际网络/模板清单。
 
 变量与 Secret 名称见 [README 配置表](README.md#fork-一次性配置)。配置完成前两个开关均为
-`false`。2026-10-21 已通过 REST API 对已被 GitHub 索引的本分支 workflow 成功提交
-`workflow_dispatch`（[39558810251](https://github.com/zhuoshaojian/cindy/actions/runs/39558810251)）；
-无需修改默认分支。该次因下载网络问题主动取消，触发成功不代表交付通过。
-网页是否显示 Run workflow 按钮与 API 接受指定 ref 应分别检查。
-如果首个版本提交发生在 Actions 暂停期间，应先让检查实际运行，再安排一次明确的交付触发；
-不要为了测试触发而反复递增云版本号或发布占位镜像。
+`false`。本 fork 两个 Environment 的配置与分支限制已完成；独立 AK 实测创建缓存、达到
+Ready、以 `Force=false` 删除及查询无残留均通过后，两个开关已开启。
+
+已实测 REST API 对本分支 workflow 指定 `ref` 触发 `workflow_dispatch`，无需改默认分支；
+网页是否显示 Run workflow 按钮应另行核对。不要为了测试触发而反复递增云版本号或发布
+占位镜像。完整交付成功以镜像及缓存回执为准，不以 API 接受请求为准。
 
 ## ACS 缓存账号：AK 与权限
 
@@ -93,11 +91,11 @@ ACR 的不可变策略对 `latest` 有例外，本流水线不产生该标签。
 }
 ```
 
-ACR 推送身份必须来自**该 Registry 所属账号**；ACS 缓存角色来自缓存所属账号，两者可能不同。
+ACR 推送身份必须来自**该 Registry 所属账号**；ACS 缓存 AK 来自缓存所属账号，两者可能不同。
 2026-10-21 用户指定的本地 ACR AK 已验证可管理目标实例，补建了独立、公开且 tag 不可变的
 候选仓库，未改变正式仓库的策略。AK 已写入 candidate Environment Secret；只允许
 `feat/cloud-settings-native-client` 分支。本机完成临时 Registry 登录、测试制品推送、
-匿名读取和同标签覆盖拒绝，测试标签已清理，尚未通过 GitHub Actions 执行。现有 AK 的 RAM 身份管理查询
+匿名读取和同标签覆盖拒绝，测试标签已清理；GitHub 发布仍待修复后的完整运行。现有 AK 的 RAM 身份管理查询
 返回 `NoPermission`；这不代表缺少 ACR 权限，也不能将其宣称为新建的最小权限身份。
 
 `CLOUD_IMAGE_REGISTRY_AUTH` 显式选择两种方式：
@@ -118,6 +116,8 @@ ACR 推送身份必须来自**该 Registry 所属账号**；ACS 缓存角色来�
 当前用户提供的 AK 只用于已授权的 fork 交付配置，不扩展到 ACS/OSS、其它仓库或业务服务。
 
 实现为 [registry_login.py](registry_login.py)，回归为 [test_registry_login.py](test_registry_login.py)。
+CLI 由 [install_aliyun_cli.py](install_aliyun_cli.py) 按固定 SHA-256 校验后安装到 job 临时
+目录，不使用 sudo、不修改系统目录；candidate 在完整构建前验工具，cache 也使用同一入口。
 CLI 3.5.0 的 API 路径在加载 AK 环境变量前校验 profile；脚本因此在系统/runner 临时目录
 创建 0700 目录和 0600 vendor profile，换取 token 后立即清除，不读写默认 `~/.aliyun`。
 AK 不进入命令参数、源码、日志或 artifact；Docker 只通过 stdin 接收临时密码，
@@ -161,9 +161,9 @@ Registry manifest: sha256:76d51e58368b53870df9a9b5018659e56cd1e9fc67d81dffaa8a43
 Image config:      sha256:715e2d8a03b778c877806579c205ca6088eb1dce092467093598eaf84a9dcb70
 ```
 
-这是运行池资格验收，**未在此运行池从完整 Cindy Dockerfile 构建新候选**，也不是 GitHub
-真实交付、OAuth 或 DeviceLink 验收。GitHub 出站已完成分路径诊断（见下文），
-尚未达到完整交付验收；ACR 发布鉴权和 Actions 触发已接通，专属 runner 与 ACS AK 各自继续验收。
+这是运行池资格验收，不是 GitHub 交付、OAuth 或 DeviceLink 验收。后续新候选的
+完整源码构建和隔离 smoke 已在 GitHub job 通过，但发布尚未完成；GitHub 出站已完成分路径诊断（见下文），
+完整源码交付另见本页顶部运行；ACR 发布鉴权、Actions 触发和 ACS AK 创建/清理已接通。
 启动探针的目录初始化和进程识别修正已纳入源码与回归测试。
 
 - GitHub runner 管理组件与 ECI 作业使用独立 namespace、ServiceAccount 和凭据；沿用

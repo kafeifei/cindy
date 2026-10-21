@@ -104,6 +104,11 @@ jobs:
           fi
           install -d -m 700 "$DOCKER_CONFIG"
           echo "DOCKER_CONFIG=$DOCKER_CONFIG" >> "$GITHUB_ENV"
+      - name: Install pinned Alibaba CLI without privilege
+        if: vars.CLOUD_IMAGE_REGISTRY_AUTH == 'acr-ak'
+        run: |
+          python3 deploy/linux-desktop/delivery/install_aliyun_cli.py --directory "$RUNNER_TEMP/aliyun-cli"
+          echo "$RUNNER_TEMP/aliyun-cli" >> "$GITHUB_PATH"
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         id: builder
         with:
@@ -118,10 +123,6 @@ jobs:
           python3 deploy/linux-desktop/build-image.py --tag "cindy-ci:$IMAGE_TAG" --builder "$BUILDER" --output "$RUNNER_TEMP/cloud-build"
       - name: Native isolated desktop startup, legacy HOME, sandbox and shutdown
         run: python3 deploy/linux-desktop/delivery/smoke.py --image "cindy-ci:$IMAGE_TAG" --output "$RUNNER_TEMP/native-smoke.json"
-      - uses: aliyun/setup-aliyun-cli-action@09a5f86915bb556e27bf050e9a5e339aeb073df5 # v1
-        if: vars.CLOUD_IMAGE_REGISTRY_AUTH == 'acr-ak'
-        with:
-          version: '3.5.0'
       - name: Login to the configured candidate repository
         env:
           REGISTRY_AUTH: ${{ vars.CLOUD_IMAGE_REGISTRY_AUTH || 'password' }}
@@ -137,6 +138,7 @@ jobs:
             --build "$RUNNER_TEMP/cloud-build" --smoke "$RUNNER_TEMP/native-smoke.json" \
             --repository "$IMAGE_REPOSITORY" --output "$RUNNER_TEMP/candidate.json"
       - name: Upload credential-free candidate records
+        if: always()
         id: records
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -144,6 +146,7 @@ jobs:
           path: |
             ${{ runner.temp }}/candidate.json
             ${{ runner.temp }}/native-smoke.json
+            ${{ runner.temp }}/cloud-build/result.json
             ${{ runner.temp }}/cloud-build/records/*.json
           if-no-files-found: error
           retention-days: 30
@@ -171,9 +174,10 @@ jobs:
           artifact-ids: ${{ needs.candidate.outputs.artifact_id }}
           merge-multiple: true
           path: ${{ runner.temp }}/candidate
-      - uses: aliyun/setup-aliyun-cli-action@09a5f86915bb556e27bf050e9a5e339aeb073df5 # v1
-        with:
-          version: '3.5.0'
+      - name: Install pinned Alibaba CLI without privilege
+        run: |
+          python3 deploy/linux-desktop/delivery/install_aliyun_cli.py --directory "$RUNNER_TEMP/aliyun-cli"
+          echo "$RUNNER_TEMP/aliyun-cli" >> "$GITHUB_PATH"
       - name: Prepare main and every actual init image in each target network
         env:
           CLOUD_IMAGE_CACHE_TARGETS: ${{ secrets.CLOUD_IMAGE_CACHE_TARGETS }}
