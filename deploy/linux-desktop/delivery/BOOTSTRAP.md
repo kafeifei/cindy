@@ -11,7 +11,8 @@
 2026-10-21 Actions 已恢复运行：[39551699196](https://github.com/zhuoshaojian/cindy/actions/runs/39551699196)
 在指定功能分支完成检查；该次仍使用旧的 hosted runner 配置，未执行候选发布或缓存。
 切到 fork 专属 self-hosted 标签后的
-[39554210463](https://github.com/zhuoshaojian/cindy/actions/runs/39554210463) 已进入队列，等待新 runner。
+[39557306942](https://github.com/zhuoshaojian/cindy/actions/runs/39557306942) 已由仓库级
+ECI runner `cindy-fork-check-20261021-v2` 领取执行；旧排队 run 已取消。
 不需要修改主仓、默认分支或企业 runner。
 
 创建两个 Environment，均配置 **Selected branches and tags → branch**，精确允许
@@ -54,8 +55,8 @@
 }
 ```
 
-3. 为该角色附加下面的自定义权限策略。三项 API 均支持 imagecache 资源范围；只开放目标
-   Region 和账号，不授予删除缓存或修改集群的权限。缓存 ID 是创建后分配，资源末尾需为 `*`。
+3. 为该角色附加下面的自定义权限策略。四项 API 均支持 imagecache 资源范围；只开放目标
+   Region 和账号，包含创建、查询和清理缓存，不授予修改集群的权限。缓存 ID 是创建后分配，资源末尾需为 `*`。
    ACS 缓存所需服务关联角色由管理员预先准备，不给 CI 添加 `ram:CreateServiceLinkedRole`。
 
 ```json
@@ -63,7 +64,7 @@
   "Version": "1",
   "Statement": [{
     "Effect": "Allow",
-    "Action": ["acc:ListImageCaches", "acc:CreateImageCache", "acc:GetImageCache"],
+    "Action": ["acc:ListImageCaches", "acc:CreateImageCache", "acc:GetImageCache", "acc:DeleteImageCache"],
     "Resource": "acs:acc:cn-shanghai:ACCOUNT_ID:imagecache/*"
   }]
 }
@@ -72,7 +73,7 @@
 4. 将实际 role/provider ARN 填进 cache Environment 的两个变量。网络与主/init 镜像清单
    放入 `CLOUD_IMAGE_CACHE_TARGETS` Secret，格式见 [示例](acs-targets.example.json)。
    所有实际 init 都要登记；不要把 legacy init 自动改成新 runtime。策略不支持按缓存名称或
-   网络进一步缩小这三项 API 的资源授权，网络约束由受保护的 Environment 配置与适配器校验。
+   网络进一步缩小这些 API 的资源授权，网络约束由受保护的 Environment 配置与适配器校验。
 
 服务关联角色的首次创建可由管理员单独完成。若需要授权该初始化操作，使用以下限定
 服务名的语句；不要给流水线附加整套 RAM 管理权限：

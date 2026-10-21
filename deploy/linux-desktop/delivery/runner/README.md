@@ -20,9 +20,12 @@
   使用经典 `overlay2`，具体参数及原生启动验收见 [接入手册](../BOOTSTRAP.md)。
 
 可选 [dns-sidecar.py](dns-sidecar.py) 使用成熟 dnsmasq 做 Pod 内分域解析。只开放该 Pod
-回环地址 53 端口，无 Service 或 hostPort。sidecar 以 UID 0、drop ALL 再添加
-`NET_BIND_SERVICE` 运行，不授予 privileged；`GITHUB_SNI_FORWARD_IP` 为已验证的转发目标，
-`DNS_UPSTREAMS` 为逗号分隔的实际 DNS 服务器。Pod 自定义 nameserver 指向 `127.0.0.1`。
+回环地址 53 端口，无 Service 或 hostPort。build Pod 可额外传入 Downward API 的
+`POD_IP`，只监听本 Pod 地址以供嵌套 DinD 访问；DinD 默认 DNS 同时指向该地址。sidecar 以 UID 0、drop ALL 再添加
+`NET_BIND_SERVICE`、`SETGID` 运行，不授予 privileged；dnsmasq 会清除附加组，
+即使目标组仍是 root 也需要 `SETGID`。runner 本身继续 drop ALL。`GITHUB_SNI_FORWARD_IP` 为已验证的转发目标，
+`DNS_UPSTREAMS` 为逗号分隔的实际 DNS 服务器。`SNI_FORWARD_DOMAINS` 可显式增加已验证的
+镜像仓库等域名，默认仅包含 GitHub 域名，不设置 HTTP/HTTPS 代理变量。Pod 自定义 nameserver 指向 `127.0.0.1`。
 其他域名仍走 DNS 上游，GitHub TLS 仍由客户端端到端验证；这不是 HTTP 代理或集群 DNS
 配置。构建容器网络需独立检查，不能假定嵌套 Docker 自动继承 Pod DNS。
 

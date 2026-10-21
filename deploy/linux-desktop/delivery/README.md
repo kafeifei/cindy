@@ -9,7 +9,7 @@
 
 | 阶段 | 本分支能力 | 启用/验收状态 |
 | --- | --- | --- |
-| 可信分支推送检查 | 锁文件安装、云覆盖层与发布工具测试、双版本和上游 commit 校验 | 触发与实际检查已运行；切换专属 self-hosted 池后等待 runner，见接入手册 |
+| 可信分支推送检查 | 锁文件安装、云覆盖层与发布工具测试、双版本和上游 commit 校验 | 触发与实际检查已运行；专属 self-hosted ECI runner 已在线并实际执行检查，见接入手册 |
 | 候选镜像 | 完整源码构建、两层镜像审计、原生 Linux 隔离启动/停机、发布已测产物、digest 绑定 | 代码已接入，须配置专用 runner 和 Environment；尚无本流水线真实构建记录 |
 | ACS 缓存 | 遍历实际 Pod 模板中的主镜像和所有 init 镜像，按目标网络创建/复用并等待 Ready | 代码已接入，须配置 ACS 身份和模板清单；尚未真实调用 |
 | 产品验收与晋级 | 记录明确的 pending 状态 | 完整 OAuth、DeviceLink、Pod 实际缓存命中、灰度、签名信任及稳定通道准入尚未自动化 |
@@ -21,12 +21,12 @@ candidate Environment 已配置精确 BuildKit 镜像与 ECI Pod 网络选项。
 Actions 已有指定分支的成功检查记录；旧记录使用 hosted runner，新配置仅使用 fork
 仓库级 self-hosted 池。ACS 缓存账号的 OIDC 初始化权限仍待单独配置，与 ACR 发布账号无关。
 ACR 独立候选仓库、不可变标签和受保护 Environment 的 AK 配置已完成；本机临时登录、
-测试制品推送/读取及同标签覆盖拒绝已验证，测试标签已删除。仓库级 self-hosted runner、ACS RAM OIDC 和
-首次真实运行仍待完成。环境存在不代表交付已通过；
+测试制品推送/读取及同标签覆盖拒绝已验证，测试标签已删除。仓库级 self-hosted runner 已接入；ACS RAM OIDC 和
+首次完整交付仍待完成。环境存在不代表交付已通过；
 后续以实际 workflow run、镜像 digest 和缓存回执更新此状态。
 目标 ACK + ECI 的 DinD、Buildx 实际构建/运行、已发布 R7 的桌面启动/沙箱/停机已通过，
 测试 Job 和临时命名空间已清理。默认 DNS 指向的代理在 ECI 和 ACK 对照 Pod 中均拒绝连接；
-后续独立 ECI 探针已验证可用 SNI 转发地址，覆盖 raw 和实际 Action 下载；尚未完成 runner 注册，
+后续独立 ECI 探针已验证可用 SNI 转发地址，覆盖 raw 和实际 Action 下载；runner 已注册并实际领取检查任务，
 也未在此运行池从完整 Dockerfile 构建新候选；配置与实测边界见
 [接入手册](BOOTSTRAP.md#ack--eci-接入)。
 
@@ -108,7 +108,8 @@ ACR 独立候选仓库、不可变标签和受保护 Environment 的 AK 配置�
 两个 Environment 的部署分支限制均只放行 `feat/cloud-settings-native-client`；按团队政策
 设置 reviewer。RAM OIDC 信任绑定该 repository、cache Environment 和
 `sts.aliyuncs.com` audience；只授予目标区域/账号所需的 `acc:ListImageCaches`、
-`acc:CreateImageCache`、`acc:GetImageCache`，预先准备服务关联角色。这里不需要
+`acc:CreateImageCache`、`acc:GetImageCache`、`acc:DeleteImageCache`，预先准备服务关联角色。
+发布流程负责创建和就绪检查；清理权限供独立的缓存维护使用，当前发布任务不会自动删除缓存。这里不需要
 Kubernetes RRSA，不借用用户的控制台 Cookie。私有 ACR 拉取须预先配置可用权限；
 当前适配器没有内联 Registry 密码字段，不要把凭据混进缓存配置。
 

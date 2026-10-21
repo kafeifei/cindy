@@ -2,6 +2,7 @@
 import ipaddress
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import time
@@ -13,11 +14,22 @@ def command(env):
     upstreams = [str(ipaddress.IPv4Address(v.strip())) for v in env['DNS_UPSTREAMS'].split(',')]
     if not upstreams or '127.0.0.1' in upstreams:
         raise ValueError('DNS_UPSTREAM_LOOP')
-    domains = '/github.com/githubusercontent.com/ghcr.io/'
+    names = env.get('SNI_FORWARD_DOMAINS', 'github.com,githubusercontent.com,ghcr.io').split(',')
+    if any(not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+', n) for n in names):
+        raise ValueError('INVALID_FORWARD_DOMAIN')
+    domains = '/' + '/'.join(names) + '/'
+    # Only build Pods need a listener reachable from their nested containers.
+    # POD_IP must come from the Downward API, never a host IP or wildcard bind.
+    listen = '127.0.0.1'
+    if env.get('POD_IP'):
+        pod_ip = ipaddress.IPv4Address(env['POD_IP'])
+        if pod_ip.is_unspecified or pod_ip.is_loopback or pod_ip.is_multicast:
+            raise ValueError('INVALID_POD_IP')
+        listen += ',' + str(pod_ip)
     return ['/usr/sbin/dnsmasq', '--keep-in-foreground', '--conf-file=',
-            '--no-resolv', '--no-hosts', '--bind-interfaces', '--listen-address=127.0.0.1',
+            '--no-resolv', '--no-hosts', '--bind-interfaces', '--listen-address=' + listen,
             '--user=root', '--group=root', '--pid-file=', '--cache-size=256',
-            '--local-ttl=30', f'--address={domains}{target}', f'--local={domains}',
+            '--log-facility=-', '--local-ttl=30', f'--address={domains}{target}', f'--local={domains}',
             *[f'--server={v}' for v in upstreams]]
 
 

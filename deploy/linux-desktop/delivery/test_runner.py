@@ -67,6 +67,20 @@ class RunnerTest(unittest.TestCase):
             with self.subTest(target=target, upstream=upstream), self.assertRaises(ValueError):
                 dns.command({'GITHUB_SNI_FORWARD_IP': target, 'DNS_UPSTREAMS': upstream})
 
+    def test_build_pod_dns_supports_explicit_registry_domains(self):
+        env = {'GITHUB_SNI_FORWARD_IP': '192.0.2.10', 'DNS_UPSTREAMS': '192.0.2.53',
+               'POD_IP': '192.0.2.20', 'SNI_FORWARD_DOMAINS': 'github.com,docker.io'}
+        args = dns.command(env)
+        self.assertIn('--listen-address=127.0.0.1,192.0.2.20', args)
+        self.assertIn('--address=/github.com/docker.io/192.0.2.10', args)
+        self.assertIn('--local=/github.com/docker.io/', args)
+        self.assertIn('--log-facility=-', args)
+        for changes in [{'POD_IP': '0.0.0.0'}, {'POD_IP': '127.0.0.1'},
+                        {'SNI_FORWARD_DOMAINS': '*'}, {'SNI_FORWARD_DOMAINS': 'github.com/evil'},
+                        {'SNI_FORWARD_DOMAINS': 'github.com, --foo'}]:
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                dns.command({**env, **changes})
+
 
 if __name__ == '__main__':
     unittest.main()
