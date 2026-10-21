@@ -15,8 +15,10 @@
 | 产品验收与晋级 | 记录明确的 pending 状态 | 完整 OAuth、DeviceLink、Pod 实际缓存命中、灰度、签名信任及稳定通道准入尚未自动化 |
 | CIS 自动更新 | [双版本方案](../DUAL-VERSION-UPDATES.md) | 统一选择器和新认领消费尚未接入，不因 tag 存在就升级 |
 
-2026-10-21 只读核对：该 fork 尚无 Actions variables、Environments、自建 runners；没有在本次开发中
-开启发布、配置真实凭据或启动实例更新。后续配置改变应按实际 workflow run 更新此状态。
+2026-10-21 接入进度：已创建 `cloud-image-candidate-cn`、`cloud-image-cache-cn` 两个 Environment，
+部署分支规则均只允许 `feat/cloud-settings-native-client`；两个交付开关当前保持 `false`。
+专用 runner、Registry 凭据、RAM OIDC 和首次真实运行仍待完成。环境存在不代表交付已通过；
+后续以实际 workflow run、镜像 digest 和缓存回执更新此状态。
 
 ## 双版本：上游完整版本 + 云修订
 
