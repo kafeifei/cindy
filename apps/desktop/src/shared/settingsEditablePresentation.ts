@@ -805,84 +805,6 @@ export const additionalSettingsPresentation: Record<AdditionalSettingsDomain, { 
   "pluginCindy": {
     "labelKey": "hostSettings.editor.pluginCindy",
     "fields": {
-      "imageGenerate": {
-        "labelKey": "hostSettings.editor.imageGenerate",
-        "select": "table",
-        "columns": {
-          "model": {
-            "labelKey": "hostSettings.card.fields.modelId",
-            "choiceSource": "row"
-          }
-        },
-        "identity": [
-          "ghostId"
-        ]
-      },
-      "imageEdit": {
-        "labelKey": "hostSettings.editor.imageEdit",
-        "select": "table",
-        "columns": {
-          "model": {
-            "labelKey": "hostSettings.card.fields.modelId",
-            "choiceSource": "row"
-          }
-        },
-        "identity": [
-          "ghostId"
-        ]
-      },
-      "videoGenerate": {
-        "labelKey": "hostSettings.editor.videoGenerate",
-        "select": "table",
-        "columns": {
-          "model": {
-            "labelKey": "hostSettings.card.fields.modelId",
-            "choiceSource": "row"
-          }
-        },
-        "identity": [
-          "ghostId"
-        ]
-      },
-      "videoEdit": {
-        "labelKey": "hostSettings.editor.videoEdit",
-        "select": "table",
-        "columns": {
-          "model": {
-            "labelKey": "hostSettings.card.fields.modelId",
-            "choiceSource": "row"
-          }
-        },
-        "identity": [
-          "ghostId"
-        ]
-      },
-      "textOneshot": {
-        "labelKey": "hostSettings.editor.textOneshot",
-        "select": "table",
-        "columns": {
-          "model": {
-            "labelKey": "hostSettings.card.fields.modelId",
-            "choiceSource": "row"
-          }
-        },
-        "identity": [
-          "ghostId"
-        ]
-      },
-      "embedText": {
-        "labelKey": "hostSettings.editor.embedText",
-        "select": "table",
-        "columns": {
-          "model": {
-            "labelKey": "hostSettings.card.fields.modelId",
-            "choiceSource": "row"
-          }
-        },
-        "identity": [
-          "ghostId"
-        ]
-      },
       "inflightLimits": {
         "labelKey": "hostSettings.editor.inflightLimits",
         "select": "table",
@@ -1109,19 +1031,6 @@ export const additionalSettingsPresentation: Record<AdditionalSettingsDomain, { 
           [
             "list",
             "hostSettings.editor.list"
-          ]
-        ]
-      },
-      "ghostPanelRestoreMode": {
-        "labelKey": "settings.appearance.ghostPanelRestore.label",
-        "options": [
-          [
-            "bubble",
-            "settings.appearance.ghostPanelRestore.bubble"
-          ],
-          [
-            "sidebar",
-            "settings.appearance.ghostPanelRestore.sidebar"
           ]
         ]
       }

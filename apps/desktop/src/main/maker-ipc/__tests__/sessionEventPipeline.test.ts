@@ -3,6 +3,7 @@ import type { TurnUsageContext } from '../turnUsageContext.js';
 import { Session, type AgentEvent, type AgentSessionHandle } from '@cindy/maker-core';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { handleSessionEvent, type SessionEventDependencies } from '../sessionEventPipeline.js';
+import { createContextOverflowRollover } from '../contextOverflowRollover.js';
 import { setMainLocale } from '../../i18n.js';
 import { installSessionTurnObserver } from '../sessionTurnObserver.js';
 import { onChannelTurn } from '../channelTurnSignal.js';
@@ -11,6 +12,9 @@ import { SessionTurnActivityTracker } from '../sessionTurnActivityTracker.js';
 import { ProductTurnWallClockTracker, ProductTurnUsageTargetTracker } from '../turnWallClock.js';
 import { ClaudeOutputLagTimingGuard } from '../../usage/modelUsageDelta.js';
 import { createWorkerTurnStartSequencer } from '../workerTurnStartSequencer.js';
+import { isGatewayProxyTokenRecoveryErrorEventForProvider } from '../gatewayProxyTokenRecovery.js';
+import { GATEWAY_PROXY_TOKEN_INVALID_REASON } from '@cindy/maker-shared/error-redaction';
+import { reportCindyGatewayKeyRejectedForCurrentKey } from '../../model-access/gatewayKeyRejection.js';
 
 const effects = vi.hoisted(() => {
   const calls: string[] = [];
@@ -32,6 +36,10 @@ vi.mock('../../maker-host/model-discovery/xai.js', () => ({
   discardXaiModelsDiskCache: vi.fn(async () => {}),
 }));
 
+// register.ts wires the agent-turn dependency to this current-key entry; assert against it.
+vi.mock('../../model-access/gatewayKeyRejection.js', () => ({
+  reportCindyGatewayKeyRejectedForCurrentKey: vi.fn(),
+}));
 vi.mock('../../local-model-runtime/preflight.js', () => ({
   ensureManagedOllamaReadyForSession: effects.fn('ensureManagedOllamaReadyForSession'),
 }));
@@ -116,6 +124,7 @@ vi.mock('../../messagePersistBroadcaster.js', () => ({
   enqueueDurableWrite: effects.fn('enqueueDurableWrite'),
   flushAssistantBlock: effects.fn('flushAssistantBlock'),
   onAssistantTextEvent: effects.fn('onAssistantTextEvent'),
+  onAssistantAttemptFailure: effects.fn('onAssistantAttemptFailure'),
   onStandaloneTextEvent: effects.fn('onStandaloneTextEvent'),
   onAgentTaskUpdateEvent: effects.fn('onAgentTaskUpdateEvent'),
   onThinkingEvent: effects.fn('onThinkingEvent'),
@@ -252,6 +261,8 @@ function harness() {
     onUnsuccessfulProductTurn: vi.fn(async () => {}),
     log,
     botCompactRuntimeRefreshCoordinator: { noteBoundary: vi.fn() },
+    workingMemoryRefresh: { markCompacted: vi.fn() },
+    wireNoteMemory: { reset: vi.fn() },
     attemptBotCompactRuntimeRefresh: vi.fn(),
     botDelegationServiceHolder: { settleSession: vi.fn(async () => {}) },
     isFencedStaleSessionTerminal: vi.fn(() => false),
@@ -317,7 +328,8 @@ function harness() {
     },
     handleSilentStopTurnEnd: vi.fn(async () => {}),
     isRemoteAuthRetryErrorEvent: vi.fn(() => false),
-    isGatewayProxyTokenRecoveryErrorEvent: vi.fn(() => false),
+    isGatewayProxyTokenRecoveryErrorEvent: vi.fn<(sessionId: string, event: AgentEvent) => boolean>(() => false),
+    reportAgentCindyGatewayKeyRejected: vi.mocked(reportCindyGatewayKeyRejectedForCurrentKey),
     overflowSuppressedBroadcasts: new Map(),
     handleAgentIslandEventAfterBroadcast: effects.fn('island'),
     notifyGoalIdleAfterTurnSettled: vi.fn(() => {
@@ -684,6 +696,44 @@ describe('production Session event pipeline', () => {
     },
   );
 
+  it.each([
+    ['xd', 1],
+    [null, 1],
+    ['openai', 0],
+    ['custom-provider', 0],
+  ] as const)('reports a Cindy AI key rejection at turn end for provider %s (%s times)', async (providerId, reports) => {
+    const h = harness();
+    h.deps.reportAgentCindyGatewayKeyRejected.mockClear();
+    // The production predicate, bound to this session's provider.
+    h.deps.isGatewayProxyTokenRecoveryErrorEvent.mockImplementation((_sessionId, value) =>
+      isGatewayProxyTokenRecoveryErrorEventForProvider(providerId, value));
+    try {
+      h.emit(event('error', {
+        message: 'Authentication failed',
+        reason: GATEWAY_PROXY_TOKEN_INVALID_REASON,
+      }));
+      expect(h.deps.reportAgentCindyGatewayKeyRejected).toHaveBeenCalledTimes(reports);
+      // Agents do not reveal the key they used: the current-key entry takes no key argument.
+      if (reports > 0) expect(h.deps.reportAgentCindyGatewayKeyRejected).toHaveBeenCalledWith();
+    } finally { await h.dispose(); }
+  });
+
+  it('does not report other Cindy AI turn failures or retryable key errors', async () => {
+    const h = harness();
+    h.deps.reportAgentCindyGatewayKeyRejected.mockClear();
+    h.deps.isGatewayProxyTokenRecoveryErrorEvent.mockImplementation((_sessionId, value) =>
+      isGatewayProxyTokenRecoveryErrorEventForProvider('xd', value));
+    try {
+      h.emit(event('error', { message: 'Rate limited' }));
+      h.emit(event('error', {
+        message: 'Authentication failed',
+        reason: GATEWAY_PROXY_TOKEN_INVALID_REASON,
+        isTerminal: false,
+      }));
+      expect(h.deps.reportAgentCindyGatewayKeyRejected).not.toHaveBeenCalled();
+    } finally { await h.dispose(); }
+  });
+
   it('keeps a retryable error running without resetting persistence', async () => {
     const h = harness();
     h.activity.setSessionInTurn('task', true);
@@ -734,6 +784,74 @@ describe('production Session event pipeline', () => {
       null,
       'error-row',
     );
+    await h.dispose();
+  });
+
+  it('keeps a compat self-heal error off the wire while the rollover recovers', async () => {
+    const h = harness();
+    h.activity.setSessionInTurn('task', true);
+    const tryRecover = vi.fn(async () => true);
+    (h.deps as { contextOverflowRolloverHolder: unknown }).contextOverflowRolloverHolder = {
+      claim: vi.fn(() => 'claimed' as const),
+      tryRecover,
+    };
+    h.emit(event('error', {
+      reason: 'unsupported-request-option',
+      message: '400: {"param":"prompt_cache_retention","type":"invalid_request_error"}',
+    }));
+    // 生产路径：claim 成立 → 广播被压住，自愈成功后直接丢弃（不闪错误横幅）。
+    expect(tryRecover).toHaveBeenCalledWith(
+      'task',
+      expect.objectContaining({ reason: 'unsupported-request-option' }),
+      { instanceId: undefined, generation: undefined },
+    );
+    expect(effects.fn('broadcast')).not.toHaveBeenCalled();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(h.deps.overflowSuppressedBroadcasts.size).toBe(0);
+    await h.dispose();
+  });
+
+  it('flushes a suppressed compat error when no rollover owner can surface it', async () => {
+    const h = harness();
+    h.activity.setSessionInTurn('task', true);
+    h.emit(event('error', {
+      reason: 'unsupported-request-option',
+      message: '400: {"param":"prompt_cache_retention","type":"invalid_request_error"}',
+    }));
+    // holder 未装配（claim=idle）：投递层压住的广播必须在终态层补出去，
+    // 否则错误行写了但用户看不到横幅，map 条目也永不清理。
+    expect(effects.fn('broadcast')).toHaveBeenCalledWith(
+      'maker:event',
+      expect.objectContaining({ persistId: undefined }),
+    );
+    expect(h.deps.overflowSuppressedBroadcasts.size).toBe(0);
+    await h.dispose();
+  });
+
+  it('does not flush a stale suppressed error onto a later unrelated error', async () => {
+    const h = harness();
+    h.activity.setSessionInTurn('task', true);
+    // turn A：autoResume 接管窗口内，投递层压住广播且 idle 分支被跳过 → 条目留在 map。
+    const coordinator = h.deps.agentInputCoordinatorHolder as {
+      isAutoResumeDeferred: ReturnType<typeof vi.fn>;
+    };
+    coordinator.isAutoResumeDeferred.mockReturnValue(true);
+    h.emit(event('error', {
+      reason: 'unsupported-request-option',
+      message: '400: {"param":"prompt_cache_retention","type":"invalid_request_error"}',
+    }));
+    expect(h.deps.overflowSuppressedBroadcasts.size).toBe(1);
+
+    // turn B：普通终态 error，与 A 无关。
+    coordinator.isAutoResumeDeferred.mockReturnValue(false);
+    h.emit(event('error', { message: 'boom', reason: 'sdk_crash' }));
+    // A 不得被当成 B 播出去（否则横幅文案与错误行对不上）；过期条目直接丢弃。
+    expect(h.deps.overflowSuppressedBroadcasts.size).toBe(0);
+    expect(effects.fn('broadcast')).toHaveBeenCalled();
+    for (const call of effects.fn('broadcast').mock.calls) {
+      expect(JSON.stringify(call[1])).not.toContain('prompt_cache_retention');
+    }
     await h.dispose();
   });
 
@@ -1884,6 +2002,10 @@ describe('Bot adapters in the shared event pipeline', () => {
     const h = harness();
     h.emit(event('compact_boundary'));
     expect(h.deps.botCompactRuntimeRefreshCoordinator.noteBoundary).toHaveBeenCalledWith(h.session);
+    // 原生摘要可能丢掉账本内容:下一次发送补一份工作记忆。
+    expect(h.deps.workingMemoryRefresh.markCompacted).toHaveBeenCalledWith('task');
+    // 原生摘要可能丢掉了环境说明:下一轮整体重发。
+    expect(h.deps.wireNoteMemory.reset).toHaveBeenCalledWith('task');
     expect(h.deps.attemptBotCompactRuntimeRefresh).not.toHaveBeenCalled();
     h.deps.agentInputCoordinatorHolder.getQueueControlSnapshot.mockReturnValue({ pendingQueue: [{}] });
     h.emit(event('done', { result: 'first result' }));
@@ -1904,5 +2026,55 @@ it('captures task completion inputs before queue advancement and binds only a su
   effects.fn('consumeLastTopLevelAssistantPersistId').mockReturnValueOnce('summary');
   h.emit(event('done', { status: 'completed', result: 'Summary' }));
   expect(effects.fn('markAssistantTurnCompleted')).toHaveBeenCalledWith('task', 'summary', undefined, ['bot-delegation-completion:a']);
+  await h.dispose();
+});
+
+
+it.each([
+  { sessionInstanceId: 'rebuilt', sessionTurnGeneration: 1, nonCache: false },
+  { sessionInstanceId: 'old', sessionTurnGeneration: 2, nonCache: false },
+  { sessionInstanceId: 'rebuilt', sessionTurnGeneration: 1, nonCache: true },
+])('surfaces a new retry terminal while recovery acceptance is pending: %j', async identity => {
+  const h = harness();
+  h.activity.setSessionInTurn('task', true);
+  const replayAccepted = deferred<boolean>();
+  const rollover = createContextOverflowRollover({} as never);
+  rollover.tryRecover = vi.fn(() => replayAccepted.promise);
+  (h.deps as { contextOverflowRolloverHolder: unknown }).contextOverflowRolloverHolder = rollover;
+  const rejection = { reason: 'unsupported-request-option', message: '400: Unsupported parameter(s): prompt_cache_key' };
+  h.emit(event('error', rejection, { sessionInstanceId: 'old', sessionTurnGeneration: 1 }));
+  h.emit(event('error', rejection, { sessionInstanceId: 'old', sessionTurnGeneration: 1 }));
+  expect(effects.fn('onTurnErrorEvent')).not.toHaveBeenCalled();
+  h.emit(event('error', identity.nonCache ? { isTerminal: true, message: 'Network failure' } : rejection, identity));
+  replayAccepted.resolve(true);
+  await microtasks();
+  expect(effects.fn('onTurnErrorEvent')).toHaveBeenCalledTimes(1);
+  expect(effects.fn('broadcast').mock.calls.some(call => call[1]?.event?.sessionInstanceId === identity.sessionInstanceId
+    && call[1]?.event?.sessionTurnGeneration === identity.sessionTurnGeneration)).toBe(true);
+  expect(rollover.tryRecover).toHaveBeenCalledTimes(1);
+  expect(h.deps.overflowSuppressedBroadcasts.size).toBe(0);
+  await h.dispose();
+});
+
+
+it.each([true, false])('settles only the claimed broadcast after duplicate terminals (recovered=%s)', async recovered => {
+  const h = harness();
+  h.activity.setSessionInTurn('task', true);
+  const result = deferred<boolean>();
+  const rollover = createContextOverflowRollover({} as never);
+  rollover.tryRecover = vi.fn(() => result.promise);
+  (h.deps as { contextOverflowRolloverHolder: unknown }).contextOverflowRolloverHolder = rollover;
+  const rejection = { reason: 'unsupported-request-option', message: '400: Unsupported parameter(s): prompt_cache_key' };
+  const identity = { sessionInstanceId: 'old', sessionTurnGeneration: 1 };
+  h.emit(event('error', rejection, identity));
+  h.emit(event('error', rejection, identity));
+  // Another owner may have stashed its event before the old promise settles.
+  const other = { event: event('error', rejection, { sessionInstanceId: 'other', sessionTurnGeneration: 2 }) };
+  h.deps.overflowSuppressedBroadcasts.set('task', other as never);
+  result.resolve(recovered);
+  await microtasks();
+  expect(h.deps.overflowSuppressedBroadcasts.get('task')).toBe(other);
+  expect(effects.fn('onTurnErrorEvent')).toHaveBeenCalledTimes(recovered ? 0 : 1);
+  if (!recovered) expect(effects.fn('broadcast').mock.calls.some(call => call[1]?.event?.sessionInstanceId === 'old')).toBe(true);
   await h.dispose();
 });

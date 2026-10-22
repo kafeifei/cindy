@@ -164,7 +164,7 @@ describe('known persisted dynamic collections', () => {
     write('local-codex-provider-prefs.json', { providers: { private: { name: 'private-provider-name', removed: false } } });
     write('model-context-limit-prefs.json', { limits: { 'pi:private:retired': 99999 } });
     write('model-price-overrides.json', { version: 1, entries: { first: { providerId: 'private', agent: 'pi', modelId: 'retired', values: { currency: 'CNY', cacheReadPerMtok: null, inputPerMtok: 0 }, baseReference: null, updatedAt: 'unused' } } });
-    write('ghost-cindy-prefs.json', { overrides: { 'private-ghost': { 'image.generate': 'private-model' } }, inflightLimits: { 'private-ghost': 2 } });
+    write('ghost-cindy-prefs.json', { overrides: { 'private-ghost': { 'text.oneshot': 'private-model' } }, inflightLimits: { 'private-ghost': 2 } });
     write('ghost-errand-prefs.json', { errand: { 'private-ghost': { agentKind: 'cc', model: 'private-model', workingDir: '/private/path', fastMode: false } }, sessions: { 'private-ghost': 'private-session' } });
     write('sidebar-settings.json', { hiddenMainViewGhostIds: ['private-ghost'], pinnedOrder: ['project:/private/project'] });
     write('telegram-bot-behavior.json', { groupActivation: { '-12345': 'always' } });
@@ -184,7 +184,7 @@ describe('known persisted dynamic collections', () => {
   it.each([
     ['model-disable-prefs.json', { disabledModels: { test: false } }, 'modelDisable'],
     ['model-context-limit-prefs.json', { limits: { test: '10000' } }, 'modelContextBudget'],
-    ['ghost-cindy-prefs.json', { overrides: { plugin: { 'image.generate': false } } }, 'pluginCindyPrefs'],
+    ['ghost-cindy-prefs.json', { overrides: { plugin: { 'text.oneshot': false } } }, 'pluginCindyPrefs'],
     ['ghost-errand-prefs.json', { errand: { plugin: { permissionMode: 'bypassPermissions' } } }, 'pluginErrandPrefs'],
     ['local-codex-provider-prefs.json', { providers: { private: { removed: 'true' } } }, 'providerPresentation'],
   ] as const)('rejects malformed collection leaves and leaves bytes intact: %s', (name, raw, collection) => {

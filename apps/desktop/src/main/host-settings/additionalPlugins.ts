@@ -1,4 +1,4 @@
-import { getHostPluginPreferenceContext, notifyHostPluginPreferenceChanged } from '../cindy-brain/index.js';
+import { getHostPluginPreferenceContext } from '../cindy-brain/index.js';
 import { getHostPluginCindyStore, inspectGhostCindyPrefs } from '../cindy-brain/cindyPrefsStore.js';
 import { getHostPluginErrandStore, inspectGhostErrandPrefs } from '../cindy-brain/pluginTaskPrefsStore.js';
 import { readKnownWorkspaces } from './readKnownWorkspaces.js';
@@ -23,15 +23,13 @@ function choices(domain: Domain): Record<string, Choice[]> {
   const plugins = getHostPluginPreferenceContext();
   if (domain === 'pluginErrand') {
     const entries = plugins.filter(plugin => plugin.supported.agent).map(plugin => ({ value: { ghostId: plugin.id }, label: plugin.name }));
-    return { routes: entries, permissions: entries, workspaces: entries, directories: readKnownWorkspaces().knownWorkspaces.map(dir => ({ value: workspaceId(dir), label: path.basename(dir) || dir })) };
+    const models = plugins.filter(plugin => plugin.supported.model).map(plugin => ({ value: { ghostId: plugin.id }, label: plugin.name }));
+    return { routes: models, permissions: entries, workspaces: entries, directories: readKnownWorkspaces().knownWorkspaces.map(dir => ({ value: workspaceId(dir), label: path.basename(dir) || dir })) };
   }
   if (domain === 'pluginSidebar') return { hidden: plugins.filter(plugin => plugin.supported.mainView).map(plugin => ({ value: plugin.id, label: plugin.name })) };
   const result: Record<string, Choice[]> = {};
-  for (const [key, capability] of Object.entries(PLUGIN_CINDY_FIELDS)) {
-    const applicable = plugins.filter(plugin => plugin.options[capability]?.length);
-    result[key] = applicable.map(plugin => ({ value: { ghostId: plugin.id }, label: plugin.name }));
-    for (const plugin of applicable) result[`${key}:${plugin.id}`] = plugin.options[capability]!.map(model => ({ value: model.id, label: model.label }));
-  }
+  // Keep the wire shape for older controllers, but offer no retired per-capability pins.
+  for (const key of Object.keys(PLUGIN_CINDY_FIELDS)) result[key] = [];
   result.inflightLimits = plugins.filter(plugin => plugin.supported.cindy).map(plugin => ({ value: { ghostId: plugin.id }, label: plugin.name }));
   return result;
 }
@@ -61,9 +59,8 @@ function inspect(domain: Domain): HostSettingState<Values> {
     if (inspectGhostCindyPrefs(ownerScopedUserDataPath()).status !== 'ready') return { status: 'unreadable', revision: null };
     const state = getHostPluginCindyStore().inspect();
     if (state.status !== 'ready') return state;
-    return ready(domain, state.revision, { ...Object.fromEntries(Object.entries(PLUGIN_CINDY_FIELDS).map(([key, capability]) => [key,
-      Object.entries(state.value.overrides).filter(([, value]) => value[capability]).map(([ghostId, value]) => ({ ghostId, model: value[capability]! })),
-    ])), inflightLimits: Object.entries(state.value.inflightLimits).map(([ghostId, limit]) => ({ ghostId, limit })) });
+    return ready(domain, state.revision, { ...Object.fromEntries(Object.keys(PLUGIN_CINDY_FIELDS).map(key => [key, []])),
+      inflightLimits: Object.entries(state.value.inflightLimits).map(([ghostId, limit]) => ({ ghostId, limit })) });
   } catch { return { status: 'unreadable', revision: null }; }
 }
 export const nativePluginSettings = {
@@ -138,30 +135,14 @@ export const nativePluginSettings = {
       const result = await commitHostSidebarHidden(hidden, { ...options, assertCurrent: validate });
       return ready(domain, result.revision, { hidden });
     }
+    // Do not accept old clients' writes to model pins that the runtime no longer consumes.
+    if ([...change.clear, ...Object.keys(change.set)].some(field => field !== 'inflightLimits'))
+      throw new HostSettingsError('UNSUPPORTED_CAPABILITY');
     const next = { ...before.value, ...Object.fromEntries(change.clear.map(key => [key, []])), ...change.set };
-    const result = await getHostPluginCindyStore().commitAtomic((current, rawOverrides) => {
-      const overrides = structuredClone(rawOverrides.overrides ?? current.value.overrides), inflightLimits = { ...current.value.inflightLimits };
-      for (const field of [...change.clear, ...Object.keys(change.set)]) {
-        if (field === 'inflightLimits') {
-          for (const id of Object.keys(inflightLimits)) delete inflightLimits[id];
-          for (const row of next[field] as Array<{ ghostId: string; limit: number }>) inflightLimits[row.ghostId] = row.limit;
-        } else {
-          const capability = PLUGIN_CINDY_FIELDS[field as keyof typeof PLUGIN_CINDY_FIELDS];
-          for (const caps of Object.values(overrides)) delete caps[capability];
-          for (const row of next[field] as Array<{ ghostId: string; model: string }>) (overrides[row.ghostId] ??= {})[capability] = row.model;
-        }
-      }
-      for (const [id, caps] of Object.entries(overrides)) if (!Object.keys(caps).length) delete overrides[id];
-      return { set: { overrides, inflightLimits } };
-    }, { ...options, assertCurrent: validate });
-    // Native subscribers only receive owner-bound identifiers, never credentials or prompts.
-    let applicationFailed = false;
-    try { options.assertCurrent?.(); for (const [field, capability] of Object.entries(PLUGIN_CINDY_FIELDS)) {
-      if (!(field in change.set) && !change.clear.includes(field)) continue;
-      const ids = new Set([...before.value[field] as Array<{ ghostId: string }>, ...next[field] as Array<{ ghostId: string }>].map(row => row.ghostId));
-      for (const id of ids) notifyHostPluginPreferenceChanged(id, capability);
-    } } catch { applicationFailed = true; }
-    return { ...ready(domain, result.revision, next), applicationFailed };
+    const result = await getHostPluginCindyStore().commitAtomic(() => ({ set: {
+      inflightLimits: Object.fromEntries((next.inflightLimits as Array<{ ghostId: string; limit: number }>).map(row => [row.ghostId, row.limit])),
+    } }), { ...options, assertCurrent: validate });
+    return ready(domain, result.revision, next);
   },
 };
 

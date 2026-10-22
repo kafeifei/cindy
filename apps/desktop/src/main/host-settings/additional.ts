@@ -149,6 +149,7 @@ export async function commitAdditionalSettings(domain: AdditionalSettingsDomain,
   if (desktopDomains.has(domain)) {
     const state = inspectDesktopPreferences();
     if (state.status !== 'ready') throw new HostSettingsError('UNREADABLE');
+    if (domain === 'desktopGeneral' && ('ghostPanelRestoreMode' in change.set || change.clear.includes('ghostPanelRestoreMode'))) throw new HostSettingsError('UNSUPPORTED_CAPABILITY');
     const result = await commitDesktopPreferences({ profileStamp: state.profileStamp, expectedRevision: options.expectedRevision!,
       set: change.set, clear: change.clear as DesktopPreferenceKey[], importOnly: false }, () => {
         options.assertCurrent?.();

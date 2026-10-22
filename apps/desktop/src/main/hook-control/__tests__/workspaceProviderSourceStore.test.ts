@@ -19,6 +19,7 @@ vi.mock('../../im/ownerScopedStorage.js', () => ({
 import {
   clearWorkspaceProviderSourcesForRemoteModelChanges,
   getWorkspaceProviderSource,
+  getWorkspaceProviderRoute,
   listWorkspaceProviderSources,
   setWorkspaceProviderSource,
   getHostWorkspaceProviderSourceStore,
@@ -26,6 +27,13 @@ import {
 } from '../workspaceProviderSourceStore';
 
 describe('workspaceProviderSourceStore', () => {
+  it('keeps location and provider together across team fallback and local reselection', () => {
+    setWorkspaceProviderSource('slack', null, 'chat', 'openai', 'share:owner');
+    expect(getWorkspaceProviderRoute('slack', 'T2', 'chat')).toMatchObject({ providerId: 'openai', agentDeviceId: 'share:owner' });
+    setWorkspaceProviderSource('slack', 'T2', 'chat', 'openai');
+    expect(getWorkspaceProviderRoute('slack', 'T2', 'chat')?.agentDeviceId).toBeUndefined();
+    expect(getWorkspaceProviderRoute('slack', 'T1', 'chat')?.agentDeviceId).toBe('share:owner');
+  });
   beforeEach(() => {
     tmp.dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wps-'));
   });

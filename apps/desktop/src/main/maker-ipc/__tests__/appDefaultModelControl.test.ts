@@ -5,7 +5,8 @@ import { changeAppDefaultModel, inspectAppDefaultModel, validateTaskModel, resol
 import { setNewMakerDraftCache, syncNewMakerDraftCache } from '../../maker-host/newMakerDefaultsCache';
 
 const host = vi.hoisted(() => ({ owner: 'owner:1', enabled: true, connected: true, agents: ['codex'],
-  enableSecond: false, revision: 'revision-1', providers: vi.fn(), service: vi.fn(), commit: vi.fn() }));
+  enableSecond: false, revision: 'revision-1', providers: vi.fn(), service: vi.fn(), commit: vi.fn(), remote: vi.fn() }));
+vi.mock('../../remote-agent/controller/deviceCatalog.js', () => ({ readRemoteProviderRoute: host.remote }));
 vi.mock('../../maker-host/index.js', () => ({ getMakerIfReady: () => ({ listAvailableAgents: () => host.agents }) }));
 vi.mock('../../maker-host/createDesktopProviderService.js', () => ({ getDesktopProviderService: host.service }));
 vi.mock('../../host-settings/new-task-defaults.js', () => ({
@@ -151,4 +152,31 @@ describe('直接写入 Host 的应用默认模型', () => {
     await expect(changeAppDefaultModel(id, 'ultra')).rejects.toThrow('不可用');
     expect(host.commit).not.toHaveBeenCalled();
   });
+});
+
+// A shared account is independent of the recipient's installed harnesses and local credentials.
+it('validates remote task routes without reading or falling back to local providers', async () => {
+  host.agents = [];
+  host.providers.mockClear();
+  const shared = { ...route, agentDeviceId: 'share:one' };
+  host.remote.mockResolvedValue({ provider: { id: 'openai' }, model: { efforts: ['medium'], supportsFastMode: false } });
+  expect(await validateTaskModel(shared)).toBe(true);
+  expect(await validateTaskModel({ ...shared, effort: 'ultra' })).toBe(false);
+  host.remote.mockRejectedValue(new Error('revoked'));
+  expect(await resolveAvailableTaskModels([shared])).toEqual([null]);
+  expect(await validateTaskModel(shared)).toBe(false);
+  expect(host.providers).not.toHaveBeenCalled();
+});
+
+it('rejects an owner change even when the remote default lookup fails', async () => {
+  host.remote.mockImplementation(async () => {
+    host.owner = 'owner:2';
+    throw new Error('disconnected');
+  });
+  await expect(resolveAvailableTaskModels([{ ...route, agentDeviceId: 'share:one' }])).rejects.toThrow('账号已变化');
+});
+
+it('keeps available alternatives when a remote default is offline', async () => {
+  host.remote.mockRejectedValue(new Error('offline'));
+  expect(await resolveAvailableTaskModels([{ ...route, agentDeviceId: 'share:one' }, route])).toEqual([null, route]);
 });

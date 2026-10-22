@@ -133,7 +133,7 @@ describe('mobile provider visibility readiness', () => {
     expect(state).toMatchObject({ ready: false, loading: false, unsupported: false });
     expect(state.error).toContain('[MODEL_VISIBILITY_NOT_READY]');
     expect(allowsFlatFallback()).toBe(false);
-    expect(resolveNewSessionAutoDefault({
+    expect(resolveNewSessionAutoDefault({ providers: [],
       userTouched: false, appliedDeviceId: null, selectedDeviceId: 'host', hostDefaultsSettled: true, hostRuntime: null,
       modelRows: [], rowsAgentKind: 'codex', catalogReady: state.ready,
       providersUnsupported: state.unsupported, currentEffort: 'medium',

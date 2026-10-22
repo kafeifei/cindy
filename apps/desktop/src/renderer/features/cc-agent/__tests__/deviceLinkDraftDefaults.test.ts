@@ -8,6 +8,35 @@ import {
 } from '../deviceLinkDraftDefaults';
 import type { AgentCapabilities } from '@/hooks/useAgentCapabilities';
 
+function providerModel(
+  id: string,
+  efforts: CatalogModel['efforts'],
+  defaultEffort: CatalogModel['defaultEffort'],
+): CatalogModel {
+  return {
+    id,
+    name: id,
+    contextWindow: 200_000,
+    efforts,
+    defaultEffort,
+    effortsUnknown: false,
+    supportsFastMode: false,
+  } as CatalogModel;
+}
+
+function provider(id: string, model: CatalogModel): ProviderView {
+  return {
+    id,
+    name: id,
+    source: 'user',
+    agents: ['pi'],
+    models: { pi: [model] },
+    routing: { pi: { upstream: 'https://provider.test', authStrategy: 'none' } },
+    auth: { method: 'api-key' },
+    connected: true,
+  } as unknown as ProviderView;
+}
+
 // 最小被控端 capabilities:两模型(Opus 支持 fast + 多 effort 档;Haiku 无 effort/fast)。
 function caps(overrides: Partial<AgentCapabilities> = {}): AgentCapabilities {
   return {
@@ -26,6 +55,7 @@ function caps(overrides: Partial<AgentCapabilities> = {}): AgentCapabilities {
         contextWindow: 200_000,
         efforts: [],
         defaultEffort: null,
+        effortsUnknown: false,
         supportsFastMode: false,
         sortOrder: 10,
         newSessionDefault: ['claude-code'],
@@ -178,6 +208,95 @@ describe('resolveDeviceLinkDraftDefaults', () => {
       effort: 'low', // Opus 只支持 high/xhigh
     });
     expect(sel.effort).toBe('high');
+  });
+
+  it('已知无 effort 模型清掉远端草稿里的旧档位', () => {
+    const sel = resolveDeviceLinkDraftDefaults(caps(), {
+      model: 'claude-haiku-4-5',
+      effort: 'high',
+      fastMode: true,
+    });
+    expect(sel.effort).toBeNull();
+  });
+
+  it('按选中的供应商校准 effort,不被同名其他来源的空档位清掉', () => {
+    const model = 'qwen3:14b';
+    const capabilities = caps({
+      availableModels: [
+        {
+          id: model,
+          displayName: model,
+          contextWindow: 200_000,
+          efforts: [],
+          defaultEffort: null,
+        },
+      ],
+    });
+    const sel = resolveDeviceLinkDraftDefaults(
+      capabilities,
+      { model, providerId: 'ollama', effort: 'medium' },
+      undefined,
+      'pi',
+      [
+        provider('ollama', providerModel(model, ['medium', 'high'], 'high')),
+        provider('other', providerModel(model, [], null)),
+      ],
+    );
+    expect(sel.effort).toBe('medium');
+  });
+
+  it('选中的供应商明确无 effort 时才清掉旧档位', () => {
+    const model = 'qwen3:14b';
+    const sel = resolveDeviceLinkDraftDefaults(
+      caps({
+        availableModels: [
+          {
+            id: model,
+            displayName: model,
+            contextWindow: 200_000,
+            efforts: ['medium', 'high'],
+            defaultEffort: 'high',
+          },
+        ],
+      }),
+      { model, providerId: 'ollama', effort: 'medium' },
+      undefined,
+      'pi',
+      [
+        provider('ollama', providerModel(model, [], null)),
+        provider('other', providerModel(model, ['medium', 'high'], 'high')),
+      ],
+    );
+    expect(sel.effort).toBeNull();
+  });
+
+  it('档位能力尚未声明时保留远端草稿档位', () => {
+    const capabilities = caps();
+    capabilities.availableModels[1]!.effortsUnknown = true;
+    const sel = resolveDeviceLinkDraftDefaults(capabilities, {
+      model: 'claude-haiku-4-5',
+      effort: 'high',
+    });
+    expect(sel.effort).toBe('high');
+  });
+
+  it.each(['medium', 'high'])('旧主机缺少能力标记时保留远端草稿档位 (%s)', (effort) => {
+    const capabilities = caps();
+    delete capabilities.availableModels[1]!.effortsUnknown;
+    const sel = resolveDeviceLinkDraftDefaults(capabilities, {
+      model: 'claude-haiku-4-5', effort,
+    });
+    expect(sel.effort).toBe(effort);
+  });
+
+  it.each(['medium', 'high'])('旧主机来源条目缺少能力标记时不借用扁平目录清空档位 (%s)', (effort) => {
+    const model = providerModel('claude-haiku-4-5', [], null);
+    delete model.effortsUnknown;
+    const sel = resolveDeviceLinkDraftDefaults(
+      caps(), { model: model.id, providerId: 'legacy', effort }, undefined, 'pi',
+      [provider('legacy', model)],
+    );
+    expect(sel.effort).toBe(effort);
   });
 
   it('模型不支持 fast(或被控端 agent 无 fast 能力)→ fastMode 强制 false', () => {
@@ -456,7 +575,7 @@ function catalogModel(id: string, patch: Partial<CatalogModel> = {}): CatalogMod
   return { id, name: id, contextWindow: 200_000, efforts: ['medium', 'high'],
     defaultEffort: 'medium', ...patch };
 }
-function provider(id: string, agent: ModelAgent, models: CatalogModel[], patch: Partial<ProviderView> = {}): ProviderView {
+function catalogProvider(id: string, agent: ModelAgent, models: CatalogModel[], patch: Partial<ProviderView> = {}): ProviderView {
   return { id, name: id, source: 'builtin', agents: [agent], connected: true,
     auth: { method: 'managed' }, access: { kind: 'managed' }, routing: { [agent]: { upstream: 'https://models.example.invalid', authStrategy: 'none' } }, models: { [agent]: models }, ...patch };
 }
@@ -464,8 +583,8 @@ function provider(id: string, agent: ModelAgent, models: CatalogModel[], patch: 
 describe('remote defaults use the execution host connected catalog', () => {
   it('does not pick the Opus cold seed from a disconnected subscription', () => {
     const providers = [
-      provider('anthropic', 'claude-code', [catalogModel('claude-opus-4-8')], { connected: false }),
-      provider('xd', 'claude-code', [catalogModel('usable')]),
+      catalogProvider('anthropic', 'claude-code', [catalogModel('claude-opus-4-8')], { connected: false }),
+      catalogProvider('xd', 'claude-code', [catalogModel('usable')]),
     ];
     expect(resolveDeviceLinkDraftDefaults(caps(), {
       model: 'claude-opus-4-8', modelChosenByUser: false,
@@ -477,8 +596,8 @@ describe('remote defaults use the execution host connected catalog', () => {
     { modelDiscoveryFailure: { kind: 'upstream' as const, at: '2026-09-16T00:00:00Z' } },
     { routing: { 'claude-code': { disabled: true, upstream: 'https://models.example.invalid', authStrategy: 'none' as const } } },
   ])('skips unavailable provider routes: %j', (patch) => {
-    const providers = [provider('blocked', 'claude-code', [catalogModel('seed')], patch),
-      provider('valid', 'claude-code', [catalogModel('available')])];
+    const providers = [catalogProvider('blocked', 'claude-code', [catalogModel('seed')], patch),
+      catalogProvider('valid', 'claude-code', [catalogModel('available')])];
     expect(resolveDeviceLinkDraftDefaults(caps(), { model: 'seed', modelChosenByUser: false },
       undefined, 'claude-code', providers)).toMatchObject({ model: 'available', providerId: 'valid' });
   });
@@ -492,14 +611,14 @@ describe('remote defaults use the execution host connected catalog', () => {
       catalogModel('usable'),
     ];
     expect(resolveDeviceLinkDraftDefaults(caps(), null, undefined, 'claude-code',
-      [provider('xd', 'claude-code', models)])).toMatchObject({ model: 'usable', providerId: 'xd' });
+      [catalogProvider('xd', 'claude-code', models)])).toMatchObject({ model: 'usable', providerId: 'xd' });
   });
 
   it('keeps a valid explicit selection over a newly marked recommendation', () => {
     const models = [catalogModel('recommended', { newSessionDefault: ['claude-code'] }), catalogModel('saved')];
     expect(resolveDeviceLinkDraftDefaults(caps(), {
       model: 'saved', providerId: 'xd', modelChosenByUser: true, effort: 'high',
-    }, undefined, 'claude-code', [provider('xd', 'claude-code', models)])).toMatchObject({
+    }, undefined, 'claude-code', [catalogProvider('xd', 'claude-code', models)])).toMatchObject({
       model: 'saved', providerId: 'xd', effort: 'high',
     });
   });
@@ -507,7 +626,7 @@ describe('remote defaults use the execution host connected catalog', () => {
   it('a stale saved selection falls back in the current catalog without mutating the preference', () => {
     const draft = { model: 'removed', modelChosenByUser: true, providerId: 'xd', effort: 'ultra' };
     expect(resolveDeviceLinkDraftDefaults(caps(), draft, undefined, 'claude-code',
-      [provider('xd', 'claude-code', [catalogModel('available')])])).toMatchObject({
+      [catalogProvider('xd', 'claude-code', [catalogModel('available')])])).toMatchObject({
       model: 'available', providerId: 'xd', effort: 'medium',
     });
     expect(draft.model).toBe('removed');
@@ -521,7 +640,7 @@ describe('remote defaults use the execution host connected catalog', () => {
   it('the provider actually chosen supplies effort and Fast capabilities', () => {
     expect(resolveDeviceLinkDraftDefaults(caps(), {
       model: 'claude-opus-4-8', modelChosenByUser: true, providerId: 'xd', effort: 'xhigh', fastMode: true,
-    }, undefined, 'claude-code', [provider('xd', 'claude-code', [catalogModel('claude-opus-4-8', {
+    }, undefined, 'claude-code', [catalogProvider('xd', 'claude-code', [catalogModel('claude-opus-4-8', {
       efforts: ['medium'], defaultEffort: 'medium', supportsFastMode: false,
     })])])).toMatchObject({ effort: 'medium', fastMode: false });
   });
@@ -529,7 +648,7 @@ describe('remote defaults use the execution host connected catalog', () => {
 
 describe('remote engine preference', () => {
   const availableVendors = new Set(['cc', 'codex', 'pi'] as const);
-  const providers = [provider('xd', 'pi', [catalogModel('z-ai/glm-5.3-flash', {
+  const providers = [catalogProvider('xd', 'pi', [catalogModel('z-ai/glm-5.3-flash', {
     newSessionDefault: ['pi'], supportsImageInput: true,
   })])];
   it('a fresh cloud profile uses the existing available default tuple, not the controller engine', () => {
@@ -540,7 +659,7 @@ describe('remote engine preference', () => {
   it('an explicit engine survives changed recommendations', () => {
     expect(resolveDeviceLinkDraftAgent({ currentAgent: 'claude-code',
       remoteDraft: { preferredAgentKind: 'codex', defaultTupleCustomized: true },
-      providers: [...providers, provider('xd-codex', 'codex', [catalogModel('saved')])], availableVendors })).toBe('codex');
+      providers: [...providers, catalogProvider('xd-codex', 'codex', [catalogModel('saved')])], availableVendors })).toBe('codex');
   });
   it('old hosts and unavailable engines do not borrow local login state or invent an engine', () => {
     expect(resolveDeviceLinkDraftAgent({ currentAgent: 'claude-code', remoteDraft: {}, providers, availableVendors })).toBe('claude-code');

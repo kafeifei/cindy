@@ -20,9 +20,9 @@ const text = (path: string) => readFileSync(src(path), 'utf8');
 function expectIds(expected: string[]) { for (const id of expected) expect(ids.has(id), id).toBe(true); }
 
 describe('settings read catalog independent coverage anchors', () => {
-  it('classifies the actual 18 tabs and every SettingsView child instead of comparing the catalog to itself', () => {
+  it('classifies the actual 20 tabs and every SettingsView child instead of comparing the catalog to itself', () => {
     expect(SETTINGS_READ_TABS).toEqual(TAB_IDS);
-    expect(TAB_IDS).toHaveLength(18);
+    expect(TAB_IDS).toHaveLength(20);
     const represented = new Set([...Object.values(SETTINGS_READ_CATALOG).map(field => field.tab), ...SETTINGS_READ_EXTERNAL_CATALOG.map(item => item.tab)]);
     expect([...represented].sort()).toEqual([...TAB_IDS].sort());
     const actualSections = [...text('renderer/components/settings/SettingsView.tsx').matchAll(/<([A-Z][A-Za-z]*(?:Section|Cell|Card|Panel))\b/g)].map(match => match[1]);
@@ -105,6 +105,10 @@ describe('settings read catalog independent coverage anchors', () => {
     const configured = ['microphoneDeviceId', 'refinementInstructions', 'shortcut'];
     for (const key of voiceKeys) {
       if (resources.includes(key)) expect(SETTINGS_READ_EXTERNAL_CATALOG.some(item => item.id === 'voice.dictionary')).toBe(true);
+      else if (['speakerFilterEnabled', 'speakerFilterStrictness', 'speakerFilterStrictnessOverride'].includes(key)) {
+        expect(SETTINGS_READ_EXTERNAL_CATALOG.some(item => item.id === 'voice.speakerFilter')).toBe(true);
+        expect(SETTINGS_READ_FIELD_IDS).not.toContain(`voice.${key}`);
+      }
       else if (key === 'dictionarySyncEnabledOverride') expectIds(['voice.dictionarySyncEnabled']);
       else if (key === 'composerLongPressEnabledOverride') expectIds(['voice.composerLongPressEnabled']);
       else expectIds([`voice.${key}${configured.includes(key) ? 'Configured' : ''}`]);
@@ -115,8 +119,9 @@ describe('settings read catalog independent coverage anchors', () => {
     expect(SETTINGS_READ_ASR_PROVIDERS).toEqual([...asr.matchAll(/^  '([^']+)': \{/gm)].map(match => match[1]));
     const tools = text('main/maker-host/plugins/builtin-plugins.ts');
     expect(SETTINGS_READ_BUILTIN_TOOL_IDS).toEqual([...tools.matchAll(/\{ id: '([^']+)',\s+name:/g)].map(match => match[1]));
-    const capabilities = text('main/cindy-brain/cindyPrefsStore.ts').match(/export const CINDY_CAPABILITY_KEYS = \[([\s\S]*?)\] as const/)![1]!;
-    expect(SETTINGS_READ_CAPABILITIES).toEqual([...capabilities.matchAll(/^  '([^']+)',/gm)].map(match => match[1]));
+    // Old snapshot enum values stay wire-compatible; active overrides now only migrate oneshot.
+    expect(SETTINGS_READ_CAPABILITIES).toEqual(['image.generate', 'image.edit', 'video.generate', 'video.edit', 'text.oneshot', 'embed.text']);
+    expect(text('main/cindy-brain/pluginTaskPrefsStore.ts')).toContain('migrateLegacyOneshotPins');
   });
   it('uses real source paths, stable identifiers, read-only source metadata and explicit privacy projections', () => {
     expect(SETTINGS_READ_FIELD_IDS.length).toBe(new Set(SETTINGS_READ_FIELD_IDS).size);

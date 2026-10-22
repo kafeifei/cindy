@@ -1,3 +1,4 @@
+import { ANSWER_DELIVERY_PROMPT } from '@cindy/maker-shared/rich-answer-guide';
 /**
  * Desktop AgentRuntimeConfig 实现。
  * endpoint、行为开关与宿主资源路径由 desktop host 在这里统一注入,
@@ -31,6 +32,7 @@ import { readMemorySettings } from './memory-settings-store.js';
 import { readSubagentModelSettings } from './subagent-model-settings-store.js';
 import { shouldKeepSubagentOverrideForParent } from './subagent-override-route.js';
 import { toolchainThreadCapEnv } from './toolchain-thread-cap.js';
+import { inputHandoffTaskShellEnv } from '../input-handoff/askpass/index.js';
 import {
   assessModelSwitchContext,
   shouldHandoffAfterContextAssessment,
@@ -182,10 +184,13 @@ export function buildDesktopClaudeRuntimeConfig(endpointFn: () => string): Agent
       // 核数算,远端机器的资源不归本设置管。设置关闭时为空对象,零影响。
       ...(ctx.spawnMode === 'remote' ? {} : toolchainThreadCapEnv()),
     }),
+    // 代输入: sudo / ssh / git password prompts of this task go to the owner.
+    taskShellEnv: inputHandoffTaskShellEnv,
     // 产品身份 + Skill 来源优先级 + Claude 专属段，按顺序拼接后给 maker-core append。
     get systemPrompt() {
       return appendCloudPluginOauthPrompt(composeHostPrompt(claudeSystemPrompt), getInstanceConfig() !== null);
     },
+ answerDeliveryPrompt: ANSWER_DELIVERY_PROMPT,
     // Maker Memory 需要的 user-data 绝对路径 (maker-core 没 Electron 依赖, 必须 host 注入)。
     userDataPath: app.getPath('userData'),
     get memoryEnabled() {
@@ -304,10 +309,13 @@ export const desktopCodexRuntimeConfig: AgentRuntimeConfig = {
   // 附近注释),所以这里仍按 spawnMode 分流让代码自证,不依赖"远端不走本函数"
   // 这种会过期的假设(对抗式预审发现)。
   behaviorFlags: (ctx) => (ctx.spawnMode === 'remote' ? {} : toolchainThreadCapEnv()),
+  // 代输入: sudo / ssh / git password prompts of this task go to the owner.
+  taskShellEnv: inputHandoffTaskShellEnv,
   // 产品身份 + Skill 来源优先级 + Codex 专属段。
   get systemPrompt() {
     return appendCloudPluginOauthPrompt(composeHostPrompt(codexSystemPrompt), getInstanceConfig() !== null);
   },
+ answerDeliveryPrompt: ANSWER_DELIVERY_PROMPT,
   // lazy getter(与 endpoint/memoryEnabled 同一惯用法,issue #1956):import 期
   // 不探测 bundled ripgrep,纯 node / vitest 环境 import 本模块不再炸;真正的
   // fail-fast 由 maker-host 启动期的 ensureBundledRipgrepReady() 承担,此处 getter

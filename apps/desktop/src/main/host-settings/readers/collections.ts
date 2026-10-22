@@ -5,7 +5,7 @@ import { inspectModelContextLimits } from '../../maker-host/model-context-limit-
 import { inspectModelPriceOverrides } from '../../usage/modelPriceOverrideStore.js';
 import { inspectWorkspacePrefs, isWorkspacePrefsEntryDirty } from '../../hook-control/workspacePrefsStore.js';
 import { inspectTelegramBehavior } from '../../im/telegram/behaviorStore.js';
-import { inspectGhostCindyPrefs, CINDY_CAPABILITY_KEYS } from '../../cindy-brain/cindyPrefsStore.js';
+import { inspectGhostCindyPrefs } from '../../cindy-brain/cindyPrefsStore.js';
 import { inspectGhostErrandPrefs } from '../../cindy-brain/pluginTaskPrefsStore.js';
 import { inspectSidebarSettings } from '../../sidebarSettingsStore.js';
 import { SettingsReader } from '../../maker-host/plugins/settings-reader.js';
@@ -167,9 +167,9 @@ export function inspectDynamicSettingsCollections(options: CollectionInspectionO
     const state = inspectGhostCindyPrefs(options.ownerRoot);
     if (state.status !== 'ready') { collections.pluginCindyPrefs = state; return; }
     const entries: ReadonlyCollectionEntry[] = [];
-    for (const key of new Set([...Object.keys(state.value.overrides), ...Object.keys(state.value.inflightLimits)])) {
-      const caps = state.value.overrides[key] ?? {};
-      const configured = CINDY_CAPABILITY_KEYS.filter(capability => caps[capability] !== undefined);
+    for (const key of new Set([...Object.keys(state.value.overrides ?? {}), ...Object.keys(state.value.inflightLimits)])) {
+      const caps = state.value.overrides?.[key] ?? {};
+      const configured = (['text.oneshot'] as const).filter(capability => caps[capability] !== undefined);
       for (const capability of configured.length ? configured : [null]) entries.push(entry(JSON.stringify([key, capability]), { capability, modelConfigured: capability !== null, inflightLimit: state.value.inflightLimits[key] ?? null }));
     }
     collections.pluginCindyPrefs = complete(entries);

@@ -2,8 +2,8 @@ import { z } from 'zod';
 
 /** 只读公开目录，不是 mutation 协议；元数据只供 Host 投影与 CIS 排版，不随报告上传。 */
 export const SETTINGS_READ_TABS = [
-  'general', 'personalization', 'providers', 'billing', 'usage', 'voice-input', 'im-bot',
-  'shortcuts', 'agent-island', 'import', 'remote-control', 'shared-tasks', 'ghosts', 'builtin-tools',
+  'general', 'appearance', 'personalization', 'providers', 'billing', 'usage', 'voice-input', 'im-bot',
+  'shortcuts', 'agent-island', 'import', 'remote-control', 'cloud-instances', 'shared-tasks', 'ghosts', 'builtin-tools',
   'computer-use', 'storage', 'help', 'about',
 ] as const;
 export type SettingsReadTab = typeof SETTINGS_READ_TABS[number];
@@ -161,7 +161,7 @@ const core = {
   ...group('personalization', { customized: bool }, 'personalization', 'UserPromptSection', 'shared/hostSettings.ts#PersonalizationSettings', 'owner', 'nextAgentStart'),
   ...group('databaseWarning', { thresholdGiB: number(1, 1024), disabled: bool }, 'storage', 'StorageManagementCard', 'shared/hostSettings.ts#DatabaseWarningSettings'),
   ...group('appearance', { uiFontSize: integer(12, 24), codeFontSize: integer(10, 24), zoomFactor: number(0.5, 3),
-    uiFontCustomized: bool, codeFontCustomized: bool }, 'general', 'AppearanceSection', 'shared/appearanceSettings.ts#APPEARANCE_LIMITS', 'cloudDesktop'),
+    uiFontCustomized: bool, codeFontCustomized: bool }, 'appearance', 'AppearanceSection', 'shared/appearanceSettings.ts#APPEARANCE_LIMITS', 'cloudDesktop'),
   ...group('collaboration', { workerSoftLimit: number(1, 20), workerHardLimit: number(1, 20), workerIdleReleaseMinutes: number(0, 120) }, 'general', 'CollaborationSection', 'main/maker-host/collaboration-settings-store.ts'),
   ...group('agentResource', { maxConcurrentCommands: integer(0, 64), processPriority: z.enum(['normal', 'low', 'lowest']), capToolchainThreads: bool }, 'general', 'AgentResourceSection', 'main/maker-host/agent-resource-settings-store.ts', 'profile', 'nextAgentStart'),
   ...group('gitSafety', { mode: z.enum(['off', 'existing-git', 'all-projects']), autoSnapshotEnabled: bool, autoInitProjectGit: bool }, 'general', 'GitSafetySection', 'main/maker-host/git-safety-settings-store.ts', 'profile', 'nextTask'),
@@ -320,12 +320,15 @@ export const SETTINGS_READ_EXTERNAL_CATALOG = [
   { id: 'personalization.contacts', tab: 'personalization', control: 'ContactsSection', kind: 'resource', entry: 'contacts' },
   { id: 'providers.connections', tab: 'providers', control: 'ProvidersSection', kind: 'authorization', entry: 'providers' },
   { id: 'voice.dictionary', tab: 'voice-input', control: 'VoiceInputSection', kind: 'resource', entry: 'voice' },
+  // Local microphone filtering is not part of the deployed v2 snapshot contract.
+  { id: 'voice.speakerFilter', tab: 'voice-input', control: 'VoiceInputSection', kind: 'external', entry: 'voice' },
   { id: 'voice.history', tab: 'voice-input', control: 'VoiceInputSection', kind: 'resource', entry: 'voice' },
   { id: 'voice.credentials', tab: 'voice-input', control: 'VoiceInputSection', kind: 'authorization', entry: 'voice' },
   { id: 'im.connections', tab: 'im-bot', control: 'ImBotSection', kind: 'authorization', entry: 'im' },
   { id: 'im.officialTelegramBehavior', tab: 'im-bot', control: 'TelegramBehaviorSettings', kind: 'external', entry: 'im' },
   { id: 'import.sessions', tab: 'import', control: 'SessionImportSection', kind: 'action', entry: 'import' },
   { id: 'sharedTasks.sharing', tab: 'shared-tasks', control: 'SharedTaskDialog', kind: 'resource', entry: 'sharedTasks' },
+  { id: 'cloud.instances', tab: 'cloud-instances', control: 'CloudInstancesSection', kind: 'external', entry: 'remote' },
   { id: 'remote.connections', tab: 'remote-control', control: 'RemoteControlSection', kind: 'authorization', entry: 'remote' },
   { id: 'plugins.settingsHtml', tab: 'ghosts', control: 'SettingsCatalogPanel', kind: 'external', entry: 'plugin' },
   { id: 'plugins.resources', tab: 'ghosts', control: 'SettingsCatalogPanel', kind: 'resource', entry: 'plugin' },

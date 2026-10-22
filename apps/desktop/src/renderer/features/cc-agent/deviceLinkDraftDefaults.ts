@@ -14,6 +14,10 @@
  * 供应商目录时保留 capabilities 的兼容路径。
  */
 
+import {
+  effectiveSourceIdForModel,
+  getModel,
+} from '@cindy/model-providers';
 import type { AgentCapabilities, AgentKind } from '@/hooks/useAgentCapabilities';
 import type { Effort, PermissionMode } from '@/lib/userPreferences.types';
 import {
@@ -35,7 +39,7 @@ export interface RemoteDraftDefaults {
   model?: string;
   /** false = 被控端明确未在 New Maker picker 选过模型；undefined = 旧端未知。 */
   modelChosenByUser?: boolean;
-  effort?: string;
+  effort?: string | null;
   fastMode?: boolean;
   permissionMode?: string;
   providerId?: string | null;
@@ -114,7 +118,7 @@ export function resolveDeviceLinkDraftAgent(input: {
 /** 校准后可直接 seed 控制端草稿 holder 的一组值。 */
 export interface DeviceLinkDraftSelection {
   model: string;
-  effort: Effort;
+  effort: Effort | null;
   fastMode: boolean;
   /** 仍是被控端支持的权限档则带上;否则 undefined(由 ChatInput 回落自身默认)。 */
   permissionMode?: PermissionMode;
@@ -123,20 +127,21 @@ export interface DeviceLinkDraftSelection {
 }
 
 /**
- * 判断同一远程草稿是否应在 capabilities 刷新后重新校准。
- * 新设备或 Agent 始终需要 seed；同一目标只有在被控端明确从未选过模型、且控制端也尚未
- * 编辑运行配置时才允许重校准。旧端的未知状态与任一侧的显式选择都必须保守保留。
+ * 新设备或 Agent 始终需要 seed；同一目标的新默认可更新未编辑的草稿。
+ * 仅能力刷新时，仍须被控端明确从未选过模型才重新选区域默认。
  */
 export function shouldReseedDeviceLinkDraftDefaults(input: {
   currentSeedKey: string | null;
   nextSeedKey: string;
   capabilitiesChanged: boolean;
+  defaultsChanged?: boolean;
   controllerTouched: boolean;
   remoteModelChosenByUser: boolean | undefined;
 }): boolean {
   if (input.currentSeedKey !== input.nextSeedKey) return true;
   return (
-    input.capabilitiesChanged && !input.controllerTouched && input.remoteModelChosenByUser === false
+    !input.controllerTouched && (input.defaultsChanged === true
+      || (input.capabilitiesChanged && input.remoteModelChosenByUser === false))
   );
 }
 
@@ -238,7 +243,7 @@ export function resolveDeviceLinkDraftDefaults(
   if (models.length === 0 && !connectedModel) {
     return {
       model: wantedModelId ?? '',
-      effort: (remoteDraft?.effort as Effort) ?? 'high',
+      effort: (remoteDraft?.effort as Effort | null | undefined) ?? 'high',
       fastMode: false,
       permissionMode,
       providerId,
@@ -246,6 +251,21 @@ export function resolveDeviceLinkDraftDefaults(
   }
 
   const chosen = connectedModel ?? models.find((m) => m.id === wantedModelId) ?? models[0];
+  const selectedProviderId =
+    agentKind && providers?.length
+      ? remoteDraft?.providerId ??
+        effectiveSourceIdForModel([...providers], null, chosen.id, agentKind)
+      : null;
+  const selectedProvider = selectedProviderId
+    ? providers?.find((provider) => provider.id === selectedProviderId)
+    : undefined;
+  const providerModel = selectedProvider && agentKind
+    ? getModel(selectedProvider, chosen.id, agentKind)
+    : undefined;
+  // capabilities.availableModels is a cross-provider union. If the selected source has
+  // its own entry, its effort table is authoritative; otherwise keep the flat snapshot
+  // for old hosts that do not expose provider catalogs.
+  const effortModel = providerModel ?? chosen;
   const globalPreset = agentKind ? remoteDraft?.providerModelMemory?.[`${agentKind}:*`] : undefined;
   const providerPreset =
     agentKind && providerId
@@ -268,11 +288,16 @@ export function resolveDeviceLinkDraftDefaults(
     (isActiveModel
       ? remoteDraft?.fastMode === true
       : remoteDraft?.fastModeByModel?.[chosen.id] === true);
+  const supportedEfforts = effortModel.efforts as readonly string[];
 
-  const effort: Effort =
-    wantedEffort && chosen.efforts.some((effort) => effort === wantedEffort)
-      ? wantedEffort
-      : (chosen.defaultEffort ?? chosen.efforts[0] ?? wantedEffort ?? 'high');
+  const effort: Effort | null =
+    supportedEfforts.length === 0
+      ? effortModel.effortsUnknown === false
+        ? null
+        : wantedEffort ?? effortModel.defaultEffort ?? 'high'
+      : wantedEffort && supportedEfforts.includes(wantedEffort)
+        ? wantedEffort
+        : (effortModel.defaultEffort ?? supportedEfforts[0] ?? wantedEffort ?? 'high');
   const fastMode = Boolean(capabilities.hasFastMode && chosen.supportsFastMode && wantedFast);
 
   return { model: chosen.id, effort, fastMode, permissionMode, providerId };

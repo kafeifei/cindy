@@ -1,4 +1,5 @@
 import { Button } from '@/components/ui/button';
+import { ErrorNotice } from '@/components/ui/error-notice';
 import {
   Fragment,
   useCallback,
@@ -65,6 +66,7 @@ import type {
 import { conversationSearchTitle } from '../../../../shared/conversationSearch';
 import { highlightSegments } from '../lib/highlightSegments';
 import { keywordRanges } from './keywordRanges';
+import { FilterReminderDot } from './FilterReminderDot';
 import { resolveSessionRoute } from '@/lib/orcaSessionIdentity';
 import { remoteProjectsStore } from '@/features/device-link/remoteProjectsStore';
 import { conversationSearchResultKey } from '@/lib/conversationSearchFanout';
@@ -519,7 +521,17 @@ export function useConversationSearch({
         if (remoteDeviceId) {
           remoteProjectsStore.pinSessionOrigin(remoteDeviceId, item.session.id);
         }
-        const baseRoute = await resolveSessionRoute(item.session.id, item.session);
+        const companion = item.session.companion;
+        const companionRoute = companion
+          ? remoteDeviceId
+            ? `/bots/remote/${encodeURIComponent(remoteDeviceId)}/${encodeURIComponent(companion.id)}`
+            : `/bots/${encodeURIComponent(companion.id)}`
+          : null;
+        const baseRoute = companionRoute
+          ? companion?.readOnly
+            ? `${companionRoute}/history/${encodeURIComponent(item.session.id)}`
+            : remoteDeviceId ? companionRoute : `${companionRoute}/session/${encodeURIComponent(item.session.id)}`
+          : await resolveSessionRoute(item.session.id, item.session);
         const hit = hitOverride ?? item.contentHit;
         // popover 形态:onResultChosen 关闭面板并通知托盘(SidebarActionBar 减 openChildCount),
         // 其 reset() 会清空 query。内联展开态不传 onResultChosen——选中结果后**刻意保留 query**,
@@ -582,6 +594,8 @@ export function SearchResultsBody({
   results,
   onSelect,
   maxHeightClass,
+  leading,
+  leadingCount = 0,
 }: {
   trimmed: string;
   status: 'idle' | 'searching' | 'done' | 'error';
@@ -589,8 +603,35 @@ export function SearchResultsBody({
   onSelect: (item: ConversationSearchResultItem, hit?: ConversationSearchResultItem['contentHit']) => void;
   /** 结果列表滚动容器的高度约束(popover 传 max-h,内联铺满时省略)。 */
   maxHeightClass?: string;
+  /** 排在会话结果之前的本地命中(伙伴 / 群聊);有命中时不显示「无结果」。 */
+  leading?: React.ReactNode;
+  leadingCount?: number;
 }) {
   const { t } = useTranslation();
+  if (trimmed && leadingCount > 0) {
+    return (
+      <div className={cn('overflow-y-auto p-2', maxHeightClass)}>
+        {leading}
+        {status === 'searching' ? (
+          <div className="flex items-center justify-center gap-2 px-3 py-4 text-12 text-[var(--cmd-palette-item-meta)]">
+            <Spinner size={14} />
+            {t('ccAgent.search.searching')}
+          </div>
+        ) : status === 'error' ? (
+          <ErrorNotice className="m-3" message={t('ccAgent.search.failed')} />
+        ) : (
+          results.map((item) => (
+            <SearchResultRow
+              key={conversationSearchResultKey(item)}
+              item={item}
+              query={trimmed}
+              onSelect={onSelect}
+            />
+          ))
+        )}
+      </div>
+    );
+  }
   if (!trimmed) {
     return (
       <div className="px-3 py-6 text-center text-12 text-[var(--cmd-palette-empty)]">
@@ -608,9 +649,7 @@ export function SearchResultsBody({
   }
   if (status === 'error') {
     return (
-      <div className="px-3 py-6 text-center text-12 text-[var(--error-fg)]">
-        {t('ccAgent.search.failed')}
-      </div>
+      <ErrorNotice className="m-3" message={t('ccAgent.search.failed')} />
     );
   }
   if (results.length === 0) {
@@ -947,12 +986,7 @@ export function SearchFilterMenu({
         >
           <SlidersHorizontal size={compact ? 14 : 13} className="shrink-0" />
           {compact ? (
-            activeCount > 0 && (
-              <span
-                aria-hidden
-                className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-[var(--status-bar-accent)]"
-              />
-            )
+            activeCount > 0 && <FilterReminderDot />
           ) : (
             <>
               <span className="truncate">
@@ -1191,10 +1225,11 @@ function SearchResultRow({
   const sourceText = primaryHit ? searchSourceLabel(primaryHit, t) : t('ccAgent.search.source.titleOnly');
   const deviceLabel = item.session.deviceLinkDeviceName?.trim() || null;
   const meta = [
+    item.session.companion?.name,
     sourceText,
     activityText,
     deviceLabel,
-    item.session.workingDir,
+    item.session.companion ? null : item.session.workingDir,
   ].filter(Boolean).join(' · ');
   const tooltip = (
     <div className="space-y-2">

@@ -199,7 +199,7 @@ function resolveCanonicalForgeDir(source: string): string {
 }
 
 type ForgeOutsideAccess =
-  | { ok: true; allowOutsideWorkdir: false }
+  | { ok: true; allowOutsideWorkdir: false; isCurrent: () => boolean }
   | {
       ok: true;
       allowOutsideWorkdir: true;
@@ -213,13 +213,13 @@ function forgeOutsidePackFlags(access: Extract<ForgeOutsideAccess, { ok: true }>
   authorizedDir?: string;
   isCurrent?: () => boolean;
 } {
-  return access.allowOutsideWorkdir
-    ? {
-        allowOutsideWorkdir: true,
-        authorizedDir: access.authorizedDir,
-        ...(access.isCurrent ? { isCurrent: access.isCurrent } : {}),
-      }
-    : {};
+  return {
+    ...(access.allowOutsideWorkdir ? {
+      allowOutsideWorkdir: true,
+      authorizedDir: access.authorizedDir,
+    } : {}),
+    ...(access.isCurrent ? { isCurrent: access.isCurrent } : {}),
+  };
 }
 
 function requireLiveSessionInstance(
@@ -258,7 +258,20 @@ async function authorizeForgeOutsideWorkdir(params: {
   getLiveSessionGrantState?: CindyGhostsHostDeps['getLiveSessionGrantState'];
 }): Promise<ForgeOutsideAccess> {
   const location = classifyForgeSourceRelativeToWorkdir(params.dir, params.sessionWorkdir);
-  if (location !== 'outside') return { ok: true, allowOutsideWorkdir: false };
+  if (location !== 'outside') {
+    // The DB plan flag is the next-message checkbox, not execution authority.
+    // In-workdir Forge writes need the same live Plan guard as outside grants.
+    try {
+      const { sessionId, sessionInstanceId } = params.sessionContext ?? {};
+      const live = sessionId && sessionInstanceId
+        ? params.getLiveSessionGrantState?.(sessionId, sessionInstanceId) : null;
+      if (live?.permissionMode && live.permissionMode !== 'plan'
+        && !live.remoteHostId && live.isCurrent?.() === true) {
+        return { ok: true, allowOutsideWorkdir: false, isCurrent: live.isCurrent };
+      }
+    } catch { /* Unavailable runtime authority cannot authorize writes. */ }
+    return { ok: false, errorCode: 'PERMISSION_DENIED', message: GRANT_AUTHORIZATION_CHANGED_MESSAGE };
+  }
   const live = requireLiveSessionInstance(
     params.sessionContext?.sessionId,
     params.sessionContext?.sessionInstanceId,
@@ -314,7 +327,7 @@ async function authorizeForgeOutsideWorkdir(params: {
 }
 
 function assertForgeGrantCurrent(access: Extract<ForgeOutsideAccess, { ok: true }>): ForgeOutsideAccess {
-  if (access.allowOutsideWorkdir && access.isCurrent?.() !== true) {
+  if (access.isCurrent?.() !== true) {
     return { ok: false, errorCode: 'PERMISSION_DENIED', message: GRANT_AUTHORIZATION_CHANGED_MESSAGE };
   }
   return access;
@@ -403,7 +416,7 @@ async function packForgeSource(
       });
     }
   }
-  if (packFlags.allowOutsideWorkdir && packFlags.authorizedDir && packFlags.isCurrent?.() !== true) {
+  if (packFlags.isCurrent?.() === false) {
     return {
       ok: false as const,
       result: { ok: false as const, errorCode: 'PERMISSION_DENIED' as const, message: GRANT_AUTHORIZATION_CHANGED_MESSAGE },
@@ -416,9 +429,9 @@ async function packForgeSource(
       ? {
           allowOutsideWorkdir: true,
           authorizedDir: packFlags.authorizedDir,
-          ...(packFlags.isCurrent ? { isCurrent: packFlags.isCurrent } : {}),
         }
       : {}),
+    ...(packFlags.isCurrent ? { isCurrent: packFlags.isCurrent } : {}),
   };
   let packed = await packGhostDir(dir, iconPng ? { ...packOptions, iconPng } : packOptions);
   // icon overlay 的任何失败都不是打包门槛：用原源码再打一次。若原源码
@@ -1846,7 +1859,7 @@ export function getCindyGhostsMcpDeps(
         : undefined;
       let result: Record<string, unknown>;
       try {
-        result = await callCindyMedia(request, downloadContext);
+        result = await callCindyMedia(request, downloadContext, sessionId);
       } finally {
         downloadContext?.dispose?.();
       }
@@ -2574,7 +2587,7 @@ export function getCindyGhostsMcpDeps(
           packed: attempt.packed,
           iconNote: attempt.iconNote,
           mutationOwner,
-          ...(stillGranted.allowOutsideWorkdir && stillGranted.isCurrent
+          ...(stillGranted.isCurrent
             ? { isCurrent: stillGranted.isCurrent }
             : {}),
         };

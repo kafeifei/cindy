@@ -17,7 +17,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import * as Select from '@radix-ui/react-select';
+import { SelectParts as Select } from '@/components/ui/select';
 import { Check, ChevronDown, ChevronUp } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
@@ -173,7 +173,7 @@ export function TerminalShellSectionView({
             className={cn(
               'flex h-9 w-full min-w-0 items-center justify-between gap-2 rounded-full border px-3 text-12 outline-none',
               'bg-[var(--settings-input-bg)] text-[var(--settings-input-text)]',
-              'border-[var(--settings-input-border)] focus:ring-2 focus:ring-[var(--focus-ring-soft)]',
+              'border-[var(--settings-input-border)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring-soft)]',
               'data-[disabled]:cursor-not-allowed data-[disabled]:opacity-60',
             )}
           >
@@ -191,7 +191,7 @@ export function TerminalShellSectionView({
               align="start"
               sideOffset={4}
               className={cn(
-                'z-[10010] w-[var(--radix-select-trigger-width)] overflow-hidden rounded-xl border p-1',
+                'z-[10010] w-[var(--radix-select-trigger-width)] overflow-hidden rounded-xl border p-1.5',
                 'max-h-[min(15rem,var(--radix-select-content-available-height))]',
                 'border-[var(--cmd-palette-border)] bg-[var(--cmd-palette-bg)]',
               )}
@@ -239,7 +239,7 @@ function ShellOption({
       value={value}
       className={cn(
         'flex w-full cursor-pointer select-none items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-12 outline-none',
-        'text-[var(--settings-input-text)] data-[highlighted]:bg-[var(--surface-hover)]',
+        'text-[var(--settings-input-text)]',
         unavailable && 'text-[var(--settings-section-desc)]',
       )}
     >

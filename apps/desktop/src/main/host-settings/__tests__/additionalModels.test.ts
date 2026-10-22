@@ -35,7 +35,7 @@ vi.mock('../../maker-host/active-catalog.js', () => ({ getActiveCatalog: () => (
 vi.mock('../../maker-host/provider-route.js', () => ({ getProviderRouteMutationStamp: () => context.routeStamp }));
 vi.mock('../../usage/ledgerCurrency.js', () => ({ currentLedgerCurrency: () => 'USD' }));
 vi.mock('../../usage/accountReferencePrice.js', () => ({ accountReferencePriceQuote: () => ({ currency: 'USD', inputPerMtok: 2, outputPerMtok: 10, source: 'reference' }) }));
-vi.mock('../../cindy-brain/index.js', () => ({ getHostPluginPreferenceContext: () => [{ id: 'fixture-plugin', name: 'Fixture Plugin', supported: { cindy: true, agent: true, mainView: true }, options: { 'image.generate': [{ id: 'fixture-image', label: 'Fixture Image' }] } }], notifyHostPluginPreferenceChanged: vi.fn() }));
+vi.mock('../../cindy-brain/index.js', () => ({ getHostPluginPreferenceContext: () => [{ id: 'fixture-plugin', name: 'Fixture Plugin', supported: { cindy: true, agent: true, model: true, mainView: true }, options: { 'image.generate': [{ id: 'fixture-image', label: 'Fixture Image' }] } }], notifyHostPluginPreferenceChanged: vi.fn() }));
 vi.mock('../../maker-host/provider-order-store.js', () => ({ readProviderOrder: () => [] }));
 vi.mock('../../utility-model/oneshotProviderUsability.js', () => ({ hasOneshotProviderCredential: () => true }));
 vi.mock('../../utility-model/textOneshotPinOptions.js', () => ({ buildTextOneshotPinOptions: () => [{ id: 'fixture-pin', label: 'Fixture Auxiliary Model' }] }));
@@ -93,16 +93,18 @@ describe('model and IM settings native persistence', () => {
     expect((raw.raw.entries as Record<string, unknown>)[key]).toEqual(original);
     await expect(commitHostModelPrices([], undefined, { expectedRevision: before.revision })).rejects.toThrow();
   });
-  it('saves Plugin pins through the owner store without changing other capabilities or unknown metadata', async () => {
+  // 0.1.113 removed per-capability pins: old controllers must not persist inert choices.
+  it('rejects retired Plugin pins and preserves legacy data when changing concurrency', async () => {
     configureAdditionalNativeOperations({ plugins: nativePluginSettings } as never);
     const dir = path.join(context.root, 'owners', 'test-first'); fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, 'ghost-cindy-prefs.json');
-    fs.writeFileSync(file, JSON.stringify({ future: true, overrides: { 'fixture-plugin': { 'video.generate': 'saved-video', future: 'keep' } }, inflightLimits: { 'fixture-plugin': 2 } }));
-    expect(await updateHostSettings(caller, await request('pluginCindy', { set: { imageGenerate: [{ ghostId: 'fixture-plugin', model: 'fixture-image' }] } }))).toMatchObject({ saved: true });
-    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toMatchObject({ future: true, overrides: { 'fixture-plugin': { 'image.generate': 'fixture-image', 'video.generate': 'saved-video', future: 'keep' } }, inflightLimits: { 'fixture-plugin': 2 } });
-    expect(await updateHostSettings(caller, await request('pluginCindy', { set: { imageGenerate: [{ ghostId: 'fixture-plugin', model: 'unavailable-image' }] } }))).toMatchObject({ saved: false, code: 'MODEL_UNAVAILABLE' });
-    await updateHostSettings(caller, await request('pluginCindy', { clear: ['imageGenerate'] }));
-    expect(JSON.parse(fs.readFileSync(file, 'utf8')).overrides['fixture-plugin']).toEqual({ 'video.generate': 'saved-video', future: 'keep' });
+    const previous = { future: true, overrides: { 'fixture-plugin': { 'text.oneshot': 'saved-pin' } }, inflightLimits: { 'fixture-plugin': 2 } };
+    fs.writeFileSync(file, JSON.stringify(previous));
+    expect(await updateHostSettings(caller, await request('pluginCindy', { set: { imageGenerate: [{ ghostId: 'fixture-plugin', model: 'fixture-image' }] } }))).toMatchObject({ saved: false, code: 'UNSUPPORTED_CAPABILITY' });
+    expect(await updateHostSettings(caller, await request('pluginCindy', { clear: ['imageGenerate'] }))).toMatchObject({ saved: false, code: 'UNSUPPORTED_CAPABILITY' });
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual(previous);
+    expect(await updateHostSettings(caller, await request('pluginCindy', { set: { inflightLimits: [{ ghostId: 'fixture-plugin', limit: 3 }] } }))).toMatchObject({ saved: true });
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toMatchObject({ ...previous, inflightLimits: { 'fixture-plugin': 3 } });
   });
   it('passive reads do not claim legacy files or create defaults', async () => {
     for (const domain of ['subagentModel', 'auxiliaryModel', 'visionBridge', 'botModelChain', 'imGlobal', 'imFeishu', 'imWechat'] as const) {

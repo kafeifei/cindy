@@ -71,6 +71,7 @@ describe('默认态与持久化', () => {
       enabled: false,
       telegramEnabled: false,
       xEnabled: false,
+      xCompanionBotId: null,
       urlOverride: null,
       workspaces: {},
       bindingsCache: [],
@@ -194,6 +195,7 @@ describe('旧多连接文件迁移', () => {
       enabled: false,
       telegramEnabled: false,
       xEnabled: false,
+      xCompanionBotId: null,
       urlOverride: null,
       workspaces: {},
       bindingsCache: [],
@@ -462,4 +464,20 @@ describe('provider 与 Cindy 账号隔离', () => {
       expect(raw.accounts['account-test'].x.defaultWorkspace).toBeNull();
     });
   });
+});
+
+// New behavior: explicit X assignment survives restart, is isolated per account,
+// and removal restores ordinary tasks. Existing workspace tests do not cover it (unit).
+it('persists X companion assignment only for the current account', () => {
+  let owner = 'owner-one';
+  const store = makeStore(undefined, () => owner);
+  store.setXCompanionBotId('bot-one');
+  expect(makeStore(undefined, () => owner).get().xCompanionBotId).toBe('bot-one');
+  owner = 'owner-two';
+  expect(store.get().xCompanionBotId).toBeNull();
+  store.setXCompanionBotId('bot-two');
+  owner = 'owner-one';
+  expect(store.get().xCompanionBotId).toBe('bot-one');
+  store.setXCompanionBotId(null);
+  expect(makeStore(undefined, () => owner).get().xCompanionBotId).toBeNull();
 });

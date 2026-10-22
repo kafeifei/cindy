@@ -65,10 +65,12 @@ contextBridge.exposeInMainWorld('cindy', {
   },
   fs: (req: Record<string, unknown>): Promise<unknown> =>
     ipcRenderer.invoke('ghost-pipe:send', { ...req, type: 'fs-request' }),
+  deviceSync: (req: Record<string, unknown>): Promise<unknown> =>
+    ipcRenderer.invoke('ghost-pipe:send', { ...req, type: 'device-sync-request' }),
   library: (req: Record<string, unknown>): Promise<unknown> =>
     ipcRenderer.invoke('ghost-pipe:send', { ...req, type: 'library-request' }),
   tasks: Object.fromEntries(
-    ['capabilities', 'models', 'setModel', 'requestWriteAccess', 'startTeam', 'getTeam', 'setTeamPlan', 'releaseWorker', 'create', 'list', 'get', 'send', 'getRun', 'listRuns', 'cancel', 'readMessages'].map(kind => [
+    ['capabilities', 'models', 'setModel', 'requestWriteAccess', 'startTeam', 'getTeam', 'setTeamPlan', 'releaseWorker', 'create', 'list', 'get', 'send', 'getRun', 'listRuns', 'cancel', 'readMessages', 'setHidden'].map(kind => [
       kind, async (req: Record<string, unknown> = {}): Promise<unknown> => {
         const result = await ipcRenderer.invoke('ghost-pipe:send', { ...req, type: 'tasks-request', kind });
         if (result?.ok === true) return result.data;

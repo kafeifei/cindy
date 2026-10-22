@@ -49,7 +49,7 @@ function readPreferredSystemLocale(): ApplicationMenuLocale {
   }
 }
 
-const appearanceSnapshot = createAppearanceSnapshotBridge();
+const appearanceSnapshot = createAppearanceSnapshotBridge({ wallpaperAssets: true });
 
 const fanOutFullscreenChange = (cb: (isFullscreen: boolean) => void): (() => void) =>
   onPayload('fullscreen-change', cb);
