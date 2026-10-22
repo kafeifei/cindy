@@ -46,6 +46,25 @@ workflow、事件和独有标签全部匹配。没有 job 或仍在环境等待�
 - 原生隔离 smoke、公开双标签/config 读回、四份记录哈希及 ACS 2/2 Ready 均通过。
   发行和业务实例准入继续分开，业务实例、PVC、CIS 和新认领默认均未改动。
 
+## VPC 上传 cloud.18 与后续原生缓存
+
+[39827917054](https://github.com/zhuoshaojian/cindy/actions/runs/39827917054)，配方
+`c590103106c8f3700983fb56d22eec7364e9f459`，push 18:02:32.939943 UTC，ACS 步骤结束
+18:23:08，全部 job 18:23:18，分别 **20 分 35 秒 / 20 分 45 秒**，一次自动完成。
+
+- 实际观察到 `docker push` 使用同仓 VPC 端点，公开双标签/config/digest 读回一致。
+  发布 121 秒，对照 `cloud.17` 的 125 秒，改善有限，不能声称主要瓶颈已由 VPC 解决。
+- 检查 job 的稀疏检出仍执行全部测试，checkout 32 秒（上一轮 48 秒）。
+- 准备恢复 93.6 秒，断网读取 6.0 秒，应用编译 292.6 秒，完整构建 537 秒。
+  隔离 smoke、五项桌面/停机检查、四份记录 SHA、ACS 2/2 Ready 通过；三个 runner 自动回收。
+- 剩余重复项：每次云修订都会在打包副本上强制重编 `better-sqlite3` / `node-pty`。
+  后续使用锁定 `@electron/rebuild` 自带的源码/ABI 缓存，在独立物理副本预编，保留构建工具的 Node ABI。
+  新阶段接在现有依赖准备层之后，继承原缓存；只有首次填充新增原生编译。
+  准备层的 Docker 输入同时绑定 OS/编译器、锁文件、模块源码、Electron 版本与缓存脚本。
+  每次仍重新打包应用、核对最终 `.node` 哈希及权限，并在断网构建步骤中用同版本 Electron
+  实际执行 SQLite 查询与 PTY shell；发布记录绑定 `native-modules.json`。
+  普通客户端、正式包 fuse 和业务实例均不改。首次填充与后续全新 runner 热测单独记录。
+
 ## 缓存命中修复
 
 - 基座在隔离 `/rootfs` 中先把较新的 mtime 限制为 `SOURCE_DATE_EPOCH`，应用层组装后做相同处理。

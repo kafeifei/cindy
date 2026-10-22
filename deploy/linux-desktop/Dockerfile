@@ -23,24 +23,31 @@ RUN --mount=type=cache,id=cindy-linux-build-assets,target=/var/cache/cindy-build
              /workspace/ripgrep-linux-x64.tar.gz /workspace/codex-package-linux-x64.tar.gz /workspace/pi-linux-x64.tar.gz \
     && rm -rf /workspace/debs /var/lib/apt/lists/* /root/.npm/_cacache
 
+FROM prepared AS prepared-native
+COPY recipe/prime-native-cache.cjs /workspace/recipe/
+RUN node /workspace/recipe/prime-native-cache.cjs /workspace/source /workspace/native-cache 42.11.12
+
 # A cacheonly solve can resolve remote metadata without restoring its filesystem.
 # This unexported, network-free target must mount the prepared snapshot before
 # the parallel exporters start; otherwise max/min imports can resolve different
 # parent snapshots and unexpectedly execute the installation RUN again.
-FROM prepared AS prepared-materialized
+FROM prepared-native AS prepared-materialized
 RUN --network=none test -x /workspace/source/node_modules/electron/dist/electron \
     && test -f /workspace/electron-v42.11.12-linux-x64.zip \
     && test -d /workspace/source/node_modules/.pnpm \
     && test -x /workspace/source/apps/codex-package-bin/linux-x64/bin/codex \
     && head -c 1 /workspace/source/node_modules/electron/dist/electron >/dev/null \
     && head -c 1 /workspace/source/apps/codex-package-bin/linux-x64/bin/codex >/dev/null \
+    && test -s /workspace/native-cache/manifest.json \
     && printf 'PREPARED_FILESYSTEM_READY\n'
 
-FROM prepared AS build
+FROM prepared-native AS build
 COPY build-recipe/ /workspace/recipe/
 ARG CINDY_CLOUD_REVISION
 ENV APP_VERSION=${CINDY_UPSTREAM_VERSION}-cloud.${CINDY_CLOUD_REVISION}
 RUN /bin/sh /workspace/recipe/build-runtime.sh
+RUN --network=none node /workspace/recipe/verify-native-modules.cjs \
+    /workspace/source/node_modules/electron/dist/electron /workspace/artifact/cindy /workspace/artifact/native-modules.json
 ARG SOURCE_DATE_EPOCH
 RUN python3 /workspace/recipe/assemble-runtime.py /workspace/artifact /layer \
     && python3 -I /workspace/recipe/normalize-timestamps.py /layer \
@@ -49,6 +56,7 @@ RUN python3 /workspace/recipe/assemble-runtime.py /workspace/artifact /layer \
 FROM scratch AS build-records
 COPY --from=build /workspace/artifact/runtime-layer-audit.json /
 COPY --from=build /workspace/artifact/agent-source-proof.json /
+COPY --from=build /workspace/artifact/native-modules.json /
 COPY --from=build /workspace/recipe/overlay-application.json /
 # Commit/evidence changes do not invalidate dependency installation or packaging.
 COPY recipe/build-inputs.json /

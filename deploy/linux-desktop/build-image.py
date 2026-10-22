@@ -165,7 +165,7 @@ def bake_plan(output, tag, revision, entrypoint_sha, no_cache, cloud_revision=No
     targets = {'base': base, 'runtime': runtime, 'records': records}
     if cache_repository:
         refs = registry_cache(cache_repository)
-        prepared = {**graph, 'target': 'prepared', 'output': ['type=cacheonly']}
+        prepared = {**graph, 'target': 'prepared-native', 'output': ['type=cacheonly']}
         targets['prepared'] = prepared
         targets['materialize'] = {**graph, 'target': 'prepared-materialized',
                                   'output': ['type=cacheonly']}

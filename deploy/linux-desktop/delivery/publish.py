@@ -46,8 +46,12 @@ def check_build(plan, info, result, smoke, records):
             raise ValueError('NATIVE_SMOKE_INCOMPLETE:' + check)
     if smoke.get('applicationVersion') != cloud_version(version):
         raise ValueError('APPLICATION_VERSION_MISMATCH')
-    required = ['runtime-layer-audit.json', 'agent-source-proof.json', 'overlay-application.json', 'build-inputs.json']
+    required = ['runtime-layer-audit.json', 'agent-source-proof.json', 'overlay-application.json', 'build-inputs.json', 'native-modules.json']
     hashes = {name: hashlib.sha256((records / name).read_bytes()).hexdigest() for name in required}
+    native = json.loads((records / 'native-modules.json').read_text())
+    if (native.get('passed') is not True or native.get('sqlite') is not True or native.get('pty') is not True
+            or native.get('electronVersion') != '42.11.12' or not str(native.get('abi', '')).isdigit()):
+        raise ValueError('PACKAGED_NATIVE_PROBE_MISSING')
     inputs = json.loads((records / 'build-inputs.json').read_text())
     if inputs.get('recipeCommit') != plan['recipeCommit'] or inputs.get('version') != version:
         raise ValueError('BUILD_RECORD_IDENTITY_MISMATCH')

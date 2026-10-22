@@ -62,6 +62,10 @@ for (const [a, b] of [['concurrent: isDev ? false : true,', 'concurrent: false,'
   if (forgeAfter.split(a).length !== 2) throw Error(`forge anchor changed: ${a}`);
   forgeAfter = forgeAfter.replace(a, b);
 }
+const nativeAnchor = '    force: true,\n    onlyModules: modules,\n  });';
+if (forgeAfter.split(nativeAnchor).length !== 2) throw Error('native rebuild anchor changed');
+forgeAfter = forgeAfter.replace(nativeAnchor,
+  "    force: true,\n    useCache: true,\n    cachePath: '/workspace/native-cache/rebuild',\n    onlyModules: modules,\n  });\n  _require('/workspace/recipe/prime-native-cache.cjs').restorePackage(buildPath, electronVersion, arch, platform);");
 fs.writeFileSync(forge, forgeAfter);
 records.push({ overlay: 'build-metadata-and-memory-budget', file: 'apps/desktop/forge.config.ts', beforeSha256: sha(forgeBefore), afterSha256: sha(forgeAfter) });
 
