@@ -171,6 +171,10 @@ Kubernetes RRSA，不借用用户的控制台 Cookie。私有 ACR 拉取须预�
 `Dockerfile.combined`：基座与应用直接引用同一个阶段，不再经 `target:base` 跨构建图接入。
 基座依赖仍从固定 OS、包锁、校验值完整构建，不继承历史 Cindy 成品镜像。
 
+检查与 ACS job 复用固定 digest 的 fork runner 自带的 Node 24 / npm，启动时校验并打印版本；
+不再各自下载 Node。云镜像中的 Node 仍由完整 Dockerfile 和锁文件决定。
+ACS job 只 checkout 交付工具目录，仍使用独立 Environment 和一次性 runner。
+
 Registry 缓存使用两个独立标签、单写入者：基座 `v2-base / mode=max`，应用准备层
 `v4-prepared / mode=min`。后者保留已准备的 Agent/Electron、pnpm 依赖、Linux 打包环境，
 使用冻结应用源码与准备脚本作为输入；云修订号、发布 commit 和说明文档不在这一步参与。

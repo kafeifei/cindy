@@ -44,9 +44,8 @@ jobs:
           fetch-depth: 0
           filter: blob:none
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22
+      - name: Use Node bundled in the pinned fork runner
+        run: bash deploy/linux-desktop/delivery/use-runner-node.sh
       - name: Install only locked delivery check dependencies
         run: |
           mkdir -p "$RUNNER_TEMP/cloud-checks"
@@ -199,9 +198,8 @@ jobs:
           persist-credentials: false
           # This job consumes digest-bound records; it only needs cache tools.
           sparse-checkout: deploy/linux-desktop/delivery
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22
+      - name: Use Node bundled in the pinned fork runner
+        run: bash deploy/linux-desktop/delivery/use-runner-node.sh
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           artifact-ids: ${{ needs.candidate.outputs.artifact_id }}
