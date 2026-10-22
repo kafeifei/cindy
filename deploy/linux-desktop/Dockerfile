@@ -23,6 +23,19 @@ RUN --mount=type=cache,id=cindy-linux-build-assets,target=/var/cache/cindy-build
              /workspace/ripgrep-linux-x64.tar.gz /workspace/codex-package-linux-x64.tar.gz /workspace/pi-linux-x64.tar.gz \
     && rm -rf /workspace/debs /var/lib/apt/lists/* /root/.npm/_cacache
 
+# A cacheonly solve can resolve remote metadata without restoring its filesystem.
+# This unexported, network-free target must mount the prepared snapshot before
+# the parallel exporters start; otherwise max/min imports can resolve different
+# parent snapshots and unexpectedly execute the installation RUN again.
+FROM prepared AS prepared-materialized
+RUN --network=none test -x /workspace/source/node_modules/electron/dist/electron \
+    && test -f /workspace/electron-v42.11.12-linux-x64.zip \
+    && test -d /workspace/source/node_modules/.pnpm \
+    && test -x /workspace/source/apps/codex-package-bin/linux-x64/bin/codex \
+    && head -c 1 /workspace/source/node_modules/electron/dist/electron >/dev/null \
+    && head -c 1 /workspace/source/apps/codex-package-bin/linux-x64/bin/codex >/dev/null \
+    && printf 'PREPARED_FILESYSTEM_READY\n'
+
 FROM prepared AS build
 COPY build-recipe/ /workspace/recipe/
 ARG CINDY_CLOUD_REVISION

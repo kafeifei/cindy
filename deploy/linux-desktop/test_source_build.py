@@ -140,6 +140,12 @@ class BuildGraphTest(unittest.TestCase):
         self.assertNotIn('cache-to', targets['runtime'])
         self.assertEqual(targets['records']['cache-from'], targets['runtime']['cache-from'])
         self.assertNotIn('cache-to', targets['records'])
+        # An exported probe could become a metadata-only hit on fresh builders.
+        # Force physical restoration through a separate, unexported target.
+        self.assertNotIn('cache-to', targets['materialize'])
+        self.assertEqual(targets['materialize']['target'], 'prepared-materialized')
+        self.assertEqual(targets['materialize']['cache-from'],
+            [targets['prepared']['cache-from'][1]])
 
     def test_cold_rebuild_does_not_import_cache_or_accept_injected_options(self):
         targets = build.bake_plan(Path('/records'), 'example:unique', 'commit', 'sha', True,

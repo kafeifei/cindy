@@ -148,9 +148,15 @@ def bake_plan(output, tag, revision, entrypoint_sha, no_cache, cloud_revision=No
         refs = registry_cache(cache_repository)
         prepared = {**graph, 'target': 'prepared', 'output': ['type=cacheonly']}
         targets['prepared'] = prepared
+        targets['materialize'] = {**graph, 'target': 'prepared-materialized',
+                                  'output': ['type=cacheonly']}
         imports = [] if no_cache else ['type=registry,ref=' + ref for ref in refs.values()]
         for target in targets.values():
             target['cache-from'] = list(imports)
+        # Resolve the prepared chain alone, then mount it before concurrent
+        # exporters import the separate max base history. Never export the probe.
+        targets['materialize']['cache-from'] = ([] if no_cache else
+            ['type=registry,ref=' + refs['prepared']])
         # Base history rarely changes; preserve its existing max cache. Export
         # only the prepared filesystem chain for the application. Packaging
         # scratch and /layer duplicate the final bytes and are rebuilt per version.
@@ -201,13 +207,15 @@ def main():
             version['cloudRevision'], inputs['baseRecipeCommit'], args.cache_repository, version['upstreamVersion']), indent=2) + '\n')
         command = ['docker', 'buildx', 'bake', '--builder', args.builder,
                    '--allow=fs.write=' + str(output), '--progress=plain', '-f', str(plan)]
-        # Resolve/import preparation once before parallel image exporters. A
-        # single solve reuses the remote chain on a fresh builder; simultaneous
-        # base/prepared/runtime solves have missed it even with identical inputs.
+        # Metadata-only cache hits do not restore the prepared filesystem. Mount
+        # its chain in a separate network-free solve before parallel exporters;
+        # max/min parent selection has otherwise re-executed installation.
         # Explicit cold builds retain no-cache for the entire graph.
         if args.cache_repository and not args.no_cache:
             run_build(output, 'prepare-build', command + ['--metadata-file',
                 str(output / 'prepare-metadata.json'), 'prepared'], context)
+            run_build(output, 'materialize-build', command + ['--metadata-file',
+                str(output / 'materialize-metadata.json'), 'materialize'], context)
         run_build(output, 'full-build', command + ['--metadata-file',
                   str(output / 'build-metadata.json'), 'base', 'runtime', 'records',
                   *(['prepared'] if args.cache_repository and args.no_cache else [])], context)

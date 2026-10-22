@@ -185,6 +185,10 @@ Registry 缓存使用两个独立标签、单写入者：基座 `v2-base / mode=
 应用组装的 `/layer` 做同样处理。旧 mtime、字节、权限与软硬链接保持不变，导出时不再
 重新扫描并改写全部层。归一化工具拒绝 `/` 和符号链接根，不处理运行中实例或用户 HOME。
 新的缓存代次首次需要填充；热构建耗时必须由随后全新 runner 实测，不能拿本机重复构建代替。
+准备缓存解析后，单独执行不导出缓存的 `prepared-materialized` 目标，在断网环境实际读取
+Electron、Codex 和依赖目录，再启动并行导出。`cacheonly` 的元数据命中不能代替文件层恢复；
+验收必须同时检查 `prepare-build.log`、`materialize-build.log` 与 `full-build.log`，确认安装
+命令在三步中均未重跑。此探针不进入最终镜像，也不进入远端缓存，避免下轮只命中探针元数据。
 
 首次构建、输入变更或缓存被清理时按完整 Dockerfile 重建。`--no-cache` 禁止导入旧缓存，
 仍可导出新缓存；导出失败不忽略。普通 cache mount 不跨 runner 持久化；这里缓存的是
