@@ -13,6 +13,10 @@ Actions 已启用，运行只接受本 fork 的上述分支。首次候选交付
 CLI 在构建前验证，校验固定安装包并安装到 job 临时目录，不要求提权。
 不需要修改主仓、默认分支或企业 runner。
 
+持续队列供给已部署，版本提交后的完整无人介入交付见
+[2026-10-22 验收](ACCEPTANCE-AUTOSUPPLY-20261022.md)；控制器配置方式见
+[runner 部署与维护](runner/README.md#部署与维护)。
+
 创建两个 Environment，均配置 **Selected branches and tags → branch**，精确允许
 `feat/cloud-settings-native-client`，不添加 tag 通配规则：
 

@@ -81,10 +81,12 @@ kubectl -n cindy-fork-runners rollout status deployment/cindy-fork-autosupply
 
 暂停新供给可将 Deployment 缩为 0；已有 ECI 按自身时限退出，恢复控制器后补清理。
 故障时查看 controller 的 `controller_cycle_failed` / `reconcile_failed` 固定错误码及
-`cfr-state-*` 回执；不要输出 Secret。修复根因后若 3 次启动已用尽，在 GitHub 重跑失败运行，
+`cfr-state-*` 回执；不要输出 Secret。修复根因后若 3 次启动已用尽，在 GitHub 取消仍排队的运行后重跑（已失败则直接重跑），
 新 job ID 会获得新身份，不修改旧回执或重用旧 JIT。
 
 生产入口回归见 [test_autosupply.py](../test_autosupply.py)：重复轮询、重启续接、失落 JIT、
 取消回收、重试上限、Lease 排他和凭据隔离；纯内存单测，单文件约 0.1 秒。
 官方契约：[仓库级 JIT](https://docs.github.com/en/rest/actions/self-hosted-runners#create-configuration-for-a-just-in-time-runner-for-a-repository)、
 [workflow job 查询](https://docs.github.com/en/rest/actions/workflow-jobs#list-jobs-for-a-workflow-run)。
+
+2026-10-22 已部署并通过真实 push 交付及回收验证，见 [验收记录](../ACCEPTANCE-AUTOSUPPLY-20261022.md)。

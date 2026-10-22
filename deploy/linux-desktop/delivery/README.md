@@ -12,16 +12,21 @@ Runner、DinD、BuildKit 是构建工具，不是云实例需要安装的额外�
 
 | 阶段 | 本分支能力 | 启用/验收状态 |
 | --- | --- | --- |
-| 可信分支推送检查 | 锁文件安装、云覆盖层与发布工具测试、双版本和上游 commit 校验 | 触发与实际检查已运行；专属 self-hosted ECI runner 已在线并实际执行检查，见接入手册 |
+| runner 自动供给 | 专属 ACK 队列控制器，仓库级 JIT + 一次性 ECI，Lease/状态续接与自动回收 | push 完整交付、控制器重建后不重复执行、三阶段资源回收均已实测 |
+| 可信分支推送检查 | 锁文件安装、云覆盖层与发布工具测试、双版本和上游 commit 校验 | push 触发与专属 self-hosted ECI runner 自动供给已实测，见接入手册 |
 | 候选镜像 | 完整源码构建、两层镜像审计、原生 Linux 隔离启动/停机、发布已测产物、digest 绑定 | 完整构建、隔离 smoke、ACR 推送及产物上传已在 self-hosted runner 通过 |
 | ACS 缓存 | 按目标网络准备主镜像和全部实际 init 镜像，检查精确引用与 Ready | 已实测 Ready 与同一 AK 的创建/Ready/非强制删除；每版实际镜像清单以回执为准 |
 | 产品验收与晋级 | 记录明确的 pending 状态 | 完整 OAuth、DeviceLink、Pod 实际缓存命中、灰度、签名信任及稳定通道准入尚未自动化 |
 | CIS 自动更新 | [双版本选择与主动升级](../DUAL-VERSION-UPDATES.md) | 已登记维护实例支持双版本；网页和原生客户端均已接入主动升级。统一稳定目录与新认领消费待接入 |
 
-当前交付为 `0.1.113-cloud.1`，运行 [39719239738](https://github.com/zhuoshaojian/cindy/actions/runs/39719239738)
-的检查、完整构建、原生隔离 smoke、发布和 ACS 缓存均成功。本人测试实例的主容器与 init
-已通过完整维护升级；其他实例及新认领默认未变。详见 [0.1.113 验收记录](../ACCEPTANCE-0113-20261022.md)，
-其中单独列出了尚未完成的 Mac 跨端验收。
+当前候选交付为 `0.1.113-cloud.2`，运行 [39731560933](https://github.com/zhuoshaojian/cindy/actions/runs/39731560933)
+由版本提交的 **push** 自动触发：三个 job 按队列自动获得一次性 runner，完整构建、原生隔离
+smoke、发布和 ACS 缓存全部成功，runner/ECI/JIT 自动回收；期间没有手工 dispatch、注册 runner
+或补建缓存。详见 [自动供给与交付验收](ACCEPTANCE-AUTOSUPPLY-20261022.md)。
+
+实例升级与候选交付分开：上一版 `0.1.113-cloud.1` 的本人实例维护升级见
+[0.1.113 验收记录](../ACCEPTANCE-0113-20261022.md)；本次 `cloud.2` 没有切换实例或新认领默认，
+也没有补做新的 OAuth/DeviceLink 验收。
 上一轮交付为 `0.1.108-cloud.2`，运行
 [39587950156](https://github.com/zhuoshaojian/cindy/actions/runs/39587950156) 已完成。
 包内版本、实例中的真实显示、缓存命中和维护窗口外主动升级结果见
@@ -59,7 +64,7 @@ GitLab runner、共享 DNS、云实例或新认领默认。
 
 此运行完成的是候选交付。产品验收、Pod 实际缓存命中、灰度及稳定通道晋级仍独立进行；
 runner 的队列供给与回收现由 [专属控制器](runner/README.md#自动供给控制器) 实现；
-持续部署与真实 push 交付结果须以运行记录为准，不能用单测替代。
+控制器已常驻 ACK，真实 push 交付已通过，证据及范围见 [本轮验收](ACCEPTANCE-AUTOSUPPLY-20261022.md)。
 配置与证据边界见 [接入手册](BOOTSTRAP.md)。
 
 ## 双版本：上游完整版本 + 云修订
@@ -67,9 +72,9 @@ runner 的队列供给与回收现由 [专属控制器](runner/README.md#自动�
 [`version.json`](version.json) 是提交到 Git 的发行意图。例如：
 
 - 上游版本：`0.1.113`，完整保留 major/minor/patch；普通客户端源码版本不变。
-- 云应用和发行版本：`0.1.113-cloud.1`；镜像标签：`0.1.113-cloud.1-cn-amd64`。
+- 云应用和发行版本：`0.1.113-cloud.2`；镜像标签：`0.1.113-cloud.2-cn-amd64`。
   云构建只在隔离导出目录写组合版本，应用内显示、ASAR、OCI 元数据与交付计划必须一致。
-- 下次云改动：`0.1.113-cloud.2`；切换到 `0.1.114` 后：`0.1.114-cloud.1`。
+- 下次云改动：`0.1.113-cloud.3`；切换到 `0.1.114` 后：`0.1.114-cloud.1`。
 
 同一上游修订必须加 1，新上游修订从 1 开始，禁止上游倒退和同名上游 tag 改 commit。
 排序比较四个整数 `(major, minor, patch, cloudRevision)`，不使用整个字符串的 SemVer
