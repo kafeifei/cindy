@@ -27,8 +27,8 @@ Use a new tag and output directory. `--no-cache` forces both Dockerfiles to run
 again; `--prepare-only` exports the exact source context without starting Docker.
 The script never publishes runtime images, creates ACS caches or updates instances.
 Pass `--builder NAME` to use an existing native amd64 Buildx builder from a Mac
-or another host. Bake connects the freshly built base directly to the application
-and records targets; it does not fetch a historical Cindy image or publish an
+or another host. The exporter joins the two committed recipes into one
+`Dockerfile.combined` stage graph (base, prepared application, runtime, records); it does not fetch a historical Cindy image or publish an
 intermediate base. The resulting images and records are returned to the host.
 With a protected, job-private Registry login, `--cache-repository REGISTRY/REPO`
 exports/imports intermediate BuildKit layers between disposable builders. It

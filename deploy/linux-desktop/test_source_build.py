@@ -87,15 +87,17 @@ class BuildGraphTest(unittest.TestCase):
     def test_registry_cache_survives_runner_replacement_without_overlapping_writers(self):
         targets = build.bake_plan(Path('/records'), 'example:unique', 'app-commit', 'sha', False,
             2, 'base-commit', 'registry.example.com/cindy/build-cache', '0.1.113')['target']
-        self.assertEqual(targets['base']['args']['CINDY_SOURCE_COMMIT'], 'base-commit')
+        self.assertEqual(targets['base']['args']['CINDY_BASE_SOURCE_COMMIT'], 'base-commit')
         self.assertEqual(targets['runtime']['args']['CINDY_SOURCE_COMMIT'], 'app-commit')
         self.assertEqual(targets['runtime']['args']['CINDY_UPSTREAM_VERSION'], '0.1.113')
         self.assertEqual(targets['records']['args']['CINDY_UPSTREAM_VERSION'], '0.1.113')
-        self.assertNotIn('CINDY_UPSTREAM_VERSION', targets['base']['args'])
+        self.assertEqual(targets['base']['args'], targets['runtime']['args'])
         exports = [t['cache-to'][0] for t in targets.values() if 'cache-to' in t]
         self.assertEqual(len(exports), 2)
         self.assertEqual(len(set(exports)), 2)
-        self.assertTrue(all('mode=max' in x and 'ignore-error' not in x for x in exports))
+        self.assertTrue(all('ignore-error' not in x for x in exports))
+        self.assertIn('mode=min', targets['prepared']['cache-to'][0])
+        self.assertNotIn('cache-to', targets['runtime'])
         self.assertEqual(targets['records']['cache-from'], targets['runtime']['cache-from'])
         self.assertNotIn('cache-to', targets['records'])
 
@@ -142,8 +144,9 @@ class BuildGraphTest(unittest.TestCase):
         plan = build.bake_plan(Path('/private/records'), 'example:unique', 'commit', 'entrysha', True)['target']
         self.assertEqual(plan['base']['target'], 'runtime-base-slim')
         for name in ['runtime', 'records']:
-            self.assertEqual(plan[name]['contexts'], {'cindy-source-base': 'target:base'})
-            self.assertEqual(plan[name]['args']['BASE_IMAGE'], 'cindy-source-base')
+            self.assertEqual(plan[name]['contexts'], {'base-recipe': './base-recipe'})
+            self.assertEqual(plan[name]['dockerfile'], plan['base']['dockerfile'])
+            self.assertNotIn('BASE_IMAGE', plan[name]['args'])
             self.assertEqual(plan[name]['args']['CINDY_SOURCE_COMMIT'], 'commit')
             self.assertTrue(plan[name]['no-cache'])
         self.assertEqual(plan['records']['target'], 'build-records')

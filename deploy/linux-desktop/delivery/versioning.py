@@ -43,6 +43,12 @@ def image_tag(value):
     return cloud_version(value) + '-cn-amd64'
 
 
+def source_tag(commit):
+    if not isinstance(commit, str) or not COMMIT.fullmatch(commit):
+        raise ValueError('INVALID_RECIPE_COMMIT')
+    return 'sha-' + commit + '-cn-amd64'
+
+
 def require_successor(previous, current):
     validate(previous)
     validate(current)

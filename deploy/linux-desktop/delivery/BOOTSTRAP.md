@@ -79,13 +79,13 @@ ACR 与 ACS 可以属于不同账号，必须独立配置；不复用 candidate 
 
 ## ACR 仓库账号：镜像仓库与推送身份
 
-选择专用候选仓库，并在 ACR 读取确认 **Tag 不可变** 后才设置
+云运行时统一发布到 `cloud-runtime-cn`，并在 ACR 读取确认 **Tag 不可变** 后才设置
 `CLOUD_IMAGE_IMMUTABLE_TAGS=true`。不可变策略会影响整个仓库，不为试跑而修改其它业务仓库。
 ACR 的不可变策略对 `latest` 有例外，本流水线不产生该标签。
 
 另外为临时 runner 创建一个**私有构建缓存仓库**，允许更新缓存标签，配置到
-`CLOUD_IMAGE_BUILD_CACHE_REPOSITORY`。它与候选仓库分开，沿用 ACR 登录身份并单独授予
-该缓存仓库 Pull/Push 权限；不要关闭候选仓库的不可变策略。此仓库可能包含构建中间源码，
+`CLOUD_IMAGE_BUILD_CACHE_REPOSITORY`。它与运行时仓库分开，沿用 ACR 登录身份并单独授予
+该缓存仓库 Pull/Push 权限；不要关闭运行时仓库的不可变策略。此仓库可能包含构建中间源码，
 不开放匿名读取。缓存可清理并从源码重建，不能登记为实例镜像或加入 ACS 运行时缓存。
 构建前的登录供 BuildKit 读写缓存，smoke 后再换取新的短期凭据发布候选，AK 不进入构建层。
 
@@ -104,7 +104,8 @@ ACR 的不可变策略对 `latest` 有例外，本流水线不产生该标签。
 
 ACR 推送身份必须来自**该 Registry 所属账号**；ACS 缓存 AK 来自缓存所属账号，两者可能不同。
 2026-10-21 用户指定的本地 ACR AK 已验证可管理目标实例，补建了独立、公开且 tag 不可变的
-候选仓库，未改变正式仓库的策略。AK 已写入 candidate Environment Secret；只允许
+候选仓库，这是首次接入的历史状态；当前按用户要求统一到 `cloud-runtime-cn`，
+版本与源码双标签不可变。旧候选仓库不再接收新版本，也不改写旧标签。AK 已写入 candidate Environment Secret；只允许
 `feat/cloud-settings-native-client` 分支。本机完成临时 Registry 登录、测试制品推送、
 匿名读取和同标签覆盖拒绝，测试标签已清理；GitHub 候选发布也已通过。现有 AK 的 RAM 身份管理查询
 返回 `NoPermission`；这不代表缺少 ACR 权限，也不能将其宣称为新建的最小权限身份。

@@ -13,13 +13,13 @@ Runner、DinD、BuildKit 是构建工具，不是云实例需要安装的额外�
 | 阶段 | 本分支能力 | 启用/验收状态 |
 | --- | --- | --- |
 | runner 自动供给 | 专属 ACK 队列控制器，仓库级 JIT + 一次性 ECI，Lease/状态续接与自动回收 | push 完整交付、控制器重建后不重复执行、三阶段资源回收均已实测 |
-| 可信分支推送检查 | 锁文件安装、云覆盖层与发布工具测试、双版本和上游 commit 校验 | push 触发与专属 self-hosted ECI runner 自动供给已实测，见接入手册 |
+| 可信分支推送检查 | 精简锁定测试依赖、云覆盖层与发布工具测试、双版本和上游 commit 校验 | push 触发与专属 self-hosted ECI runner 自动供给已实测，见接入手册 |
 | 候选镜像 | 完整源码构建、两层镜像审计、原生 Linux 隔离启动/停机、发布已测产物、digest 绑定 | 完整构建、隔离 smoke、ACR 推送及产物上传已在 self-hosted runner 通过 |
 | ACS 缓存 | 按目标网络准备主镜像和全部实际 init 镜像，检查精确引用与 Ready | 已实测 Ready 与同一 AK 的创建/Ready/非强制删除；每版实际镜像清单以回执为准 |
 | 产品验收与晋级 | 记录明确的 pending 状态 | 完整 OAuth、DeviceLink、Pod 实际缓存命中、灰度、签名信任及稳定通道准入尚未自动化 |
 | CIS 自动更新 | [双版本选择与主动升级](../DUAL-VERSION-UPDATES.md) | 已登记维护实例支持双版本；网页和原生客户端均已接入主动升级。统一稳定目录与新认领消费待接入 |
 
-当前候选交付为 `0.1.113-cloud.2`，运行 [39731560933](https://github.com/zhuoshaojian/cindy/actions/runs/39731560933)
+此前已验收的自动交付为 `0.1.113-cloud.2`，运行 [39731560933](https://github.com/zhuoshaojian/cindy/actions/runs/39731560933)
 由版本提交的 **push** 自动触发：三个 job 按队列自动获得一次性 runner，完整构建、原生隔离
 smoke、发布和 ACS 缓存全部成功，runner/ECI/JIT 自动回收；期间没有手工 dispatch、注册 runner
 或补建缓存。详见 [自动供给与交付验收](ACCEPTANCE-AUTOSUPPLY-20261022.md)。
@@ -60,6 +60,12 @@ CIS 自身的构建/部署与用户实例升级是另外两件事，见
 - 下次云改动：`0.1.113-cloud.3`；切换到 `0.1.114` 后：`0.1.114-cloud.1`。
 
 同一上游修订必须加 1，新上游修订从 1 开始，禁止上游倒退和同名上游 tag 改 commit。
+镜像仓库统一使用 `cloud-runtime-cn`，每份产物保留两个不可变标签：
+`0.1.113-cloud.N-cn-amd64` 与 `sha-<完整配方 commit>-cn-amd64`，二者必须读回同一 manifest digest。
+先检查两个标签都无冲突，再发布；中断后可补齐缺失标签，不覆盖已有不同产物。
+`candidate` 只表示验收清单中的阶段，现有 job / Environment 名不决定镜像仓库；
+通过验收后消费原 digest，不重建第二份“正式镜像”。旧仓库中的已发布版本不搬运、不重标。
+
 排序比较四个整数 `(major, minor, patch, cloudRevision)`，不使用整个字符串的 SemVer
 或字典序。通道是独立字段，目前只输出 `candidate`。
 
@@ -79,11 +85,13 @@ CIS 自身的构建/部署与用户实例升级是另外两件事，见
 ## 执行链与凭据边界
 
 1. `verify` 在 fork 仓库专属的临时 self-hosted Linux 运行，无发布凭据。
+   只安装 `checks/package-lock.json` 锁定的 6 个检查依赖，不重复安装 Desktop/Mobile 工作区，
+   完整应用依赖仍在 Docker 构建内按客户端 pnpm 锁安装；检查集合不变。
    本交付 workflow 只接受指定 fork 功能分支的 push/dispatch，不监听外部 PR；主仓工作流不变。
    fork 不必预先复制上游 tag：从 `makecindy/cindy` 拉取指定正式 tag，核对固定 commit，
    不使用上游最新分支或强制覆盖本地冲突 tag。
 2. `candidate` 只接受上述 fork 和分支，在 `cloud-image-candidate-cn` 环境运行。
-   使用新建 base + runtime 的 Bake 图，编译、瘦身和审计仍由现有完整 Dockerfile 完成。
+   将两份完整 Dockerfile 组合为同一多阶段 Bake 图，编译、瘦身和审计仍由现有完整 Dockerfile 完成。
    不继承历史 Cindy 成品镜像；中间构建层只写入私有构建缓存，不发布为云运行时版本。
 3. `smoke.py` 使用一次性 tmpfs、无网络、只读根，模拟 root-owned 老 HOME 目录。
    初始化仅持有建测试目录所需权限，应用切到 UID 10001、清空 capabilities，执行镜像内
@@ -155,26 +163,25 @@ Kubernetes RRSA，不借用用户的控制台 Cookie。私有 ACR 拉取须预�
 
 ## 构建缓存
 
-临时 runner 不保留本地 Docker 磁盘。Buildx 把依赖基座和应用中间层以 `mode=max`
-保存到同区域的私有 ACR 构建缓存仓库；新 runner 从这里恢复。两个标签按 fork 分支、
-CN/amd64 和缓存格式隔离，base/runtime 分开写，records 只读，避免并发覆盖。
-这些是构建缓存，不是新的云实例版本，不进入 CIS 或 ACS 镜像清单。
+临时 runner 不保留本地 Docker 磁盘。两份完整配方在导出目录组合成
+`Dockerfile.combined`：基座与应用直接引用同一个阶段，不再经 `target:base` 跨构建图接入。
+基座依赖仍从固定 OS、包锁、校验值完整构建，不继承历史 Cindy 成品镜像。
 
-基座只读取 Dockerfile、包锁、包校验器和字体安装器四份输入，记录这组文件最后变更的
-Git commit；修改交付文档、云修订号或应用补丁不再令 apt 安装重跑。应用侧也缩小了
-构建上下文；完整提交记录在独立 records 阶段写入，云端指引和运行时代码仍参与打包
-缓存校验。这些输入约束不代表跨 runner 的应用缓存复用已通过，实际限制见下文。
-缓存命中仍执行发布审计、独立启动/停机验收和 digest 绑定。
+Registry 缓存使用两个独立标签、单写入者：基座 `v1-base / mode=max`，应用准备层
+`v2-prepared / mode=min`。后者保留 Agent/Electron 下载、pnpm 依赖、Linux 打包环境，
+使用冻结应用源码与准备脚本作为输入；云修订号、发布 commit 和说明文档不在这一步参与。
+每版仍编译应用、组装最终层，但不再上传编译目录、打包副本、`/layer` 等重复临时层。
+这些私有缓存不是实例镜像，不进入 CIS 或 ACS 镜像清单。
+
+基座只读取 Dockerfile、包锁、包校验器和字体安装器，记录其最后变更 commit。
+完整发行身份在应用打包与独立 records 阶段绑定。命中缓存也必须执行发布审计、
+原生隔离启动/停机检查及两个标签的 digest 校验。构建阶段不重复下载准备阶段已有的系统库。
 
 首次构建、输入变更或缓存被清理时按完整 Dockerfile 重建。`--no-cache` 禁止导入旧缓存，
-仍可导出新缓存；缓存导出失败不忽略。普通 cache mount 的下载目录不自动跨 runner 保存，
-不能把它当成持久缓存；这里持久化的是可校验的构建层。
-2026-10-21 完整镜像实测发现：全新 ECI 可以恢复基座缓存，但应用层在 `target:base`
-边界之后仍重新执行，**完整应用缓存复用尚未验收通过**。缓存配置存在、导入成功或
-小型 COPY 测试通过，都不能替代完整镜像计时。首次热测还遇到一次 ACR `429`，
-BuildKit 会回退重建；不能把这种情况误报为热缓存命中。
-实测方法、分项耗时和产物对比见 [冷/热构建验收记录](BUILD-CACHE-BENCHMARK.md)。
-上述 2026-10-21 缓存基准只做构建与测量，没有重发当时已发布的 `cloud.1`。
+仍可导出新缓存；导出失败不忽略。普通 cache mount 不跨 runner 持久化；这里缓存的是
+完整准备层。2026-10-21 旧构建图只命中基座的实测保留在
+[历史冷/热记录](BUILD-CACHE-BENCHMARK.md)，不能作为本次优化的速度结论。
+本次必须在全新 runner 上完成准备层首次填充和后续云修订交付，再记录实际加速。
 
 实现依据：[Docker Registry cache](https://docs.docker.com/build/cache/backends/registry/)。
 

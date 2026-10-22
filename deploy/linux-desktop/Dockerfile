@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.10@sha256:865e5dd094beca432e8c0a1d5e1c465db5f998dca4e439981029b3b81fb39ed5
 # Context is generated exclusively from Git by build-image.py.
 ARG BASE_IMAGE
-FROM ${BASE_IMAGE} AS build
+FROM ${BASE_IMAGE} AS prepared
 SHELL ["/bin/bash", "-o", "errexit", "-o", "nounset", "-o", "pipefail", "-c"]
 WORKDIR /workspace/source
 COPY source/ ./
@@ -13,9 +13,11 @@ RUN --mount=type=cache,id=cindy-linux-build-assets,target=/var/cache/cindy-build
     mkdir -p /workspace/debs /workspace/sysroot \
     && node /workspace/recipe/download-build-assets.mjs \
     && node /workspace/recipe/prepare-codex.mjs \
-    && node /workspace/recipe/prepare-other-assets.mjs
-RUN ELECTRON_SKIP_BINARY_DOWNLOAD=1 pnpm install --frozen-lockfile
-RUN /bin/sh /workspace/recipe/prepare-linux.sh
+    && node /workspace/recipe/prepare-other-assets.mjs \
+    && ELECTRON_SKIP_BINARY_DOWNLOAD=1 pnpm install --frozen-lockfile \
+    && /bin/sh /workspace/recipe/prepare-linux.sh
+
+FROM prepared AS build
 COPY build-recipe/ /workspace/recipe/
 ARG CINDY_CLOUD_REVISION
 ENV APP_VERSION=${CINDY_UPSTREAM_VERSION}-cloud.${CINDY_CLOUD_REVISION}

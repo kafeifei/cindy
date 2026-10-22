@@ -5,7 +5,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
-from versioning import COMMIT, cloud_version, image_tag, load, require_successor
+from versioning import COMMIT, cloud_version, image_tag, source_tag, load, require_successor
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
@@ -38,7 +38,8 @@ def plan(previous=None, fetch_upstream=False):
         if files:
             changed = require_successor(json.loads(git('show', previous + ':' + VERSION_PATH)), value)
     result = {'schemaVersion': 1, 'version': value, 'cloudVersion': cloud_version(value),
-              'imageTag': image_tag(value), 'recipeCommit': git('rev-parse', 'HEAD'),
+              'imageTag': image_tag(value), 'sourceTag': source_tag(git('rev-parse', 'HEAD')),
+              'recipeCommit': git('rev-parse', 'HEAD'),
               'sourceCommit': freeze['commit'], 'releaseChanged': changed,
               'channel': 'candidate', 'releaseApproved': False}
     return result

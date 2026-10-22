@@ -1,0 +1,13 @@
+{
+  "name": "cindy-cloud-delivery-checks",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "esbuild": "0.28.1",
+    "typescript": "5.9.3",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "i18next": "26.3.6",
+    "lucide-react": "0.468.0"
+  }
+}

@@ -5,7 +5,7 @@ import hashlib
 import json
 import subprocess
 from pathlib import Path
-from versioning import REPOSITORY, image_tag, validate, cloud_version
+from versioning import REPOSITORY, image_tag, validate, cloud_version, source_tag
 
 
 def run(*args):
@@ -69,6 +69,17 @@ def publish(reference, image_id, inspect=registry_manifest, execute=run):
     return remote
 
 
+def publish_tags(references, image_id, inspect=registry_manifest, execute=run):
+    # Inspect every tag before the first write: a source-tag conflict must not
+    # leave a newly published version pointing to an unpaired release.
+    for reference in references:
+        existing = inspect(reference)
+        if existing is not None and existing.get('config', {}).get('digest') != image_id:
+            raise ValueError('IMMUTABLE_TAG_CONFLICT')
+    for reference in references:
+        publish(reference, image_id, inspect=inspect, execute=execute)
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--plan', required=True, type=Path)
@@ -86,15 +97,23 @@ if __name__ == '__main__':
     smoke = json.loads(args.smoke.read_text())
     hashes = check_build(plan, info, result, smoke, args.build / 'records')
     reference = args.repository + ':' + plan['imageTag']
-    publish(reference, image_id)
+    alias = args.repository + ':' + source_tag(plan['recipeCommit'])
+    if plan.get('sourceTag') != source_tag(plan['recipeCommit']):
+        raise ValueError('SOURCE_TAG_MISMATCH')
+    publish_tags([reference, alias], image_id)
     raw = subprocess.check_output(['docker', 'buildx', 'imagetools', 'inspect', '--raw', reference])
     # imagetools prints the manifest bytes, without parsing or reformatting.
     digest = 'sha256:' + hashlib.sha256(raw).hexdigest()
+    alias_raw = subprocess.check_output(['docker', 'buildx', 'imagetools', 'inspect', '--raw', alias])
+    if alias_raw != raw:
+        raise ValueError('TAG_MANIFEST_MISMATCH')
     exact = reference + '@' + digest
     if registry_manifest(exact).get('config', {}).get('digest') != image_id:
         raise ValueError('REGISTRY_DIGEST_VERIFICATION_FAILED')
     manifest = {**plan, 'image': {'reference': exact, 'digest': digest, 'configId': image_id,
-                                'bytes': info['Size'], 'layers': len(info['RootFS']['Layers'])},
+                                'bytes': info['Size'], 'layers': len(info['RootFS']['Layers']),
+                                'tags': [plan['imageTag'], plan['sourceTag']],
+                                'sourceReference': alias + '@' + digest},
                 'recordsSha256': hashes, 'nativeSmoke': smoke,
                 'qualification': {'productAcceptance': 'pending', 'deviceLink': 'pending', 'oauth': 'pending'},
                 'acs': {'status': 'pending', 'podMatchVerified': False},

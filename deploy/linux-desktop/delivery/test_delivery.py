@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from versioning import load, cloud_version, image_tag, version_key, require_successor, require_same_release, validate
-from publish import publish, registry_manifest, check_build
+from publish import publish_tags, publish, registry_manifest, check_build
 from plan import plan
 
 HERE = Path(__file__).resolve().parent
@@ -86,6 +86,24 @@ class PublishTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'PUBLISHED_CONFIG_MISMATCH'):
             publish('registry.example.com/cindy:tag', 'sha256:'+'a'*64,
                     inspect=lambda _: next(replies), execute=lambda *a: None)
+
+    def test_two_tags_preflight_conflicts_and_recover_partial_publish(self):
+        # Integration-boundary regression: a conflicting second alias must not
+        # publish the first; a retry after one successful push fills only the gap.
+        refs = ['registry.example.com/cindy:version', 'registry.example.com/cindy:sha']
+        image_id = 'sha256:' + 'a'*64
+        state = {refs[1]: {'config': {'digest': 'sha256:' + 'b'*64}}}
+        writes = []
+        def execute(*args):
+            writes.append(args)
+            if args[1] == 'push': state[args[2]] = {'config': {'digest': image_id}}
+        with self.assertRaisesRegex(ValueError, 'CONFLICT'):
+            publish_tags(refs, image_id, inspect=state.get, execute=execute)
+        self.assertEqual(writes, [])
+        state = {refs[0]: {'config': {'digest': image_id}}}
+        publish_tags(refs, image_id, inspect=state.get, execute=execute)
+        self.assertEqual([w[2] for w in writes if w[1] == 'push'], [refs[1]])
+        self.assertEqual(state[refs[0]], state[refs[1]])
 
     def test_prepublication_gate_rejects_wrong_source_and_incomplete_smoke(self):
         with tempfile.TemporaryDirectory() as temporary:

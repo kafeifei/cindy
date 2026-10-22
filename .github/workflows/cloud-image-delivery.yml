@@ -46,11 +46,13 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
-        with:
-          run_install: false
-      - name: Install locked test dependencies
-        run: pnpm install --frozen-lockfile
+      - name: Install only locked delivery check dependencies
+        run: |
+          mkdir -p "$RUNNER_TEMP/cloud-checks"
+          cp deploy/linux-desktop/delivery/checks/package*.json "$RUNNER_TEMP/cloud-checks/"
+          npm ci --prefix "$RUNNER_TEMP/cloud-checks" --no-audit --no-fund
+          test ! -e node_modules && test ! -L node_modules
+          ln -s "$RUNNER_TEMP/cloud-checks/node_modules" node_modules
       - name: Validate dual version and upstream commit
         id: plan
         env:
@@ -143,7 +145,7 @@ jobs:
             --cache-repository "$BUILD_CACHE_REPOSITORY" --output "$RUNNER_TEMP/cloud-build"
       - name: Native isolated desktop startup, legacy HOME, sandbox and shutdown
         run: python3 deploy/linux-desktop/delivery/smoke.py --image "cindy-ci:$IMAGE_TAG" --output "$RUNNER_TEMP/native-smoke.json"
-      - name: Login to the configured candidate repository
+      - name: Login to the unified runtime repository
         env:
           REGISTRY_AUTH: ${{ vars.CLOUD_IMAGE_REGISTRY_AUTH || 'password' }}
           REGISTRY_USER: ${{ secrets.CLOUD_IMAGE_REGISTRY_USER }}
@@ -167,6 +169,8 @@ jobs:
             ${{ runner.temp }}/candidate.json
             ${{ runner.temp }}/native-smoke.json
             ${{ runner.temp }}/cloud-build/result.json
+            ${{ runner.temp }}/cloud-build/full-build.log
+            ${{ runner.temp }}/cloud-build/build-metadata.json
             ${{ runner.temp }}/cloud-build/records/*.json
           if-no-files-found: error
           retention-days: 30

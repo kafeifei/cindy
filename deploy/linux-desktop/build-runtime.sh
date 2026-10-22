@@ -9,10 +9,6 @@ export PATH=/workspace/sysroot/usr/bin:$PATH
 export PKG_CONFIG_SYSROOT_DIR=/workspace/sysroot
 export PKG_CONFIG_LIBDIR=/workspace/sysroot/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
 export LD_LIBRARY_PATH=/workspace/sysroot/usr/lib/x86_64-linux-gnu
-cd /workspace/debs
-apt-get -o APT::Sandbox::User=root download libxkbcommon0=1.5.0-1 libwayland-client0=1.21.0-1
-for f in libxkbcommon0_*.deb libwayland-client0_*.deb; do dpkg-deb -x "$f" /workspace/sysroot; done
-cd /workspace/source
 # Overlays resolve typescript from the frozen client workspace.
 test -e /workspace/recipe/node_modules || ln -s /workspace/source/node_modules /workspace/recipe/node_modules
 node /workspace/recipe/stage-cloud-overlays.mjs

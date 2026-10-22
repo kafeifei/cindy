@@ -128,7 +128,7 @@ class WorkflowRunnerBoundaryTest(unittest.TestCase):
         before_build = candidate.index('      - name: Login for the isolated build cache')
         build = candidate.index('      - name: Freeze plan')
         smoke = candidate.index('      - name: Native isolated')
-        publish_login = candidate.index('      - name: Login to the configured candidate')
+        publish_login = candidate.index('      - name: Login to the unified runtime')
         publish = candidate.index('      - name: Publish tested bytes')
         self.assertLess(before_build, build)
         self.assertLess(build, smoke)

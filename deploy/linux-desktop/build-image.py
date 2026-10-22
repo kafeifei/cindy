@@ -35,12 +35,31 @@ def stage_recipe_contexts(context):
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
 
+def write_combined_dockerfile(context):
+    """Use one stage graph; target:base loses application cache on fresh builders.
+
+    The two checked-in recipes remain authoritative. Only source paths and the
+    base provenance argument are adapted; no downloaded Cindy image is used.
+    """
+    base = (context / 'recipe/runtime-base/Dockerfile').read_text()
+    app = (context / 'recipe/Dockerfile').read_text()
+    base = base.replace('CINDY_SOURCE_COMMIT', 'CINDY_BASE_SOURCE_COMMIT')
+    base = base.replace('type=bind,source=', 'type=bind,from=base-recipe,source=')
+    app = '\n'.join(line for line in app.splitlines()
+                    if not line.startswith('# syntax=') and line != 'ARG BASE_IMAGE')
+    if app.count('FROM ${BASE_IMAGE}') != 2:
+        raise ValueError('APPLICATION_BASE_STAGES_CHANGED')
+    app = app.replace('FROM ${BASE_IMAGE}', 'FROM runtime-base-slim')
+    (context / 'Dockerfile.combined').write_text(base + '\n' + app + '\n')
+    shutil.copyfile(context / 'recipe/Dockerfile.dockerignore',
+                    context / 'Dockerfile.combined.dockerignore')
+
 def registry_cache(repository):
     # No tag, digest, URL credentials, or Buildx CSV options in the input.
     if not re.fullmatch(r'[a-z0-9][a-z0-9.-]+(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)+', repository):
         raise ValueError('INVALID_BUILD_CACHE_REPOSITORY')
-    return {name: repository + ':fork-cloud-settings-cn-amd64-v1-' + name
-            for name in ('base', 'runtime')}
+    return {'base': repository + ':fork-cloud-settings-cn-amd64-v1-base',
+            'prepared': repository + ':fork-cloud-settings-cn-amd64-v2-prepared'}
 
 def git(*args):
     return subprocess.check_output(['git', *args], cwd=REPO)
@@ -90,6 +109,7 @@ def prepare(output, revision):
         raise ValueError('BASE_RECIPE_COMMIT_REQUIRED')
     inputs['baseInputs'] = {p: inputs['recipeFiles'][p] for p in BASE_INPUTS}
     stage_recipe_contexts(context)
+    write_combined_dockerfile(context)
     return context, inputs
 
 def docker(*args):
@@ -104,36 +124,39 @@ def run_build(output, name, args, cwd):
 
 def bake_plan(output, tag, revision, entrypoint_sha, no_cache, cloud_revision=None,
               base_revision=None, cache_repository=None, upstream_version=None):
-    """Connect both Dockerfiles without publishing an intermediate base image."""
-    common = {'CINDY_SOURCE_COMMIT': revision, 'SOURCE_DATE_EPOCH': '1789344000'}
+    """Share a single source graph and cache preparation, not packaging scratch."""
+    common = {'CINDY_SOURCE_COMMIT': revision, 'SOURCE_DATE_EPOCH': '1789344000',
+              'CINDY_BASE_SOURCE_COMMIT': base_revision or revision}
     if upstream_version is not None:
         common['CINDY_UPSTREAM_VERSION'] = upstream_version
     if cloud_revision is not None:
         common['CINDY_CLOUD_REVISION'] = str(cloud_revision)
-    base = {'context': 'base-recipe', 'dockerfile': 'runtime-base/Dockerfile',
-            'target': 'runtime-base-slim',
-            'args': {'CINDY_SOURCE_COMMIT': base_revision or revision, 'SOURCE_DATE_EPOCH': '1789344000'},
-            'platforms': ['linux/amd64'], 'no-cache': no_cache,
+    graph = {'context': '.', 'dockerfile': 'Dockerfile.combined',
+             'contexts': {'base-recipe': './base-recipe'},
+             'args': {**common, 'CINDY_RUNTIME_VERSION': tag.rsplit(':', 1)[1],
+                      'CINDY_ENTRYPOINT_SHA256': entrypoint_sha},
+             'platforms': ['linux/amd64'], 'no-cache': no_cache}
+    base = {**graph, 'target': 'runtime-base-slim',
             'output': [f'type=docker,name={tag}-base,rewrite-timestamp=true']}
-    runtime = {'context': '.', 'dockerfile': 'recipe/Dockerfile',
-               'contexts': {'cindy-source-base': 'target:base'},
-               'args': {**common, 'BASE_IMAGE': 'cindy-source-base',
-                        'CINDY_RUNTIME_VERSION': tag.rsplit(':', 1)[1],
-                        'CINDY_ENTRYPOINT_SHA256': entrypoint_sha},
-               'platforms': ['linux/amd64'], 'no-cache': no_cache, 'target': 'runtime',
+    runtime = {**graph, 'target': 'runtime',
                'output': [f'type=docker,name={tag},rewrite-timestamp=true']}
-    records = {**runtime, 'target': 'build-records',
+    records = {**graph, 'target': 'build-records',
                'output': ['type=local,dest=' + str(output / 'records')]}
+    targets = {'base': base, 'runtime': runtime, 'records': records}
     if cache_repository:
         refs = registry_cache(cache_repository)
-        for name, target in [('base', base), ('runtime', runtime)]:
-            target['cache-from'] = [] if no_cache else ['type=registry,ref=' + refs[name]]
-            target['cache-to'] = ['type=registry,ref=' + refs[name]
-                + ',mode=max,image-manifest=true,oci-mediatypes=true']
-        # The runtime build already includes the records' expensive parent stages.
-        # Only one target writes each cache ref; parallel records must not overwrite it.
-        records['cache-from'] = list(runtime['cache-from'])
-    return {'target': {'base': base, 'runtime': runtime, 'records': records}}
+        prepared = {**graph, 'target': 'prepared', 'output': ['type=cacheonly']}
+        targets['prepared'] = prepared
+        imports = [] if no_cache else ['type=registry,ref=' + ref for ref in refs.values()]
+        for target in targets.values():
+            target['cache-from'] = list(imports)
+        # Base history rarely changes; preserve its existing max cache. Export
+        # only the prepared filesystem chain for the application. Packaging
+        # scratch and /layer duplicate the final bytes and are rebuilt per version.
+        for name, mode in [('base', 'max'), ('prepared', 'min')]:
+            targets[name]['cache-to'] = ['type=registry,ref=' + refs[name]
+                + ',mode=' + mode + ',image-manifest=true,oci-mediatypes=true']
+    return {'target': targets}
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -178,7 +201,7 @@ def main():
         run_build(output, 'full-build', ['docker', 'buildx', 'bake', '--builder', args.builder,
                   '--allow=fs.write=' + str(output),
                   '--progress=plain', '-f', str(plan), '--metadata-file', str(output / 'build-metadata.json'),
-                  'base', 'runtime', 'records'], context)
+                  'base', 'runtime', 'records', *(['prepared'] if args.cache_repository else [])], context)
         base = json.loads(docker('image', 'inspect', base_tag))[0]
         info = json.loads(docker('image', 'inspect', args.tag))[0]
         (output / 'base-image.json').write_text(json.dumps(base, indent=2) + '\n')
