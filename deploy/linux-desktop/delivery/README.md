@@ -52,6 +52,9 @@ CI 本身不切换实例，本轮没有补做新的 OAuth/DeviceLink 验收。
 CIS 自身的构建/部署与用户实例升级是另外两件事，见
 [两仓交付边界](https://github.com/zhuoshaojian/cindy-server/blob/feat/cloud-settings-readonly/docs/cloud-instance/ci-cd-integration.md)。
 两组 Environment 只放行本 fork 分支；ACR 与 ACS 使用独立 AK，不使用 OIDC。
+两组 job 使用 `environment.deployment: false`，保留环境凭据与分支保护，停止创建多余的 GitHub 部署记录。
+这不取消 reviewer 或 wait timer；若未来启用 GitHub App 自定义部署保护，须重新启用 deployment，
+否则 GitHub 会拒绝运行。见 [官方语义](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/control-deployments#using-environments-without-deployments)。
 配置见 [接入手册](BOOTSTRAP.md)，runner 的供给和回收见 [控制器说明](runner/README.md)。
 
 ## 双版本：上游完整版本 + 云修订

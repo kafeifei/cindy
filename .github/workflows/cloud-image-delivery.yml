@@ -82,7 +82,10 @@ jobs:
       vars.CLOUD_IMAGE_DELIVERY_ENABLED == 'true' &&
       (needs.verify.outputs.changed == 'true' || github.event_name == 'workflow_dispatch')
     runs-on: [self-hosted, Linux, X64, cindy-fork-cloud-build, 'cindy-fork-run-${{ github.run_id }}-${{ github.run_attempt }}']
-    environment: cloud-image-candidate-cn
+    environment:
+      name: cloud-image-candidate-cn
+      # Artifact delivery uses scoped secrets; it does not deploy an instance.
+      deployment: false
     outputs:
       artifact_id: ${{ steps.records.outputs.artifact-id }}
     timeout-minutes: 120
@@ -188,7 +191,10 @@ jobs:
     needs: candidate
     if: vars.CLOUD_IMAGE_CACHE_ENABLED == 'true'
     runs-on: [self-hosted, Linux, X64, cindy-fork-cloud-cache, 'cindy-fork-run-${{ github.run_id }}-${{ github.run_attempt }}']
-    environment: cloud-image-cache-cn
+    environment:
+      name: cloud-image-cache-cn
+      # Artifact delivery uses scoped secrets; it does not deploy an instance.
+      deployment: false
     timeout-minutes: 45
     permissions:
       contents: read
