@@ -68,3 +68,21 @@ verify 执行 8 分 23 秒、candidate 执行 30 分 50 秒、cache 执行 5 分
 [冷/热构建验收](BUILD-CACHE-BENCHMARK.md)。
 
 源码、部署方式、故障处理与权限边界见 [runner 说明](runner/README.md)。
+
+## 同日补验：纯文档不触发交付
+
+规则提交 `df87016822` 的 [运行 39739087939](https://github.com/zhuoshaojian/cindy/actions/runs/39739087939)
+通过 `verify`，版本未变，`candidate`、`cache` 均跳过。随后独立推送纯文档提交
+[`6f2158b7c2`](https://github.com/zhuoshaojian/cindy/commit/6f2158b7c2edffb6ffba8bd32dcc91b3335f4c83)，
+没有生成交付运行；不会因文档修改申请 runner 或创建镜像/ACS 缓存。
+
+对应 CIS 规则提交 `143f3716` 的 [运行 39739122125](https://github.com/zhuoshaojian/cindy-server/actions/runs/39739122125)
+仅检查成功，构建与部署跳过；纯文档提交
+[`628d6b91`](https://github.com/zhuoshaojian/cindy-server/commit/628d6b9114145040c2caf9b52759ddad5962b70e)
+同样没有生成交付运行。客户端本地交付 Python 43 项、Node 13 项及文档 10 项通过；
+两仓 workflow 的 actionlint 检查通过。现有说明文档的路径筛选已逐项验证，
+`runtime-guidance/settings.md` 等产品正文、源码、Dockerfile 与版本输入仍保留触发能力。
+
+本次没有修改发行版本、构建新镜像、部署 CIS 或升级实例。当前触发规则统一见
+[交付说明](README.md#哪些提交会执行什么) 和
+[两仓职责](https://github.com/zhuoshaojian/cindy-server/blob/feat/cloud-settings-readonly/docs/cloud-instance/ci-cd-integration.md)。
