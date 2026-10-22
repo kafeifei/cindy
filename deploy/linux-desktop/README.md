@@ -16,7 +16,8 @@ release checks. Ordinary desktop builds do not enable these overlays.
 | [Candidate delivery](delivery/README.md) | Fork-only self-hosted source build, isolated smoke, candidate publication and ACS cache preparation |
 | [Dual-version updates](DUAL-VERSION-UPDATES.md), [cloud.2 acceptance](ACCEPTANCE-CLOUD2-20261021.md) | Implemented CIS selection and owner-requested upgrades, application version display, live acceptance and remaining promotion work |
 | [runtime-base/README.md](runtime-base/README.md), `runtime-base/Dockerfile`, `runtime-base/packages.lock` | Build the third-party CN dependency base from pinned OS, package and asset inputs; no Cindy application or helpers |
-| [BUILD-V0108.md](BUILD-V0108.md), `source-freeze.json` | Historical v0.1.108 application build inputs and limitations |
+| `source-freeze.json` | Current frozen application commit, upstream version and runtime patch inputs |
+| [BUILD-V0108.md](BUILD-V0108.md) | Historical v0.1.108 application build inputs and limitations |
 | `prepare-linux.sh`, `prepare-codex.mjs`, `prepare-other-assets.mjs` | Prepare the isolated Linux builder and verify external assets |
 | `stage-cloud-overlays.mjs`, `build-runtime.sh` | Apply the cloud transforms to a disposable source export and package it |
 | `runtime-activity/`, `runtime-maintenance/` | Runtime task activity, maintenance gate and clean shutdown evidence |
