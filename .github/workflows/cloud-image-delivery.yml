@@ -3,7 +3,13 @@ name: cloud-image-delivery
 on:
   push:
     branches: ['feat/cloud-settings-native-client']
-    paths: ['deploy/linux-desktop/**', '.github/workflows/cloud-image-delivery.yml']
+    paths:
+      - 'deploy/linux-desktop/**'
+      - '.github/workflows/cloud-image-delivery.yml'
+      # Exclude operator docs, not packaged runtime-guidance/settings.md.
+      - '!deploy/linux-desktop/*.md'
+      - '!deploy/linux-desktop/**/README.md'
+      - '!deploy/linux-desktop/delivery/**/*.md'
   workflow_dispatch:
 
 permissions:

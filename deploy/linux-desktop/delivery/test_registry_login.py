@@ -104,6 +104,21 @@ class RegistryLoginTest(unittest.TestCase):
 
 
 class WorkflowRunnerBoundaryTest(unittest.TestCase):
+    def test_docs_cannot_provision_runners_but_packaged_guidance_remains_eligible(self):
+        # Guard: README-only pushes used to enter the private runner pool.
+        # Keep runtime Markdown eligible; this protects the workflow scheduling
+        # boundary, not a source-format preference. Real doc-push proof is separate.
+        root = Path(__file__).resolve().parents[3]
+        workflow = (root / '.github/workflows/cloud-image-delivery.yml').read_text()
+        triggers = workflow.split('  workflow_dispatch:')[0]
+        for pattern in ['!deploy/linux-desktop/*.md',
+                        '!deploy/linux-desktop/**/README.md',
+                        '!deploy/linux-desktop/delivery/**/*.md']:
+            self.assertIn("- '" + pattern + "'", triggers)
+        self.assertIn("- 'deploy/linux-desktop/**'", triggers)
+        self.assertNotIn('!deploy/linux-desktop/**/*.md', triggers)
+        self.assertNotIn('!deploy/linux-desktop/runtime-guidance/', triggers)
+
     def test_build_cache_login_is_step_scoped_and_smoke_still_precedes_publication(self):
         root = Path(__file__).resolve().parents[3]
         workflow = (root / '.github/workflows/cloud-image-delivery.yml').read_text()
