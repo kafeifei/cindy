@@ -87,6 +87,13 @@ ACR 的不可变策略对 `latest` 有例外，本流水线不产生该标签。
 `CLOUD_IMAGE_BUILD_CACHE_REPOSITORY`。它与运行时仓库分开，沿用 ACR 登录身份并单独授予
 该缓存仓库 Pull/Push 权限；不要关闭运行时仓库的不可变策略。此仓库可能包含构建中间源码，
 不开放匿名读取。缓存可清理并从源码重建，不能登记为实例镜像或加入 ACS 运行时缓存。
+
+ACK/ECI 构建池应先验证 ACR VPC 端点可达，再将同一个缓存仓库的 VPC 引用配置到
+`CLOUD_IMAGE_BUILD_CACHE_REPOSITORY`。核对公网/VPC 两端的缓存 manifest 和 layer digest
+一致，并验证实际层下载转到 OSS 内网；只有 `/v2/` 返回 401 不足以证明完整链路可用。
+这是访问路径配置，不迁移仓库、不重建缓存，也不修改运行时双标签的公开引用。
+本机不在该 VPC 时仍使用公网端点。参见
+[ACR VPC 访问配置](https://www.alibabacloud.com/help/en/acr/user-guide/configure-access-over-vpcs)。
 构建前的登录供 BuildKit 读写缓存，smoke 后再换取新的短期凭据发布候选，AK 不进入构建层。
 
 给专用 RAM 推送用户如下权限；替换账号、ACR 实例、命名空间和仓库名：

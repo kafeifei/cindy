@@ -19,15 +19,14 @@ Runner、DinD、BuildKit 是构建工具，不是云实例需要安装的额外�
 | 产品验收与晋级 | 记录明确的 pending 状态 | 完整 OAuth、DeviceLink、Pod 实际缓存命中、灰度、签名信任及稳定通道准入尚未自动化 |
 | CIS 自动更新 | [双版本选择与主动升级](../DUAL-VERSION-UPDATES.md) | 已登记维护实例支持双版本；网页和原生客户端均已接入主动升级。新领取按已准入列表选择同仓库、地区与架构的最高版本；稳定目录与自动晋级待接入 |
 
-最新已验收的自动交付为 `0.1.113-cloud.14`，运行 [39795427148](https://github.com/zhuoshaojian/cindy/actions/runs/39795427148)
-由版本提交的 **push** 自动触发：三个 job 自动获得一次性 runner，完整构建、原生隔离
-smoke、双标签发布和 ACS 2/2 Ready 全部成功，runner/ECI/JIT 自动回收。
-拆开缓存导入范围后，三份日志证明应用准备层实际恢复且未重新执行安装；完整构建 **7 分 44 秒**，
-push 到 ACS Ready **27 分 30 秒**，全部 job 收尾 **27 分 40 秒**。构建 runner 已监听后仍等待
-分配 8 分 49 秒，计入完整时间；尚未达到 20 分钟。成功、失败和前后对比见 [缓存与交付实测](BUILD-CACHE-BENCHMARK.md)。
-连续复测 `cloud.15` 已推送并自动排队，见 [39800845076](https://github.com/zhuoshaojian/cindy/actions/runs/39800845076)；
-当前尚未验证。GitHub 已公告 [Actions Results 延迟](https://www.githubstatus.com/incidents/q29p76qtnkyk)，
-不能把扣除排队的时间当作 20 分钟目标达成。只有新回执与完整计时核对后才更新此结论。
+最新已验收的自动交付为 `0.1.113-cloud.15`，运行 [39800845076](https://github.com/zhuoshaojian/cindy/actions/runs/39800845076)
+由版本提交的 **push** 自动触发。它与 `cloud.14` 连续验证三份日志均未重跑准备，
+完整构建、原生隔离 smoke、双标签发布和 ACS 2/2 Ready 全部成功。
+本轮完整构建 **13 分 15 秒**，原始 push 到 ACS Ready **2 小时 3 分 18 秒**；
+约 100 分钟为队列/供给/衔接，实际 job 执行也接近 23 分钟，**20 分钟目标未达成**。
+已修复控制器漏掉 `pending workflow + queued job` 和在线 runner 的超时误判；
+此前等待不能全部归因于 GitHub。VPC 缓存路径已完成同内容抽样验证，完整提速仍待后续实测。
+详细计时、失败记录与验收边界见 [缓存与交付实测](BUILD-CACHE-BENCHMARK.md)。
 自动供给的恢复、权限与首次验收见 [自动供给记录](ACCEPTANCE-AUTOSUPPLY-20261022.md)。
 
 实例升级与镜像交付分开：`cloud.9` 的存量升级、新领取选择和客户端测试包见服务端
@@ -187,6 +186,10 @@ Registry 缓存使用两个独立标签、单写入者：基座 `v2-base / mode=
 使用冻结应用源码与准备脚本作为输入；云修订号、发布 commit 和说明文档不在这一步参与。
 每版仍编译应用、组装最终层，但不再上传编译目录、打包副本、`/layer` 等重复临时层。
 这些私有缓存不是实例镜像，不进入 CIS 或 ACS 镜像清单。
+
+构建池在已连通的 VPC 内时，缓存仓库通过现有 `CLOUD_IMAGE_BUILD_CACHE_REPOSITORY`
+配置 VPC 端点，避免缓存层经公网下载；先验证两端内容一致和实际 OSS 内网下载。
+运行时公开仓库与双标签保持不变，本机仍按所在网络选择端点，见 [接入手册](BOOTSTRAP.md)。
 
 基座只读取 Dockerfile、包锁、包校验器、字体安装器和时间戳归一化工具，记录其最后变更 commit。
 完整发行身份在应用打包与独立 records 阶段绑定。命中缓存也必须执行发布审计、
