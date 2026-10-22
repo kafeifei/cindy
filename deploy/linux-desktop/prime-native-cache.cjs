@@ -9,6 +9,13 @@ const { createHash } = require('node:crypto');
 const binaries = { 'better-sqlite3': 'build/Release/better_sqlite3.node', 'node-pty': 'build/Release/pty.node' };
 const sha = data => createHash('sha256').update(data).digest('hex');
 
+function clearMetadata(buildPath) {
+  // Do not accept Electron rebuild's ABI-only early return. Removing only the
+  // marker in the packaging copy forces its source/ABI cache lookup instead.
+  for (const name of Object.keys(binaries))
+    fs.rmSync(path.join(buildPath, 'node_modules', name, 'build/Release/.forge-meta'), { force: true });
+}
+
 function verifiedBinaries(buildPath, electronVersion, arch, platform, cacheRoot) {
   const manifest = JSON.parse(fs.readFileSync(path.join(cacheRoot, 'manifest.json'), 'utf8'));
   if (manifest.electronVersion !== electronVersion || manifest.arch !== arch || manifest.platform !== platform)
@@ -54,8 +61,10 @@ async function prime(source, output, electronVersion, rebuild) {
     }
     fs.writeFileSync(path.join(scratch, 'package.json'), JSON.stringify({ name: 'cloud-native-cache', version: '0.0.0', dependencies }));
     // Physical copies protect the Node ABI dependencies used by the build tools.
-    // Keep force=true; only Electron's source/ABI cache may avoid compilation.
-    await rebuild({ buildPath: scratch, electronVersion, arch: 'x64', force: true, buildFromSource: true,
+    // force=true disables useCache in electron-rebuild 4.2. Clear the copied
+    // marker instead, so only its source/ABI cache may avoid compilation.
+    clearMetadata(scratch);
+    await rebuild({ buildPath: scratch, electronVersion, arch: 'x64', force: false, buildFromSource: true,
       onlyModules: Object.keys(binaries), useCache: true, cachePath: path.join(output, 'rebuild') });
     const manifest = { electronVersion, arch: 'x64', platform: 'linux', binaries: {} };
     for (const [name, relative] of Object.entries(binaries)) {
@@ -71,7 +80,7 @@ async function prime(source, output, electronVersion, rebuild) {
   }
 }
 
-module.exports = { prime, verifyPackage, restorePackage };
+module.exports = { prime, verifyPackage, restorePackage, clearMetadata };
 if (require.main === module) {
   const [source, output, electronVersion] = process.argv.slice(2);
   if (!source || !output || !/^\d+\.\d+\.\d+$/.test(electronVersion || '')) throw Error('NATIVE_CACHE_ARGUMENTS');

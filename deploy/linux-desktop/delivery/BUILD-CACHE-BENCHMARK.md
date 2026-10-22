@@ -65,6 +65,12 @@ workflow、事件和独有标签全部匹配。没有 job 或仍在环境等待�
   实际执行 SQLite 查询与 PTY shell；发布记录绑定 `native-modules.json`。
   普通客户端、正式包 fuse 和业务实例均不改。首次填充与后续全新 runner 热测单独记录。
 
+首次原生缓存填充 [39832742777](https://github.com/zhuoshaojian/cindy/actions/runs/39832742777)
+在构建阶段失败，没有发布镜像，也未进入 ACS。锁定 `electron-rebuild 4.2.0` 在
+`force=true` 时会关闭 `useCache`；修正为只删除打包副本的 `.forge-meta` 标记，
+以 `force=false` 进入源码/ABI 缓存分支，并继续核对二进制哈希/权限。
+该失败保留为新缓存接入记录，不计作成功的冷/热交付。
+
 ## 缓存命中修复
 
 - 基座在隔离 `/rootfs` 中先把较新的 mtime 限制为 `SOURCE_DATE_EPOCH`，应用层组装后做相同处理。

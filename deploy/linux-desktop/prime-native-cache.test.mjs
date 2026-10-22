@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { verifyPackage, restorePackage } from './prime-native-cache.cjs';
+import { verifyPackage, restorePackage, clearMetadata } from './prime-native-cache.cjs';
 
 test('native packaging rejects changed bytes, permissions or Electron target', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-native-cache-'));
@@ -20,6 +20,11 @@ test('native packaging rejects changed bytes, permissions or Electron target', (
       files.push(file);
     }
     fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(manifest));
+    const meta = path.join(path.dirname(files[0]), '.forge-meta');
+    fs.writeFileSync(meta, 'x64--145');
+    clearMetadata(dir);
+    assert.equal(fs.existsSync(meta), false);
+    assert.equal(fs.readFileSync(files[0], 'utf8'), 'better-sqlite3');
     const verify = (version = '42.11.12', arch = 'x64') => verifyPackage(dir, version, arch, 'linux', dir);
     verify();
     assert.throws(() => verify('43.0.0'), /TARGET_MISMATCH/);
