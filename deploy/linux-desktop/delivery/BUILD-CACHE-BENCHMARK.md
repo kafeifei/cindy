@@ -1,8 +1,57 @@
 # 完整镜像构建缓存与交付实测
 
-2026-10-22，`0.1.113-cloud.14` 与 `cloud.15` 在两台全新 runner 上连续复用准备缓存。
-两轮三份日志均证明恢复了真实文件系统，完整构建没有重跑依赖下载/安装，且都通过原生
-隔离启动、双标签发布和 ACS 2/2 Ready。**缓存连续命中已验证，20 分钟完整交付目标仍未达成。**
+2026-10-23（北京时间），`0.1.113-cloud.21` 在全新 fork 专属 ECI runner 上完成自动交付：
+**原始 push → ACS Ready 17 分 47 秒，全部 job 收尾 17 分 58 秒**。包含供给、排队、
+完整构建、原生 smoke、发布与缓存等待；没有人工重试，也没有重置计时起点。
+依赖准备层延续此前命中，新增 Electron 原生缓存首次跨 runner 复用，构建缓存和镜像上传
+均实际走同仓 VPC 端点。本次热缓存交付达到 20 分钟目标，不是冷构建耗时或每轮性能保证。
+
+## 最新完整热交付：cloud.21
+
+[39838127957](https://github.com/zhuoshaojian/cindy/actions/runs/39838127957)，配方
+`6c67ba213ea837907c0030e07e7632616d883e2b`，相对 cloud.20 **只递增版本号**。
+原始 push 为 2026-10-22 19:12:53.861936 UTC，ACS 步骤完成于 19:30:41，最后 job
+完成于 19:30:52。三个 job 和三个构建阶段都只有一次成功尝试。
+
+| 阶段 | cloud.18：未缓存原生编译 | cloud.20：原生缓存首次成功填充 | cloud.21：全新 runner 热测 |
+| --- | ---: | ---: | ---: |
+| 准备文件系统恢复 | 93.6 秒 | 91.0 秒 | 77.7 秒 |
+| 原生预编 | 打包时重编 | 102.7 秒 | 缓存复用，未执行 |
+| 应用编译与打包 | 292.6 秒 | 205.2 秒 | 164.8 秒 |
+| 其中：打包副本原生缓存恢复/校验 | 无 | 3.7 秒 | 3.1 秒 |
+| 完整 Dockerfile 构建 | 8 分 57 秒 | 9 分 11 秒 | 6 分 16 秒 |
+| 发布镜像 | 121 秒 | 123 秒 | 104 秒 |
+| ACS 准备步骤 | 236 秒 | 237 秒 | 236 秒 |
+| 原始 push → ACS Ready | 20 分 35 秒 | 20 分 56 秒 | **17 分 47 秒** |
+| 原始 push → 全部 job 收尾 | 20 分 45 秒 | 21 分 06 秒 | **17 分 58 秒** |
+
+缓存层实际下载/解压后执行断网读取检查（8.7 秒），不能把元数据 `CACHED` 当作文件恢复完成。
+`prepare/materialize/full-build` 三份日志均无依赖安装或原生预编输出；恢复时原生层显示
+`DONE 77.7s` 是文件下载/解压，不是编译命令重新执行。2.09 GB 层的 VPC 下载为 23.5 秒。
+新版本应用仍重新编译，最终包二进制核对后再运行 SQLite 查询和 PTY shell，
+`electronVersion=42.11.12`、`abi=146`，`passed/sqlite/pty` 全部为 true。
+
+检查 job 55 秒，构建/验收/发布 job 573 秒，ACS job 269 秒；Actions 创建后
+队列/供给/衔接共 177 秒。基座导出 57.3 秒、运行时导出 78.9 秒，与部分构建步骤有重叠，
+不相加当作节省。相对 cloud.20 完整构建减少 175 秒，包含省去首次填充及本轮执行波动；
+不把所有改善归因于缓存或 VPC。三个专属 runner 完成后自动回收。
+
+统一 `cloud-runtime-cn` 保留两个不可变标签：`0.1.113-cloud.21-cn-amd64` 和
+`sha-6c67ba213ea837907c0030e07e7632616d883e2b-cn-amd64`，匿名读回同一 manifest：
+`sha256:caa4cdfa553c441a715ad069ed87902dfe4c82780553d2fbe804d35f380bd2a9`。
+镜像仍为两层，压缩层合计 1,423,693,253 bytes；基座 image ID 与此前成功版本相同。
+
+五份记录 SHA-256、最终 image ID 与原生 smoke 一致性、双标签/config、ACS 2/2 Ready 均通过。
+最终 fused Cindy 的隔离 smoke 覆盖 Xfce/Plank、可见窗口、老 HOME 权限、UID 10001
+renderer 沙箱、无网络、只读根和正常停机。构建期 SQLite/PTY 使用同版本原始 Electron，
+没有开启正式包的 RunAsNode fuse。证据在 `cloud-candidate-39838127957-1` 和
+`cloud-cache-39838127957-1` artifacts。
+
+没有操作云实例、业务 PVC、CIS 准入或新认领配置；`releaseApproved=false`、
+`podMatchVerified=false` 保留。此轮不包含真实 OAuth/DeviceLink 或业务 Pod 缓存命中验收。
+纯文档提交不会创建交付运行或 runner；cloud.19 的首次接入失败继续保留在下文。
+
+## cloud.15 历史基线与排队修复
 
 历史基线 [cloud.15 / 39800845076](https://github.com/zhuoshaojian/cindy/actions/runs/39800845076)：
 完整 Dockerfile 构建 **13 分 15 秒**，原始 push 到 ACS Ready **2 小时 3 分 18 秒**，
@@ -46,7 +95,7 @@ workflow、事件和独有标签全部匹配。没有 job 或仍在环境等待�
 - 原生隔离 smoke、公开双标签/config 读回、四份记录哈希及 ACS 2/2 Ready 均通过。
   发行和业务实例准入继续分开，业务实例、PVC、CIS 和新认领默认均未改动。
 
-## VPC 上传 cloud.18 与后续原生缓存
+## VPC 上传 cloud.18 与原生缓存接入
 
 [39827917054](https://github.com/zhuoshaojian/cindy/actions/runs/39827917054)，配方
 `c590103106c8f3700983fb56d22eec7364e9f459`，push 18:02:32.939943 UTC，ACS 步骤结束
@@ -57,8 +106,8 @@ workflow、事件和独有标签全部匹配。没有 job 或仍在环境等待�
 - 检查 job 的稀疏检出仍执行全部测试，checkout 32 秒（上一轮 48 秒）。
 - 准备恢复 93.6 秒，断网读取 6.0 秒，应用编译 292.6 秒，完整构建 537 秒。
   隔离 smoke、五项桌面/停机检查、四份记录 SHA、ACS 2/2 Ready 通过；三个 runner 自动回收。
-- 剩余重复项：每次云修订都会在打包副本上强制重编 `better-sqlite3` / `node-pty`。
-  后续使用锁定 `@electron/rebuild` 自带的源码/ABI 缓存，在独立物理副本预编，保留构建工具的 Node ABI。
+- 当时的重复项：每次云修订都会在打包副本上强制重编 `better-sqlite3` / `node-pty`。
+  现使用锁定 `@electron/rebuild` 自带的源码/ABI 缓存，在独立物理副本预编，保留构建工具的 Node ABI。
   新阶段接在现有依赖准备层之后，继承原缓存；只有首次填充新增原生编译。
   准备层的 Docker 输入同时绑定 OS/编译器、锁文件、模块源码、Electron 版本与缓存脚本。
   每次仍重新打包应用、核对最终 `.node` 哈希及权限，并在断网构建步骤中用同版本 Electron
@@ -70,6 +119,29 @@ workflow、事件和独有标签全部匹配。没有 job 或仍在环境等待�
 `force=true` 时会关闭 `useCache`；修正为只删除打包副本的 `.forge-meta` 标记，
 以 `force=false` 进入源码/ABI 缓存分支，并继续核对二进制哈希/权限。
 该失败保留为新缓存接入记录，不计作成功的冷/热交付。
+
+## 原生缓存首次成功填充：cloud.20
+
+[39834348300](https://github.com/zhuoshaojian/cindy/actions/runs/39834348300)，配方
+`909c9bd8cf6bbe9de5c926e718ad26c8b7029334`，由版本提交自动触发、首次 attempt 完成。
+原始 push 为 2026-10-22 18:46:39.568320 UTC，ACS 步骤完成于 19:07:36，最后 job
+完成于 19:07:46：**20 分 56 秒 / 21 分 06 秒**，包含首次原生缓存填充，仍超出目标。
+
+- 原准备文件系统恢复 91.0 秒，无依赖安装输出；新增原生预编 102.7 秒，
+  后续 materialize/full-build 均复用该层。此轮是原生缓存首次成功填充，不是全冷构建。
+- 应用打包 205.2 秒（cloud.18 为 292.6 秒），其中原生模块缓存恢复和校验 3.7 秒。
+  完整 Dockerfile 步骤 551 秒；不能把首次预编成本从完整交付中扣除。
+- 构建期断网实测最终 ASAR 内 SQLite 查询和 PTY shell：
+  `electronVersion=42.11.12`、`abi=146`，`passed/sqlite/pty` 全为 true。
+  该检查使用同版本原始 Electron，正式 Cindy 的 RunAsNode fuse 仍关闭。
+- 最终 fused Cindy 的原生隔离桌面 smoke 另行通过；五份记录哈希、公开双标签/config
+  读回及 ACS 2/2 Ready 全通过。三个 job、全部构建阶段均一次完成，runner 自动回收。
+- 发布使用同仓 VPC 配置，耗时 123 秒；检查 job 51 秒、构建/验收/发布 770 秒、
+  ACS job 267 秒，队列/供给/衔接 173 秒。没有修改实例或 CIS 准入。
+
+证据在 `cloud-candidate-39834348300-1` 与 `cloud-cache-39834348300-1` artifacts。
+随后 `cloud.21` 只递增发行修订，保持准备层输入不变，在全新 runner 上验证了跨运行复用；
+完整耗时见本文顶部，未用 cloud.20 内部后续步骤的命中代替。
 
 ## 缓存命中修复
 
@@ -101,7 +173,7 @@ workflow、事件和独有标签全部匹配。没有 job 或仍在环境等待�
 等终态后清理，不再为同一 job ID 重建 runner；新 rerun 的新 job ID 仍正常供给。
 `cloud.14` 三个 runner 均只创建一次，最终自动回收。
 
-## 本轮完整计时
+## cloud.9–15 历史计时
 
 | 阶段 | 优化前 cloud.9 | 新缓存首次填充 cloud.10 | 挂载恢复 cloud.12 | 导入隔离 cloud.14 | 连续复测 cloud.15 |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -127,7 +199,7 @@ GitHub run `updated_at` 为 14:03:08，晚于实际 job 完成；这是状态刷
 表中使用 `created_at → 最后 job completed_at` 便于与旧数据同口径对比；新轮同时保留 push 起点。
 BuildKit 日志中的 download/extract 是缓存恢复成本，不能当作重新执行依赖安装。
 
-## 产物与验收边界
+## cloud.15 产物与验收边界
 
 `cloud.10`、`cloud.12`、`cloud.14` 与 `cloud.15` 的冻结源码、锁文件、基座输入和准备脚本相同；每轮使用独立原生 amd64
 ECI Pod、DinD daemon、BuildKit builder 和 emptyDir，跨 runner 复用来自 Registry。

@@ -19,13 +19,13 @@ Runner、DinD、BuildKit 是构建工具，不是云实例需要安装的额外�
 | 产品验收与晋级 | 记录明确的 pending 状态 | 完整 OAuth、DeviceLink、Pod 实际缓存命中、灰度、签名信任及稳定通道准入尚未自动化 |
 | CIS 自动更新 | [双版本选择与主动升级](../DUAL-VERSION-UPDATES.md) | 已登记维护实例支持双版本；网页和原生客户端均已接入主动升级。新领取按已准入列表选择同仓库、地区与架构的最高版本；稳定目录与自动晋级待接入 |
 
-最新已验收的自动交付产物为 `0.1.113-cloud.18`，运行 [39827917054](https://github.com/zhuoshaojian/cindy/actions/runs/39827917054)。
-`cloud.14` 至 `cloud.18` 的成功交付均确认准备层实际恢复且未重新安装。
-本轮准备层恢复 93.6 秒，完整构建 **8 分 57 秒**，原生隔离 smoke、双标签发布和 ACS 2/2 Ready 通过。
-原始 push 到 ACS Ready 为 **20 分 35 秒**，全部收尾 **20 分 45 秒**，全程自动执行，
-未触发重试；**20 分钟目标仍未达成**。构建缓存和镜像上传已实际使用同仓 VPC 端点，
-公开双标签读回一致；上传 121 秒（上一轮 125 秒），主要改善来自其它阶段，不能归功于 VPC。
-下一轮将 Electron 原生模块编译加入准备层缓存，并增加最终包的二进制校验、断网 SQLite/PTY 验证。
+最新已验收的自动交付产物为 `0.1.113-cloud.21`，运行 [39838127957](https://github.com/zhuoshaojian/cindy/actions/runs/39838127957)。
+原始 push 到 ACS Ready 为 **17 分 47 秒**，全部 job 收尾 **17 分 58 秒**，全程自动执行，
+未触发重试；**本次全新 runner 的热缓存交付达到 20 分钟目标**，不代表冷构建或后续每轮都能保证。
+准备文件系统恢复 77.7 秒，依赖安装和原生预编均未重新执行，最终包原生模块复用/校验 3.1 秒。
+完整构建 **6 分 16 秒**；隔离桌面 smoke、最终包 SQLite/PTY 实测、五份记录哈希、
+公开双标签读回及 ACS 2/2 Ready 均通过。构建缓存和镜像上传实际使用同仓 VPC 端点。
+`cloud.20` 包含原生缓存首次填充的完整交付为 20 分 56 秒，与本次仅递增版本的热测分开统计。
 详细计时、失败记录与验收边界见 [缓存与交付实测](BUILD-CACHE-BENCHMARK.md)。
 自动供给的恢复、权限与首次验收见 [自动供给记录](ACCEPTANCE-AUTOSUPPLY-20261022.md)。
 
@@ -113,7 +113,7 @@ CIS 自身的构建/部署与用户实例升级是另外两件事，见
    AK 只注入两个登录步骤，不传入 Dockerfile、build arg 或构建环境。可用 Registry 密码，或通过 ACR AK 换取
    一小时的临时 Registry 凭据。推送已测 image ID 并读取 Registry 原始 manifest，
    按 digest 再读回验证 config ID；不重建产物、不覆盖冲突标签。
-5. GitHub artifact 保存候选记录、四份构建审计和 smoke 结果；不上传 HOME、密钥、整份
+5. GitHub artifact 保存候选记录、五份构建审计（含实际打包模块的 SQLite/PTY 运行结果）和 smoke 结果；不上传 HOME、密钥、整份
    构建上下文。跨 job 按不可变 artifact ID 传递，失败 job 重跑仍使用原产物。
 6. `cache` 在独立 Environment 读取缓存 AK，创建/复用缓存。`cache-status.json` 只记录摘要、
    opaque cache ID 和结果，不公开 VSwitch / 安全组配置。`Ready` 仍保留
@@ -138,6 +138,7 @@ digest 以免漏算现状，同时登记并修复升级遗漏；缓存步骤没�
 | Repository variable | `CLOUD_IMAGE_DELIVERY_ENABLED=true` | 开启可信分支候选交付 |
 | Repository variable | `CLOUD_IMAGE_CACHE_ENABLED=true` | 开启候选发布后的缓存步骤 |
 | `cloud-image-candidate-cn` variable | `CLOUD_IMAGE_REPOSITORY` | Registry 主机和仓库路径，不含 tag/digest |
+| 同上 variable | `CLOUD_IMAGE_PUSH_REPOSITORY` | 可选的同仓 ACR VPC 别名，仅改变上传路径；公开双标签与 digest 读回仍使用上项 |
 | 同上 variable | `CLOUD_IMAGE_BUILD_CACHE_REPOSITORY` | 独立私有、允许更新标签的构建缓存仓库；不得等于候选仓库 |
 | 同上 variable | `CLOUD_IMAGE_IMMUTABLE_TAGS=true` | 管理员确认仓库已启用 tag 不可变策略 |
 | 同上 variable | `CLOUD_IMAGE_BUILDX_DRIVER_OPTS` | 可选，多行 BuildKit driver 选项；ECI 使用已验证的镜像 digest 和 `network=host`，见接入手册 |
@@ -184,12 +185,17 @@ ACS job 只 checkout 交付工具目录，仍使用独立 Environment 和一次�
 Registry 缓存使用两个独立标签、单写入者：基座 `v2-base / mode=max`，应用准备层
 `v4-prepared / mode=min`。后者保留已准备的 Agent/Electron、pnpm 依赖、Linux 打包环境，
 使用冻结应用源码与准备脚本作为输入；云修订号、发布 commit 和说明文档不在这一步参与。
+准备层还在独立物理副本中预编锁定的 `better-sqlite3` / `node-pty`，以 Electron 自带的
+源码/版本/ABI 缓存供最终打包复用。外层输入同时绑定 OS、编译器、依赖锁和缓存脚本。
+打包时删除副本中的 ABI-only 标记，核对恢复后的二进制哈希和权限；断网步骤使用同版本
+原始 Electron 实际加载最终 ASAR 内的 SQLite/PTY。正式包的 fuse、普通客户端构建不变。
 每版仍编译应用、组装最终层，但不再上传编译目录、打包副本、`/layer` 等重复临时层。
 这些私有缓存不是实例镜像，不进入 CIS 或 ACS 镜像清单。
 
 构建池在已连通的 VPC 内时，缓存仓库通过现有 `CLOUD_IMAGE_BUILD_CACHE_REPOSITORY`
 配置 VPC 端点，避免缓存层经公网下载；先验证两端内容一致和实际 OSS 内网下载。
-运行时公开仓库与双标签保持不变，本机仍按所在网络选择端点，见 [接入手册](BOOTSTRAP.md)。
+镜像上传也通过 `CLOUD_IMAGE_PUSH_REPOSITORY` 使用同仓 VPC 别名；运行时公开仓库、
+双标签和发布读回保持不变。本机仍按所在网络选择端点，见 [接入手册](BOOTSTRAP.md)。
 
 BuildKit 拉取输入元数据时若明确遇到连接重置、TLS/IO 超时或 unexpected EOF，在同一
 runner 内自动重试一次相同构建命令，保留首次失败日志与 `*-attempts.json`。
