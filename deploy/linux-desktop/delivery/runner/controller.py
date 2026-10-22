@@ -290,6 +290,11 @@ class Controller:
             if data['total_count'] > 100:
                 raise RuntimeError('WORKFLOW_QUEUE_LIMIT')
             runs.update({r['id']: r for r in data['workflow_runs']})
+        # A run can remain pending after its queued job becomes assignable,
+        # while status-filtered listings omit it. Inspect the latest page as
+        # well; only actual queued jobs passing eligible() create resources.
+        recent = self.api.gh(f'actions/workflows/cloud-image-delivery.yml/runs?branch={urllib.parse.quote(BRANCH, safe="")}&per_page=100')
+        runs.update({r['id']: r for r in recent['workflow_runs'] if r['status'] == 'pending'})
         for run in sorted(runs.values(), key=lambda r: r['id']):
             data = self.api.gh(f"actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs?per_page=100")
             if data['total_count'] > 100:

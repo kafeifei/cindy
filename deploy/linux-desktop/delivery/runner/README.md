@@ -36,6 +36,10 @@
 仓库、来源仓库、分支、workflow 路径、commit 与标签都要匹配。每个 job 额外要求
 `cindy-fork-run-<run_id>-<run_attempt>` 标签，避免别的运行抢占它的 runner。
 不会触发、取消或重跑 workflow，不接受 PR，也不访问组织/企业 runner API。
+状态筛选索引可能遗漏仍显示 `pending`、但已有 `queued` 作业的运行；每轮额外检查该分支
+最近 100 次运行的未筛选列表。仅当真实作业已进入 `queued` 且通过同一身份/标签校验时供给；
+没有作业的并发等待、Environment 的 `waiting` 作业和终态作业不会创建 runner。
+GitHub 的并发与环境规则继续决定作业何时执行。
 
 - 小型控制进程在 ACK 的独立 `cindy-fork-runners` namespace 常驻；执行 job 仍是临时 ECI。
   无入站 Service/webhook，只需出站访问 GitHub。单副本 Recreate + Kubernetes Lease

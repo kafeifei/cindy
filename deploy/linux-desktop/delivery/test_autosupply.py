@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 import sys
 import unittest
+import urllib.parse
 
 ROOT = Path(__file__).parent / 'runner'
 sys.path.insert(0, str(ROOT))
@@ -67,9 +68,15 @@ class FakeApi:
     def gh(self, path, method='GET', body=None):
         self.calls.append((path, method))
         if path.startswith('actions/workflows/'):
-            return {'workflow_runs': [copy.deepcopy(self.run)], 'total_count': 1}
+            status = urllib.parse.parse_qs(urllib.parse.urlsplit(path).query).get('status', [None])[0]
+            # Observed: the filtered index omits a pending run even though its
+            # unfiltered listing and attempt jobs expose a queued job.
+            visible = status is None or (self.run['status'] != 'pending' and status == self.run['status'])
+            runs = [copy.deepcopy(self.run)] if visible else []
+            return {'workflow_runs': runs, 'total_count': len(runs)}
         if path.startswith('actions/runs/'):
-            return {'jobs': [copy.deepcopy(self.job)], 'total_count': 1}
+            jobs = [copy.deepcopy(self.job)] if self.job else []
+            return {'jobs': jobs, 'total_count': len(jobs)}
         if path == 'actions/jobs/31': return copy.deepcopy(self.job)
         if path.startswith('actions/runners?'):
             return {'runners': list(copy.deepcopy(self.runners).values()), 'total_count': len(self.runners)}
@@ -114,6 +121,27 @@ class AutosupplyTest(unittest.TestCase):
         self.api.run = copy.deepcopy(RUN)
         self.api.job['labels'][-1] = 'cindy-fork-run-11-1'
         self.controller.tick(); self.assertFalse(self.api.runners)
+
+    def test_pending_run_with_queued_job_recovers_missing_status_index(self):
+        # Unit / Controller.tick: regression for a real queued check job whose
+        # workflow remains pending. Existing cases only expose active runs via
+        # status filters, leaving this run with no runner and blocking delivery.
+        self.api.run['status'] = 'pending'
+        self.controller.tick(); self.controller.tick()
+        self.assertEqual(len(self.api.runners), 1)
+        self.assertEqual(self.state()['tries'], 1)
+        self.assertEqual(self.state()['jobId'], JOB['id'])
+
+    def test_pending_workflow_needs_an_admitted_queued_job(self):
+        # A concurrency wait without a job is not work to provision; neither
+        # are environment waits, terminal jobs or a mismatched run label.
+        for job in (None, {**JOB, 'status': 'waiting'}, {**JOB, 'status': 'completed'},
+                    {**JOB, 'labels': JOB['labels'][:-1] + ['cindy-fork-run-99-1']}):
+            with self.subTest(job=job):
+                self.setUp(); self.api.run['status'] = 'pending'; self.api.job = job
+                self.controller.tick()
+                self.assertFalse(self.api.runners)
+                self.assertFalse(self.api.objects)
 
     def test_restart_between_secret_and_job_resumes_same_jit_identity(self):
         self.api.fail_job_create = True

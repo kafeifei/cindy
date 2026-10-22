@@ -35,7 +35,7 @@ def eligible(run, job):
             or run.get('repository', {}).get('full_name') != REPOSITORY
             or run.get('head_branch') != BRANCH or run.get('path') != WORKFLOW
             or run.get('event') not in ('push', 'workflow_dispatch')
-            or run.get('status') not in ('queued', 'in_progress', 'waiting')
+            or run.get('status') not in ('queued', 'in_progress', 'waiting', 'pending')
             or job.get('status') != 'queued' or job.get('run_id') != run.get('id')
             or job.get('head_sha') != run.get('head_sha')
             or job.get('name') not in ROLES):
