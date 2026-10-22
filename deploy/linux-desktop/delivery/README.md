@@ -19,14 +19,16 @@ Runner、DinD、BuildKit 是构建工具，不是云实例需要安装的额外�
 | 产品验收与晋级 | 记录明确的 pending 状态 | 完整 OAuth、DeviceLink、Pod 实际缓存命中、灰度、签名信任及稳定通道准入尚未自动化 |
 | CIS 自动更新 | [双版本选择与主动升级](../DUAL-VERSION-UPDATES.md) | 已登记维护实例支持双版本；网页和原生客户端均已接入主动升级。统一稳定目录与新认领消费待接入 |
 
-此前已验收的自动交付为 `0.1.113-cloud.2`，运行 [39731560933](https://github.com/zhuoshaojian/cindy/actions/runs/39731560933)
-由版本提交的 **push** 自动触发：三个 job 按队列自动获得一次性 runner，完整构建、原生隔离
-smoke、发布和 ACS 缓存全部成功，runner/ECI/JIT 自动回收；期间没有手工 dispatch、注册 runner
-或补建缓存。详见 [自动供给与交付验收](ACCEPTANCE-AUTOSUPPLY-20261022.md)。
+最新已验收的自动交付为 `0.1.113-cloud.4`，运行 [39747698558](https://github.com/zhuoshaojian/cindy/actions/runs/39747698558)
+由版本提交的 **push** 自动触发：三个 job 自动获得一次性 runner，完整构建、原生隔离
+smoke、双标签发布和 ACS 2/2 Ready 全部成功，runner/ECI/JIT 自动回收；没有手工 dispatch、
+注册 runner 或补建缓存。应用准备层已跨新 runner 命中，完整构建从 25 分 46 秒降到
+9 分 09 秒，整条交付从 50 分 21 秒降到 28 分 13 秒，见 [缓存与交付实测](BUILD-CACHE-BENCHMARK.md)。
+自动供给的恢复、权限与首次验收见 [自动供给记录](ACCEPTANCE-AUTOSUPPLY-20261022.md)。
 
-实例升级与候选交付分开：上一版 `0.1.113-cloud.1` 的本人实例维护升级见
-[0.1.113 验收记录](../ACCEPTANCE-0113-20261022.md)；本次 `cloud.2` 没有切换实例或新认领默认，
-也没有补做新的 OAuth/DeviceLink 验收。
+实例升级与镜像交付分开：`0.1.113-cloud.1` 的本人实例维护升级见
+[0.1.113 验收记录](../ACCEPTANCE-0113-20261022.md)；本次 `cloud.3` / `cloud.4` 未切换实例或
+新认领默认，也未补做新的 OAuth/DeviceLink 验收。
 历史实例升级与 init 修复见 [2026-10-21 验收](../ACCEPTANCE-CLOUD2-20261021.md)。
 历史镜像、缓存和运行编号保留在对应验收记录，不作为当前发行输入。
 
@@ -55,9 +57,9 @@ CIS 自身的构建/部署与用户实例升级是另外两件事，见
 [`version.json`](version.json) 是提交到 Git 的发行意图。例如：
 
 - 上游版本：`0.1.113`，完整保留 major/minor/patch；普通客户端源码版本不变。
-- 云应用和发行版本：`0.1.113-cloud.2`；镜像标签：`0.1.113-cloud.2-cn-amd64`。
+- 云应用和发行版本：`0.1.113-cloud.4`；镜像标签：`0.1.113-cloud.4-cn-amd64`。
   云构建只在隔离导出目录写组合版本，应用内显示、ASAR、OCI 元数据与交付计划必须一致。
-- 下次云改动：`0.1.113-cloud.3`；切换到 `0.1.114` 后：`0.1.114-cloud.1`。
+- 下次云改动：`0.1.113-cloud.5`；切换到 `0.1.114` 后：`0.1.114-cloud.1`。
 
 同一上游修订必须加 1，新上游修订从 1 开始，禁止上游倒退和同名上游 tag 改 commit。
 镜像仓库统一使用 `cloud-runtime-cn`，每份产物保留两个不可变标签：
@@ -180,9 +182,9 @@ Registry 缓存使用两个独立标签、单写入者：基座 `v1-base / mode=
 
 首次构建、输入变更或缓存被清理时按完整 Dockerfile 重建。`--no-cache` 禁止导入旧缓存，
 仍可导出新缓存；导出失败不忽略。普通 cache mount 不跨 runner 持久化；这里缓存的是
-完整准备层。2026-10-21 旧构建图只命中基座的实测保留在
-[历史冷/热记录](BUILD-CACHE-BENCHMARK.md)，不能作为本次优化的速度结论。
-本次必须在全新 runner 上完成准备层首次填充和后续云修订交付，再记录实际加速。
+完整准备层。2026-10-22 已完成首次填充和新 runner 的后续云修订交付，
+应用准备 RUN 命中且没有重新执行；缓存恢复仍需下载和解压。
+当前耗时、输入对照与旧图历史测量集中在 [缓存与交付实测](BUILD-CACHE-BENCHMARK.md)。
 
 实现依据：[Docker Registry cache](https://docs.docker.com/build/cache/backends/registry/)。
 
@@ -222,6 +224,6 @@ actionlint -config-file deploy/linux-desktop/delivery/actionlint.yaml \
 ### 云内应用版本
 
 `version.json` 的上游版本与云修订号同时决定镜像标签、OCI 标签和 Electron 包版本。
-包内 Cindy 的“关于”与运行期 `app.getVersion()` 显示 `0.1.113-cloud.2` 形式；镜像标签另附区域与架构。
+包内 Cindy 的“关于”与运行期 `app.getVersion()` 显示 `0.1.113-cloud.4` 形式；镜像标签另附区域与架构。
 发布检查读取实际 `app.asar` 的包版本并与发行计划比对，防止镜像已更新而云内仍只显示上游版本。
 普通本地客户端的版本策略不变。
