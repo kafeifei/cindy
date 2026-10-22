@@ -57,14 +57,23 @@ export function plans(manifest, config) {
   });
 }
 export async function prepareAll(targets, options, progress = () => {}) {
+  const tasks = targets.flatMap(target => target.plans.map(plan => ({ target: target.name, plan })));
   const receipts = [];
-  for (const target of targets) {
-    for (const plan of target.plans) {
-      const receipt = await prepareImageCache(plan, options);
-      receipts.push({ target: target.name, ...receipt });
-      progress(receipts);
+  let cursor = 0, failure;
+  // Independent image/network plans have distinct idempotency tokens. Bound API
+  // pressure; after failure drain in-flight work and never start another plan.
+  async function worker() {
+    while (!failure && cursor < tasks.length) {
+      const { target, plan } = tasks[cursor++];
+      try {
+        const receipt = await prepareImageCache(plan, options);
+        receipts.push({ target, ...receipt });
+        progress([...receipts]);
+      } catch (error) { failure ??= error; }
     }
   }
+  await Promise.all(Array.from({ length: Math.min(2, tasks.length) }, worker));
+  if (failure) throw failure;
   return receipts;
 }
 async function main() {

@@ -71,14 +71,14 @@ test('timeout leaves existing work intact and reports pending instead of Ready',
   assert.equal(calls.filter(x=>x==='CreateImageCache').length,1);
   assert.ok(!calls.some(x=>x.startsWith('Delete')));
 });
-test('partial image set failure stops subsequent caches', async () => {
-  const targets=list();let creations=0;
+test('partial image set failure drains in-flight work and stops queued caches', async () => {
+  const targets=list();targets[0].plans.push({...targets[0].plans[0],planHash:"queued"});let creations=0;
   await assert.rejects(prepareAll(targets,{call:async op=> {
     if(op==='ListImageCaches')return {ImageCaches:[]};
     if(op==='CreateImageCache'){creations++;return {ImageCacheId:'imc-example'};}
     return {ImageCacheId:'imc-example',Status:'Failed'};
   }}),/Failed/);
-  assert.equal(creations,1);
+  assert.equal(creations,2);
 });
 
 test('provider-assigned default resource group is allowed; explicit groups must match', async () => {
@@ -87,4 +87,26 @@ test('provider-assigned default resource group is allowed; explicit groups must 
   assert.equal((await prepareImageCache(p,{call})).status,'Ready');
   const c=structuredClone(config);c.targets[0].resourceGroupId='rg-explicit';
   await assert.rejects(prepareImageCache(plans(manifest,c)[0].plans[0],{call}),/resource group mismatch/);
+});
+
+// Regression: independent Ready polling previously serialized both networks.
+// Unit: deferred API responses prove overlap and all-complete without wall sleeps.
+test('independent networks overlap, with at most two pending requests', async () => {
+  const targets=list(); let active=0, peak=0; const pending=[];
+  const promise=prepareAll(targets,{call:async (op,args)=> {
+    if(op==='ListImageCaches') {
+      active++;peak=Math.max(peak,active);
+      await new Promise(resolve=>pending.push(resolve));
+      active--;
+      const p=targets[0].plans.find(p=>p.request.ImageCacheName===args.ImageCacheName);
+      return {ImageCaches:[{...ready(p),ImageCacheId:'imc-'+targets[0].plans.indexOf(p)}]};
+    }
+    const p=targets[0].plans[Number(args.ImageCacheId.split('-').at(-1))];
+    return {...ready(p),ImageCacheId:args.ImageCacheId};
+  }});
+  assert.equal(pending.length,2);
+  pending.forEach(resolve=>resolve());
+  // Use separate IDs below so the final Get response matches each exact plan.
+  await promise.catch(error=>{throw error});
+  assert.equal(peak,2);
 });

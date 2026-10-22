@@ -59,7 +59,7 @@ def registry_cache(repository):
     if not re.fullmatch(r'[a-z0-9][a-z0-9.-]+(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)+', repository):
         raise ValueError('INVALID_BUILD_CACHE_REPOSITORY')
     return {'base': repository + ':fork-cloud-settings-cn-amd64-v1-base',
-            'prepared': repository + ':fork-cloud-settings-cn-amd64-v2-prepared'}
+            'prepared': repository + ':fork-cloud-settings-cn-amd64-v3-prepared'}
 
 def git(*args):
     return subprocess.check_output(['git', *args], cwd=REPO)
