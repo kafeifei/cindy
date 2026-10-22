@@ -94,6 +94,15 @@ ACK/ECI 构建池应先验证 ACR VPC 端点可达，再将同一个缓存仓库
 这是访问路径配置，不迁移仓库、不重建缓存，也不修改运行时双标签的公开引用。
 本机不在该 VPC 时仍使用公网端点。参见
 [ACR VPC 访问配置](https://www.alibabacloud.com/help/en/acr/user-guide/configure-access-over-vpcs)。
+
+运行时上传同样优先走 VPC：在 `cloud-image-candidate-cn` 配置可选变量
+`CLOUD_IMAGE_PUSH_REPOSITORY`，值为 `CLOUD_IMAGE_REPOSITORY` 的同仓库 VPC 别名。
+例如 `example.cn-shanghai.cr.aliyuncs.com/public/cloud-runtime-cn` 对应
+`example-vpc.cn-shanghai.cr.aliyuncs.com/public/cloud-runtime-cn`。脚本拒绝改换实例、
+地域或仓库路径；未配置时沿用公开端点。登录使用同一次 AK 换取的短期 token，
+只保存在 job 私有 Docker 配置，收尾清理。推送前检查两端所有标签的不可变约束，
+推送后从公开端点核对双标签、config ID 和 manifest digest；发行清单和 ACS 镜像引用
+始终保持 `CLOUD_IMAGE_REPOSITORY`，不会把传输端点误当成另一个产品仓库。
 构建前的登录供 BuildKit 读写缓存，smoke 后再换取新的短期凭据发布候选，AK 不进入构建层。
 
 给专用 RAM 推送用户如下权限；替换账号、ACR 实例、命名空间和仓库名：

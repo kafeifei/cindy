@@ -5,7 +5,7 @@ import hashlib
 import json
 import subprocess
 from pathlib import Path
-from versioning import REPOSITORY, image_tag, validate, cloud_version, source_tag
+from versioning import REPOSITORY, image_tag, validate, cloud_version, source_tag, validate_push_repository
 
 
 def run(*args):
@@ -54,13 +54,19 @@ def check_build(plan, info, result, smoke, records):
     return hashes
 
 
-def publish(reference, image_id, inspect=registry_manifest, execute=run):
+def transport_reference(reference, push_repository):
+    repository, tag = reference.rsplit(':', 1)
+    return validate_push_repository(repository, push_repository) + ':' + tag
+
+
+def publish(reference, image_id, inspect=registry_manifest, execute=run, push_repository=None):
+    transport = transport_reference(reference, push_repository)
     existing = inspect(reference)
     if existing is not None and existing.get('config', {}).get('digest') != image_id:
         raise ValueError('IMMUTABLE_TAG_CONFLICT')
     if existing is None:
-        execute('docker', 'tag', image_id, reference)
-        execute('docker', 'push', reference)
+        execute('docker', 'tag', image_id, transport)
+        execute('docker', 'push', transport)
     remote = inspect(reference)
     if not remote or remote.get('config', {}).get('digest') != image_id:
         raise ValueError('PUBLISHED_CONFIG_MISMATCH')
@@ -69,15 +75,18 @@ def publish(reference, image_id, inspect=registry_manifest, execute=run):
     return remote
 
 
-def publish_tags(references, image_id, inspect=registry_manifest, execute=run):
+def publish_tags(references, image_id, inspect=registry_manifest, execute=run, push_repository=None):
     # Inspect every tag before the first write: a source-tag conflict must not
     # leave a newly published version pointing to an unpaired release.
-    for reference in references:
+    # Check both endpoints before any write. The optional route cannot change
+    # the instance, region, repository, tag or canonical public read-back.
+    transports = [transport_reference(ref, push_repository) for ref in references]
+    for reference in dict.fromkeys([*references, *transports]):
         existing = inspect(reference)
         if existing is not None and existing.get('config', {}).get('digest') != image_id:
             raise ValueError('IMMUTABLE_TAG_CONFLICT')
     for reference in references:
-        publish(reference, image_id, inspect=inspect, execute=execute)
+        publish(reference, image_id, inspect=inspect, execute=execute, push_repository=push_repository)
 
 
 if __name__ == '__main__':
@@ -86,10 +95,12 @@ if __name__ == '__main__':
     parser.add_argument('--build', required=True, type=Path)
     parser.add_argument('--smoke', required=True, type=Path)
     parser.add_argument('--repository', required=True)
+    parser.add_argument('--push-repository', help='Optional same-repository ACR VPC transport')
     parser.add_argument('--output', required=True, type=Path)
     args = parser.parse_args()
     if not REPOSITORY.fullmatch(args.repository):
         raise ValueError('INVALID_REPOSITORY')
+    validate_push_repository(args.repository, args.push_repository)
     plan = json.loads(args.plan.read_text())
     result = json.loads((args.build / 'result.json').read_text())
     image_id = result['imageId']
@@ -100,7 +111,7 @@ if __name__ == '__main__':
     alias = args.repository + ':' + source_tag(plan['recipeCommit'])
     if plan.get('sourceTag') != source_tag(plan['recipeCommit']):
         raise ValueError('SOURCE_TAG_MISMATCH')
-    publish_tags([reference, alias], image_id)
+    publish_tags([reference, alias], image_id, push_repository=args.push_repository)
     raw = subprocess.check_output(['docker', 'buildx', 'imagetools', 'inspect', '--raw', reference])
     # imagetools prints the manifest bytes, without parsing or reformatting.
     digest = 'sha256:' + hashlib.sha256(raw).hexdigest()

@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from versioning import validate_push_repository
 
 
 class LoginError(RuntimeError):
@@ -35,6 +36,11 @@ def login(env, *, execute=subprocess.run, now=time.time):
     host, slash, path = repository.partition('/')
     if not slash or not path or not re.fullmatch(r'[a-z0-9][a-z0-9.-]*', host):
         raise LoginError('INVALID_REGISTRY_HOST')
+    try:
+        transport = validate_push_repository(repository, env.get('IMAGE_PUSH_REPOSITORY'))
+    except ValueError as error:
+        raise LoginError(str(error)) from None
+    hosts = list(dict.fromkeys([host, transport.split('/', 1)[0]]))
     config = env.get('DOCKER_CONFIG', '')
     if not config or not Path(config).is_absolute():
         raise LoginError('JOB_PRIVATE_DOCKER_CONFIG_REQUIRED')
@@ -83,8 +89,9 @@ def login(env, *, execute=subprocess.run, now=time.time):
         raise LoginError('REGISTRY_CREDENTIALS_REQUIRED')
     if not isinstance(password, str) or not password:
         raise LoginError('REGISTRY_CREDENTIALS_REQUIRED')
-    checked_run(['docker', 'login', host, '--username', username, '--password-stdin'],
-                execute=execute, env=clean_env, input=password)
+    for target in hosts:
+        checked_run(['docker', 'login', target, '--username', username, '--password-stdin'],
+                    execute=execute, env=clean_env, input=password)
 
 
 def main():

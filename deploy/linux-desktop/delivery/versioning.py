@@ -10,6 +10,20 @@ REPOSITORY = re.compile(r'[a-z0-9][a-z0-9.-]+(?::[0-9]{1,5})?(?:/[a-z0-9]+(?:[._
 KEYS = {'schemaVersion', 'upstreamVersion', 'upstreamCommit', 'cloudRevision', 'region', 'platform'}
 
 
+def validate_push_repository(repository, transport=None):
+    """Keep release identity public; allow only that ACR repository's VPC alias."""
+    if not REPOSITORY.fullmatch(repository):
+        raise ValueError('INVALID_REPOSITORY')
+    if not transport or transport == repository:
+        return repository
+    host, path = repository.split('/', 1)
+    match = re.fullmatch(r'([a-z0-9][a-z0-9-]*)\.([a-z]+-[a-z]+-[0-9]+|cn-[a-z]+)\.cr\.aliyuncs\.com', host)
+    if (not match or match[1].endswith('-vpc')
+            or transport != f'{match[1]}-vpc.{match[2]}.cr.aliyuncs.com/{path}'):
+        raise ValueError('INVALID_PUSH_REPOSITORY')
+    return transport
+
+
 def validate(value):
     if not isinstance(value, dict) or set(value) != KEYS or type(value['schemaVersion']) is not int or value['schemaVersion'] != 1:
         raise ValueError('INVALID_RELEASE_SCHEMA')

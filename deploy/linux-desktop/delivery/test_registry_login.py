@@ -12,6 +12,24 @@ from registry_login import LoginError, login, main
 
 
 class RegistryLoginTest(unittest.TestCase):
+    def test_vpc_alias_uses_one_token_exchange_and_rejects_another_repository(self):
+        # Credential boundary: only the same ACR repository's VPC alias may
+        # receive the temporary token, never an arbitrary alternate hostname.
+        private = 'fixture-vpc.cn-shanghai.cr.aliyuncs.com/public/candidate'
+        calls = []
+        def execute(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(self.token), '')
+        login({**self.env, 'IMAGE_PUSH_REPOSITORY': private}, execute=execute, now=lambda: 1000)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual([c[0][2] for c in calls[1:]],
+                         ['fixture.cn-shanghai.cr.aliyuncs.com', 'fixture-vpc.cn-shanghai.cr.aliyuncs.com'])
+        self.assertEqual([c[1]['input'] for c in calls[1:]], [self.token['AuthorizationToken']]*2)
+        calls.clear()
+        with self.assertRaisesRegex(LoginError, 'PUSH_REPOSITORY'):
+            login({**self.env, 'IMAGE_PUSH_REPOSITORY': 'other.example/public/candidate'}, execute=execute)
+        self.assertEqual(calls, [])
+
     def setUp(self):
         self.env = {'IMAGE_REPOSITORY': 'fixture.cn-shanghai.cr.aliyuncs.com/public/candidate',
                     'DOCKER_CONFIG': '/tmp/invalid-test-fixture', 'PATH': '/fixture/bin',

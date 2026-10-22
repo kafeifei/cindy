@@ -56,6 +56,40 @@ class VersionTest(unittest.TestCase):
             with self.assertRaises(subprocess.CalledProcessError): plan('a'*40)
 
 class PublishTest(unittest.TestCase):
+    def test_vpc_transport_preserves_public_identity_and_checks_both_endpoints(self):
+        # Integration boundary: transport may change, but every immutable tag
+        # must be preflighted and publicly read back as the tested image.
+        repo = 'fixture.cn-shanghai.cr.aliyuncs.com/public/runtime'
+        private = 'fixture-vpc.cn-shanghai.cr.aliyuncs.com/public/runtime'
+        refs = [repo + ':version', repo + ':sha']
+        image_id = 'sha256:' + 'a'*64
+        state, writes = {}, []
+        def inspect(ref):
+            return state.get(ref.replace(private, repo))
+        def execute(*args):
+            writes.append(args)
+            if args[1] == 'push':
+                state[args[2].replace(private, repo)] = {'config': {'digest': image_id}}
+        publish_tags(refs, image_id, inspect=inspect, execute=execute, push_repository=private)
+        self.assertEqual([w[2] for w in writes if w[1] == 'push'],
+                         [private + ':version', private + ':sha'])
+        self.assertEqual(set(state), set(refs))
+        writes.clear()
+        publish_tags(refs, image_id, inspect=inspect, execute=execute, push_repository=private)
+        self.assertEqual(writes, [])
+        for wrong in [private.replace('fixture-', 'other-'), private + '-other',
+                      private.replace('cn-shanghai', 'cn-beijing'), 'evil.example/public/runtime']:
+            with self.subTest(wrong=wrong), self.assertRaisesRegex(ValueError, 'PUSH_REPOSITORY'):
+                publish_tags(refs, image_id, inspect=inspect, execute=execute, push_repository=wrong)
+        conflict = {private + ':sha': {'config': {'digest': 'sha256:' + 'b'*64}}}
+        with self.assertRaisesRegex(ValueError, 'CONFLICT'):
+            publish_tags(refs, image_id, inspect=conflict.get, execute=execute, push_repository=private)
+        self.assertEqual(writes, [])
+        # A private push alone must never count as successful public delivery.
+        with self.assertRaisesRegex(ValueError, 'PUBLISHED_CONFIG_MISMATCH'):
+            publish_tags(refs, image_id, inspect=lambda _: None, execute=lambda *a: None,
+                         push_repository=private)
+
     def test_existing_identical_image_is_not_pushed_twice(self):
         executed = []
         record = {'config': {'digest': 'sha256:'+'a'*64}}
