@@ -61,6 +61,9 @@ GitHub 的并发与环境规则继续决定作业何时执行。
 - 只有尚未执行的注册允许自动补供给。已经观察到执行或 Kubernetes Job 成功退出后，
   即使 GitHub 读取暂时退回 `queued`、Job 已被清理，也不为同一个 job ID 再建 runner；
   等 GitHub 的终态回收。用户主动 rerun 生成的新 job ID 仍可正常申请。
+- 启动 15 分钟后只重试未上线的 runner；已在线监听或忙碌的 runner 不因 GitHub 仍返回
+  `queued` 而重建。等待仍受原 Kubernetes Job deadline 限制；真实启动失败或 deadline
+  失败沿用最多 3 次的重试上限。
 - JIT 在 GitHub 显示 job 已开始后删除。正常完成等待 listener/DinD 退出；取消或未退出时最多
   等待 120 秒再清理。删除校验管理标签及 UID，不碰非本控制器资源；先确认 Job/Pod 回收再注销 runner。
   每个 Job 有独立最大时长与 TTL；控制器暂时不可用时，ECI 也会被 deadline 停止。

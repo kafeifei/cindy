@@ -216,6 +216,36 @@ class AutosupplyTest(unittest.TestCase):
         self.assertEqual(self.state()['phase'], 'finished')
         self.assertFalse(self.api.runners)
 
+    def test_online_listener_survives_assignment_delay_but_failure_still_retries(self):
+        # Unit / Controller.tick: cloud.15 had a healthy online listener while
+        # its job remained queued. Existing regressions start after assignment;
+        # advancing the bootstrap clock by 901s must not delete this live Job.
+        for busy in (False, True):
+            with self.subTest(busy=busy):
+                self.setUp(); self.controller.tick()
+                state = self.state(); name = state['runnerName']
+                self.api.runners[state['runnerId']].update(status='online', busy=busy)
+                self.now += 901
+                self.controller.tick(); self.controller.tick()
+                self.assertIn(('jobs', name), self.api.objects)
+                self.assertEqual(self.state()['tries'], 1)
+                self.assertEqual(self.state()['runnerId'], state['runnerId'])
+                # Even an online registration cannot suppress the Job's
+                # real failure/deadline. Retry remains bounded and isolated.
+                self.api.runners[state['runnerId']]['busy'] = False
+                self.api.objects[('jobs', name)]['status'] = {'failed': 1}
+                self.controller.tick(); self.controller.tick()
+                self.assertEqual(self.state()['tries'], 2)
+                self.assertNotEqual(self.state()['runnerName'], name)
+
+    def test_offline_bootstrap_timeout_still_replaces_unused_listener(self):
+        self.controller.tick(); state = self.state(); name = state['runnerName']
+        self.api.runners[state['runnerId']]['status'] = 'offline'
+        self.now += 901
+        self.controller.tick(); self.controller.tick()
+        self.assertNotIn(('jobs', name), self.api.objects)
+        self.assertEqual(self.state()['tries'], 2)
+
     def test_cancellation_waits_for_exit_then_forces_bounded_cleanup(self):
         self.controller.tick(); name = self.state()['runnerName']
         self.api.job.update(status='completed', conclusion='cancelled', completed_at=c.iso(self.now))

@@ -217,6 +217,16 @@ class Controller:
                     self.log('runner_assigned', jobId=state['jobId'], runnerId=state['runnerId'])
             failed = resource.get('status', {}).get('failed')
             stale = job['status'] == 'queued' and self.now() - state['attemptAt'] > 900
+            if stale and not failed:
+                listener = self.runner(name)
+                if listener and listener['id'] != state['runnerId']:
+                    raise RuntimeError('RUNNER_ID_MISMATCH')
+                # Online listeners have finished bootstrapping. GitHub may
+                # delay assignment or lag behind a busy runner; neither is a
+                # reason to delete the live Job. Its Kubernetes deadline
+                # still bounds the wait and reports a real failure separately.
+                if listener and (listener.get('status') == 'online' or listener.get('busy')):
+                    return
             if failed or stale:
                 if self.cleanup(cm, state, 'bootstrap_failed') and job['status'] == 'queued' and state['tries'] < 3:
                     state.update(phase='pending', runnerName=None, runnerId=None)
