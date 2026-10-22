@@ -36,7 +36,8 @@ requires `--builder` and a separate private repository with mutable cache tags;
 never use the immutable runtime release repository. See [build cache](delivery/README.md#构建缓存).
 Network access is needed for pinned OS packages, npm dependencies and verified
 Electron/agent assets. No user HOME, credentials, business data or Docker socket
-is mounted into build stages. Use a full clone; frozen commits must be present.
+is mounted into build stages. Retain full commit history; `blob:none` partial clones
+are supported and fetch the frozen source bytes on demand. Frozen commits must be present.
 
 ## Inputs and outputs
 

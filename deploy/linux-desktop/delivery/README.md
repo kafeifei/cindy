@@ -89,7 +89,8 @@ CIS 自身的构建/部署与用户实例升级是另外两件事，见
    完整应用依赖仍在 Docker 构建内按客户端 pnpm 锁安装；检查集合不变。
    本交付 workflow 只接受指定 fork 功能分支的 push/dispatch，不监听外部 PR；主仓工作流不变。
    fork 不必预先复制上游 tag：从 `makecindy/cindy` 拉取指定正式 tag，核对固定 commit，
-   不使用上游最新分支或强制覆盖本地冲突 tag。
+   不使用上游最新分支或强制覆盖本地冲突 tag。检查和构建保留完整提交历史，
+   用 `blob:none` 按需获取源码内容，不重复拉取无关历史文件；冻结源码归档和基座溯源不变。
 2. `candidate` 只接受上述 fork 和分支，在 `cloud-image-candidate-cn` 环境运行。
    将两份完整 Dockerfile 组合为同一多阶段 Bake 图，编译、瘦身和审计仍由现有完整 Dockerfile 完成。
    不继承历史 Cindy 成品镜像；中间构建层只写入私有构建缓存，不发布为云运行时版本。
