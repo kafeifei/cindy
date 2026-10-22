@@ -54,6 +54,9 @@
 - Kubernetes ConfigMap 保存每个 GitHub job 的状态与 runner ID，**不存凭据**。注册/JIT/创建 Job
   中途崩溃后可续接；丢失的 JIT 先注销旧身份，启动失败最多尝试 3 次。执行中的 job 不另起替身。
   最多 3 个未完成 job，超过限额保留在 GitHub 队列。超过限额或身份不匹配会记录固定错误码。
+- 只有尚未执行的注册允许自动补供给。已经观察到执行或 Kubernetes Job 成功退出后，
+  即使 GitHub 读取暂时退回 `queued`、Job 已被清理，也不为同一个 job ID 再建 runner；
+  等 GitHub 的终态回收。用户主动 rerun 生成的新 job ID 仍可正常申请。
 - JIT 在 GitHub 显示 job 已开始后删除。正常完成等待 listener/DinD 退出；取消或未退出时最多
   等待 120 秒再清理。删除校验管理标签及 UID，不碰非本控制器资源；先确认 Job/Pod 回收再注销 runner。
   每个 Job 有独立最大时长与 TTL；控制器暂时不可用时，ECI 也会被 deadline 停止。

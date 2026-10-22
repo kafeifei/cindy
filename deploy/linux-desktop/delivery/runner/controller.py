@@ -196,6 +196,16 @@ class Controller:
                 state['kubernetesResult'] = {k: resource.get('status', {}).get(k) for k in ('succeeded', 'failed', 'completionTime')}
             self.cleanup(cm, state, job.get('conclusion') if job else 'job_removed')
             return
+        # The Actions read API can regress an assigned/finished job to queued.
+        # Only an unconsumed registration may bootstrap-retry the same job ID.
+        # After execution, wait for its terminal GitHub result; a user rerun gets
+        # a new job ID and will be admitted independently.
+        if state['phase'] == 'running' and job['status'] != 'in_progress':
+            return
+        if resource and resource.get('status', {}).get('succeeded') and job['status'] != 'in_progress':
+            if state['phase'] != 'running':
+                state['phase'] = 'running'; self.save(cm, state)
+            return
         if resource:
             if job['status'] == 'in_progress':
                 if job.get('runner_name') != name:

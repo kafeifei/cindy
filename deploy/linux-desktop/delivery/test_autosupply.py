@@ -155,6 +155,39 @@ class AutosupplyTest(unittest.TestCase):
         self.assertEqual(self.state()['kubernetesResult']['succeeded'], 1)
         self.controller.tick(); self.assertFalse(self.api.runners)
 
+    def test_regressed_queue_after_execution_never_replaces_runner(self):
+        for resource_state in ('succeeded', 'missing'):
+            with self.subTest(resource_state=resource_state):
+                self.setUp()
+                self.controller.tick(); name = self.state()['runnerName']
+                self.api.job.update(status='in_progress', runner_name=name)
+                self.controller.tick()
+                if resource_state == 'succeeded':
+                    self.api.objects[('jobs', name)]['status'] = {'succeeded': 1}
+                else:
+                    del self.api.objects[('jobs', name)]
+                self.api.job['status'] = 'queued'; self.now += 901
+                self.controller.tick(); self.controller.tick()
+                self.assertEqual(self.state()['tries'], 1)
+                self.assertEqual(self.state()['runnerName'], name)
+                self.assertEqual(len(self.api.runners), 1)
+                self.api.job.update(status='completed', conclusion='cancelled', completed_at=c.iso(self.now))
+                self.controller.tick()
+                self.assertEqual(self.state()['phase'], 'finished')
+                self.assertFalse(self.api.runners)
+
+    def test_completed_pod_is_execution_evidence_before_github_assignment_arrives(self):
+        self.controller.tick(); name = self.state()['runnerName']
+        self.api.objects[('jobs', name)]['status'] = {'succeeded': 1}
+        self.now += 901
+        self.controller.tick(); self.controller.tick()
+        self.assertEqual(self.state()['tries'], 1)
+        self.assertEqual(len(self.api.runners), 1)
+        self.api.job.update(status='completed', conclusion='success', completed_at=c.iso(self.now))
+        self.controller.tick()
+        self.assertEqual(self.state()['phase'], 'finished')
+        self.assertFalse(self.api.runners)
+
     def test_cancellation_waits_for_exit_then_forces_bounded_cleanup(self):
         self.controller.tick(); name = self.state()['runnerName']
         self.api.job.update(status='completed', conclusion='cancelled', completed_at=c.iso(self.now))
