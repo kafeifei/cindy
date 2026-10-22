@@ -11,7 +11,7 @@ release checks. Ordinary desktop builds do not enable these overlays.
 
 | Material | Purpose |
 | --- | --- |
-| [SOURCE-BUILD.md](SOURCE-BUILD.md), [0.1.113 acceptance](ACCEPTANCE-0113-20261022.md) | Complete source-build entry and current qualification status |
+| [SOURCE-BUILD.md](SOURCE-BUILD.md), [0.1.113 instance acceptance](ACCEPTANCE-0113-20261022.md) | Complete source-build entry and the separate tested-instance result |
 | [Clipboard and recovery follow-up](ACCEPTANCE-CLIPBOARD-RECOVERY-20261020.md) | R7 source-build and Mac clipboard acceptance, rollout results, and explicit phone-test limits |
 | [Candidate delivery](delivery/README.md) | Fork-only self-hosted source build, isolated smoke, candidate publication and ACS cache preparation |
 | [Dual-version updates](DUAL-VERSION-UPDATES.md), [cloud.2 acceptance](ACCEPTANCE-CLOUD2-20261021.md) | Implemented CIS selection and owner-requested upgrades, application version display, live acceptance and remaining promotion work |
@@ -60,7 +60,9 @@ is not a registry manifest digest.
 ## Release pipeline ownership
 
 **Client candidate delivery is implemented and has run on fork-only self-hosted
-runners; see [the workflow records](delivery/README.md).**
+runners, with automatic per-job provisioning and cleanup; see [the workflow records](delivery/README.md).**
+Operator documentation-only pushes do not trigger delivery or provision runners.
+Packaged runtime guidance remains a build input; a release still requires a version change.
 It produces candidates and cache readiness receipts, not stable release admission.
 CIS qualified-version selection and owner-requested upgrades are implemented.
 Actual cache hits and one authorized instance upgrade were separately verified in

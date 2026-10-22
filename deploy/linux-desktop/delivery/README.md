@@ -27,45 +27,28 @@ smoke、发布和 ACS 缓存全部成功，runner/ECI/JIT 自动回收；期间�
 实例升级与候选交付分开：上一版 `0.1.113-cloud.1` 的本人实例维护升级见
 [0.1.113 验收记录](../ACCEPTANCE-0113-20261022.md)；本次 `cloud.2` 没有切换实例或新认领默认，
 也没有补做新的 OAuth/DeviceLink 验收。
-上一轮交付为 `0.1.108-cloud.2`，运行
-[39587950156](https://github.com/zhuoshaojian/cindy/actions/runs/39587950156) 已完成。
-包内版本、实例中的真实显示、缓存命中和维护窗口外主动升级结果见
-[cloud.2 验收记录](../ACCEPTANCE-CLOUD2-20261021.md)。下表保留首次 `cloud.1` 的历史交付事实；
-它的应用包仍显示上游裸版本，已由 `cloud.2` 修正，不能作为当前版本显示验收依据。
+历史实例升级与 init 修复见 [2026-10-21 验收](../ACCEPTANCE-CLOUD2-20261021.md)。
+历史镜像、缓存和运行编号保留在对应验收记录，不作为当前发行输入。
 
-2026-10-21 首次真实候选交付运行：
-[39566954585](https://github.com/zhuoshaojian/cindy/actions/runs/39566954585)。
-检查、完整构建、隔离启动/停机、ACR 推送及 ACS 缓存全部通过。
+## 哪些提交会执行什么
 
-| 记录 | 本轮结果 |
+| 提交内容 | 自动行为 |
 | --- | --- |
-| 配方提交 | `20a5d28118c591510e0816983bd578df6c54cfdd` |
-| 上游版本 / 云修订 | `0.1.108` / `cloud.1` |
-| 候选标签 | `0.1.108-cloud.1-cn-amd64` |
-| Registry manifest | `sha256:8786ec5e6bc45b774cec3fbcdfe1f75b650a4ab8129b620252cd2d738c80be91` |
-| Image config | `sha256:6c055d245327fd0272b781bb4e7bd5f7b85382901f3dde21ba3549c69eda6709` |
-| 未压缩大小 / 层数 | `3,704,673,538` bytes / 2 |
-| Linux 检查 | Node 125、Python 77 全部通过 |
-| 原生 smoke | Xfce/Plank、Cindy 可见窗口、老 HOME 权限、UID 10001 renderer 沙箱、无网络/只读根、正常停机通过 |
-| 候选记录 | artifact `12332016020`；四份构建记录哈希及构建/smoke/发布 image ID 已复核一致 |
-| ACS | artifact `12332726934`，3/3 Ready；全部镜像引用及计划哈希已复核一致 |
+| 仅操作说明、README、验收记录 | 不触发本交付 workflow，不创建 runner、不构建、不发布、不创建 ACS 缓存 |
+| 构建配方、运行时资源或交付工具变化，版本未变 | 只运行 `verify`，不交付镜像 |
+| 同时更新 `delivery/version.json` 的合法云修订或上游版本 | `verify → candidate → cache`；发布前必须通过完整构建和隔离 smoke |
+| 显式 `workflow_dispatch` | 手动请求完整候选交付，仍受分支、Environment、版本和不可变镜像门禁约束 |
 
-本轮缓存覆盖一份新候选和现场模板引用的两份旧 init 镜像，不代表交付三份新运行时。
-首次交付时，现场 12 台中有 1 台主容器已为 R7、init 仍为 `0.1.103`：当时 CIS 的 native 维护升级
-只替换主容器镜像，并把 init 固定在原模板。这是升级遗漏，须在 CIS 同步升级与绑定校验
-修复后消除，不能视为永久依赖。该 init 只执行数据目录创建和属主设置，不运行旧版 Cindy。
-首次缓存回执保留当时引用。该遗漏现已通过 CIS 维护绑定 v2、停机备份和实例验收修复；
-后续交付的缓存目标清单已移除旧 init 引用，历史回执不重写。
+纯文档排除规则写在 workflow 的 `push.paths`，不是等申请 runner 后再跳过发布。
+`runtime-guidance/settings.md` 会进入应用正文，属于运行时资源，**不属于排除的说明文档**；
+交付它的修改仍须递增云修订。文档与代码/版本混合提交时按实际代码/版本变化执行，
+文档不会阻止应有的交付。显式手动触发不受 push 路径筛选约束。
 
-两组 Environment 的分支限制均只允许本 fork 的功能分支；ACR 与 ACS 使用独立账号的 AK。
-CLI 校验固定安装包后以普通用户装入 job 临时目录，不需要 OIDC 或 sudo。所有 job 使用
-仓库级临时 self-hosted ECI runner；网络配置仅作用于作业 Pod。没有修改主仓、企业、
-GitLab runner、共享 DNS、云实例或新认领默认。
-
-此运行完成的是候选交付。产品验收、Pod 实际缓存命中、灰度及稳定通道晋级仍独立进行；
-runner 的队列供给与回收现由 [专属控制器](runner/README.md#自动供给控制器) 实现；
-控制器已常驻 ACK，真实 push 交付已通过，证据及范围见 [本轮验收](ACCEPTANCE-AUTOSUPPLY-20261022.md)。
-配置与证据边界见 [接入手册](BOOTSTRAP.md)。
+本 workflow 产出候选和 ACS Ready 回执，不修改 CIS 控制面或任何实例。
+CIS 自身的构建/部署与用户实例升级是另外两件事，见
+[两仓交付边界](https://github.com/zhuoshaojian/cindy-server/blob/feat/cloud-settings-readonly/docs/cloud-instance/ci-cd-integration.md)。
+两组 Environment 只放行本 fork 分支；ACR 与 ACS 使用独立 AK，不使用 OIDC。
+配置见 [接入手册](BOOTSTRAP.md)，runner 的供给和回收见 [控制器说明](runner/README.md)。
 
 ## 双版本：上游完整版本 + 云修订
 
@@ -84,7 +67,7 @@ runner 的队列供给与回收现由 [专属控制器](runner/README.md#自动�
 新上游还需更新冻结源码、补丁、依赖和配方并重新验收；检测到上游更新不等于可以发布。
 当前完整配方仅支持显式的 `cn / linux/amd64`，其它组合拒绝构建，不伪造矩阵覆盖。
 
-`version.json` 变化才会在可信分支推送时申请自动交付；普通代码/文档提交只检查。
+`version.json` 变化才会在可信分支推送时申请自动交付；相关代码提交只检查，纯说明文档不触发。
 要交付的新配方必须同时提交修订号。重试不分配新版本：同 tag/config ID 已存在时复用，
 不同产物拒绝覆盖。修复已发布候选必须新增修订。镜像仓库还须开启 tag 不可变策略，
 不能仅依赖脚本的先查后写防并发。不得另推纯 `X.Y.Z` 或 `latest` 以绕过旧 CIS 选版逻辑。
@@ -191,7 +174,7 @@ Git commit；修改交付文档、云修订号或应用补丁不再令 apt 安�
 小型 COPY 测试通过，都不能替代完整镜像计时。首次热测还遇到一次 ACR `429`，
 BuildKit 会回退重建；不能把这种情况误报为热缓存命中。
 实测方法、分项耗时和产物对比见 [冷/热构建验收记录](BUILD-CACHE-BENCHMARK.md)。
-本次仅构建与测量，没有重发已发布的 `cloud.1`。
+上述 2026-10-21 缓存基准只做构建与测量，没有重发当时已发布的 `cloud.1`。
 
 实现依据：[Docker Registry cache](https://docs.docker.com/build/cache/backends/registry/)。
 
@@ -220,8 +203,8 @@ actionlint -config-file deploy/linux-desktop/delivery/actionlint.yaml \
 `design-inventory.test.mjs` 中 `/cloud-settings` 与 `/cloud-settings-trial` 的路由台账缺项，
 对应 router、台账实现和测试与本轮修改前一致，未为此放宽门禁。
 
-上线前仍须修复上述 init 升级遗漏，并补上新候选的完整原生 Linux 功能、真实 OAuth、
-DeviceLink、各模板的实际缓存命中和本人灰度记录；再接可信签名、长期发行目录及 CIS
+历史 init 升级遗漏已修复，证据见对应实例验收记录。每个新候选推广前仍须补齐完整功能、
+真实 OAuth、DeviceLink、各模板的实际缓存命中和本人灰度记录；后续再接可信签名、长期发行目录及 CIS
 统一选择器。当前 GitHub 产物保留 30 天，仅作候选交接，不能作为永久稳定发行目录。
 
 官方依据：[GitHub 手动触发条件](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)、
@@ -231,6 +214,6 @@ DeviceLink、各模板的实际缓存命中和本人灰度记录；再接可信�
 ### 云内应用版本
 
 `version.json` 的上游版本与云修订号同时决定镜像标签、OCI 标签和 Electron 包版本。
-包内 Cindy 的“关于”与运行期 `app.getVersion()` 显示 `0.1.108-cloud.2` 形式；镜像标签另附区域与架构。
+包内 Cindy 的“关于”与运行期 `app.getVersion()` 显示 `0.1.113-cloud.2` 形式；镜像标签另附区域与架构。
 发布检查读取实际 `app.asar` 的包版本并与发行计划比对，防止镜像已更新而云内仍只显示上游版本。
 普通本地客户端的版本策略不变。

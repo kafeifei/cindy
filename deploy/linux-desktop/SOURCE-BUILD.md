@@ -1,10 +1,12 @@
 # Complete CN source build
 
-The current source target is **0.1.113-cloud.1**. The build selects the complete
-merged client commit in `source-freeze.json`; it no longer overlays whole files
-from v0.1.108. See [the 0.1.113 acceptance record](ACCEPTANCE-0113-20261022.md)
-for the actual qualification status. Earlier acceptance records prove earlier
-artifacts only; they do not qualify this release.
+The source target is selected by [`delivery/version.json`](delivery/version.json)
+and [`source-freeze.json`](source-freeze.json), not by a version copied into this guide.
+The current upstream is v0.1.113; the build uses the complete merged client commit,
+not whole-file overlays from v0.1.108. See [candidate delivery](delivery/README.md)
+for the latest built image and [0.1.113 instance acceptance](ACCEPTANCE-0113-20261022.md)
+for the separate tested-instance result. A newer candidate does not mean an instance
+was upgraded. Earlier acceptance records qualify only their exact artifacts.
 
 Use the `feat/cloud-settings-native-client` branch of `zhuoshaojian/cindy`.
 Required host tools: Git with full branch history, Python >= 3.12, and Docker

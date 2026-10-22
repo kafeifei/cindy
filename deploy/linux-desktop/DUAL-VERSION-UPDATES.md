@@ -6,7 +6,8 @@
 启动验收及 ACS 缓存。CIS fork 的
 [`feat/cloud-settings-readonly`](https://github.com/zhuoshaojian/cindy-server/tree/feat/cloud-settings-readonly)
 负责精确镜像准入、版本比较、升级前备份和维护事务。稳定发行目录与自动晋级尚未实现；
-候选交付成功不等于允许全量升级。当前上游升级与测试进展见
+候选交付成功不等于允许全量升级。最新候选以 [交付说明](delivery/README.md) 为准；
+纯说明文档提交不触发交付，也不改变云修订或实例版本。上游升级与测试进展见
 [0.1.113 验收记录](ACCEPTANCE-0113-20261022.md)；上一轮已完成结果见
 [cloud.2 验收记录](ACCEPTANCE-CLOUD2-20261021.md)。
 

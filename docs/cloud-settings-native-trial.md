@@ -1,9 +1,9 @@
 # 原生云实例设置与隔离 Dev 客户端
 
-本分支基于上游 `v0.1.108`，客户端基线为 `d4b39020bf083d79b352fcb56ea5a4941432fb39`。
-本文记录截至 2026-10-22 的实现与验收边界。工作分支包含原生设置、隔离 Dev 发行包和
-Linux 运行时修复；已经发布的 Linux 镜像只使用构建时冻结的源码子集，不能把整个分支
-视为已经全量部署。镜像构建入口及来源记录见本仓
+本分支已合入上游 `v0.1.113`。本文记录截至 2026-10-22 的实现与验收边界。
+工作分支包含原生设置、隔离 Dev 发行包和 Linux 运行时修复；安装包和云镜像是两个独立产物，
+云镜像使用 `source-freeze.json` 指定的完整客户端提交，不能把分支 HEAD 视为已经部署。
+镜像构建入口、候选交付与本人实例升级记录见本仓
 [`deploy/linux-desktop/README.md`](../deploy/linux-desktop/README.md)。
 
 配套服务端使用 [`zhuoshaojian/cindy-server` 的 `feat/cloud-settings-readonly`](https://github.com/zhuoshaojian/cindy-server/tree/feat/cloud-settings-readonly)，
