@@ -231,7 +231,7 @@ actionlint -config-file deploy/linux-desktop/delivery/actionlint.yaml \
 ### 应用准备层与多网络缓存
 
 pnpm 下载 store 使用 BuildKit cache mount；跨 runner 的准备层仅保留安装后的依赖、
-已校验并解压的 Agent、Electron 与构建头文件，不重复携带下载压缩包、apt 索引或 npm
+已校验并解压的 Agent、Electron 与构建头文件，仅保留 Forge 仍需读取的 Electron ZIP，不重复携带已消费的 Agent 压缩包、apt 索引或 npm
 下载缓存。`v3-prepared` 首次需要填充，后续交付再测恢复耗时；不把首次填充当热缓存。
 ACS 的不同镜像/网络计划最多并行两个，保留原幂等 token。任一失败后停止领取新计划，
 等待已开始的计划收尾并保存回执；完整集合全部 Ready 才成功。

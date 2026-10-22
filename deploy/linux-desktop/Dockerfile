@@ -9,6 +9,7 @@ COPY recipe/download-build-assets.mjs recipe/prepare-codex.mjs recipe/prepare-ot
 ARG CINDY_UPSTREAM_VERSION
 ENV CINDY_UPSTREAM_VERSION=${CINDY_UPSTREAM_VERSION} CI=1 NODE_OPTIONS=--max-old-space-size=6144 \
     CINDY_AUTH_REGION=cn VITE_CINDY_AUTH_REGION=cn APP_VERSION=${CINDY_UPSTREAM_VERSION}
+# Keep Electron ZIP: Forge packager consumes electronZipDir after compilation.
 RUN --mount=type=cache,id=cindy-linux-build-assets,target=/var/cache/cindy-build-assets,sharing=locked \
     --mount=type=cache,id=cindy-linux-pnpm-store,target=/var/cache/cindy-pnpm,sharing=locked \
     mkdir -p /workspace/debs /workspace/sysroot \
@@ -18,7 +19,7 @@ RUN --mount=type=cache,id=cindy-linux-build-assets,target=/var/cache/cindy-build
     && pnpm config set store-dir /var/cache/cindy-pnpm --global \
     && ELECTRON_SKIP_BINARY_DOWNLOAD=1 pnpm install --frozen-lockfile \
     && /bin/sh /workspace/recipe/prepare-linux.sh \
-    && rm -f /workspace/electron-v42.11.12-linux-x64.zip /workspace/electron-v42.11.12-headers.tar.gz \
+    && rm -f /workspace/electron-v42.11.12-headers.tar.gz \
              /workspace/ripgrep-linux-x64.tar.gz /workspace/codex-package-linux-x64.tar.gz /workspace/pi-linux-x64.tar.gz \
     && rm -rf /workspace/debs /var/lib/apt/lists/* /root/.npm/_cacache
 
