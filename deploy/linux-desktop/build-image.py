@@ -118,10 +118,29 @@ def docker(*args):
 
 def run_build(output, name, args, cwd):
     (output / (name + '-command.json')).write_text(json.dumps(args, indent=2) + '\n')
-    with (output / (name + '.log')).open('w') as log:
-        result = subprocess.run(args, cwd=cwd, stdout=log, stderr=subprocess.STDOUT)
-    if result.returncode:
-        raise RuntimeError(f'{name} failed; see {output / (name + ".log")}')
+    logfile = output / (name + '.log')
+    attempts = []
+    for attempt in (1, 2):
+        with logfile.open('w') as log:
+            result = subprocess.run(args, cwd=cwd, stdout=log, stderr=subprocess.STDOUT)
+        transient = result.returncode != 0 and any(
+            line.startswith('ERROR: failed to solve: failed to resolve source metadata for ')
+            and any(line.endswith(message) for message in
+                    ('connection reset by peer', 'TLS handshake timeout', 'i/o timeout', 'unexpected EOF'))
+            for line in logfile.read_text(errors='replace').splitlines())
+        attempts.append({'attempt': attempt, 'exitCode': result.returncode,
+                         'transientSourceFetchFailure': transient})
+        (output / (name + '-attempts.json')).write_text(json.dumps(attempts, indent=2) + '\n')
+        if result.returncode == 0:
+            return
+        if attempt == 1 and transient:
+            # Resume the same solve/cache on this runner, before any runtime
+            # publication. Keep first-failure evidence; never hide a second
+            # failure or retry compiler, authentication or integrity errors.
+            shutil.copyfile(logfile, output / (name + '-attempt-1.log'))
+            print(f'{name}: retrying one interrupted source fetch', flush=True)
+            continue
+        raise RuntimeError(f'{name} failed; see {logfile}')
 
 def bake_plan(output, tag, revision, entrypoint_sha, no_cache, cloud_revision=None,
               base_revision=None, cache_repository=None, upstream_version=None):

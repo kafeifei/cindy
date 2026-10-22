@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -24,6 +25,39 @@ agent_spec.loader.exec_module(agents)
 timestamp_spec = importlib.util.spec_from_file_location('timestamps', HERE / 'normalize-timestamps.py')
 timestamps = importlib.util.module_from_spec(timestamp_spec)
 timestamp_spec.loader.exec_module(timestamps)
+
+class BuildTransportTest(unittest.TestCase):
+    # Unit / run_build: cloud.16 failed before building when the pinned Docker
+    # frontend download reset. Existing graph tests cannot observe retries or
+    # retained failure evidence. A single metadata transport failure followed
+    # by success must resume; deterministic failures and repeated resets stop.
+    def test_source_transport_retry_preserves_failure_and_is_bounded(self):
+        transient = 'ERROR: failed to solve: failed to resolve source metadata for registry.example.com/tool@sha256:abc: read: connection reset by peer\n'
+        for outputs, succeeds in [(['build complete\n'], True),
+                                  ([transient, 'build complete\n'], True),
+                                  ([transient, transient], False),
+                                  (['ERROR: failed to solve: checksum mismatch\n'], False),
+                                  (['ERROR: failed to solve: failed to resolve source metadata: unauthorized\n'], False),
+                                  (['ERROR: failed to solve: process RUN failed: connection reset by peer\n'], False)]:
+            with self.subTest(outputs=outputs), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder); calls = []
+                def execute(args, **kwargs):
+                    text = outputs[len(calls)]; calls.append(args)
+                    kwargs['stdout'].write(text)
+                    return subprocess.CompletedProcess(args, int(text.startswith('ERROR:')))
+                with patch.object(build.subprocess, 'run', side_effect=execute):
+                    if succeeds:
+                        build.run_build(root, 'prepare-build', ['docker', 'buildx', 'bake'], root)
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, 'prepare-build failed'):
+                            build.run_build(root, 'prepare-build', ['docker', 'buildx', 'bake'], root)
+                self.assertEqual(len(calls), len(outputs))
+                self.assertTrue(all(args == ['docker', 'buildx', 'bake'] for args in calls))
+                self.assertEqual((root / 'prepare-build.log').read_text(), outputs[-1])
+                if len(outputs) == 2:
+                    self.assertEqual((root / 'prepare-build-attempt-1.log').read_text(), transient)
+                attempts = json.loads((root / 'prepare-build-attempts.json').read_text())
+                self.assertEqual([a['exitCode'] for a in attempts], [int(s.startswith('ERROR:')) for s in outputs])
 
 class TimestampTest(unittest.TestCase):
     # Cache optimization moves BuildKit's export clamp into a staging step.
