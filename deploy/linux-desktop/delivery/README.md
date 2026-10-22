@@ -17,18 +17,19 @@ Runner、DinD、BuildKit 是构建工具，不是云实例需要安装的额外�
 | 候选镜像 | 完整源码构建、两层镜像审计、原生 Linux 隔离启动/停机、发布已测产物、digest 绑定 | 完整构建、隔离 smoke、ACR 推送及产物上传已在 self-hosted runner 通过 |
 | ACS 缓存 | 按目标网络准备主镜像和全部实际 init 镜像，检查精确引用与 Ready | 已实测 Ready 与同一 AK 的创建/Ready/非强制删除；每版实际镜像清单以回执为准 |
 | 产品验收与晋级 | 记录明确的 pending 状态 | 完整 OAuth、DeviceLink、Pod 实际缓存命中、灰度、签名信任及稳定通道准入尚未自动化 |
-| CIS 自动更新 | [双版本选择与主动升级](../DUAL-VERSION-UPDATES.md) | 已登记维护实例支持双版本；网页和原生客户端均已接入主动升级。统一稳定目录与新认领消费待接入 |
+| CIS 自动更新 | [双版本选择与主动升级](../DUAL-VERSION-UPDATES.md) | 已登记维护实例支持双版本；网页和原生客户端均已接入主动升级。新领取按已准入列表选择同仓库、地区与架构的最高版本；稳定目录与自动晋级待接入 |
 
-最新已验收的自动交付为 `0.1.113-cloud.4`，运行 [39747698558](https://github.com/zhuoshaojian/cindy/actions/runs/39747698558)
+最新已验收的自动交付为 `0.1.113-cloud.9`，运行 [39764302125](https://github.com/zhuoshaojian/cindy/actions/runs/39764302125)
 由版本提交的 **push** 自动触发：三个 job 自动获得一次性 runner，完整构建、原生隔离
-smoke、双标签发布和 ACS 2/2 Ready 全部成功，runner/ECI/JIT 自动回收；没有手工 dispatch、
-注册 runner 或补建缓存。应用准备层已跨新 runner 命中，完整构建从 25 分 46 秒降到
-9 分 09 秒，整条交付从 50 分 21 秒降到 28 分 13 秒，见 [缓存与交付实测](BUILD-CACHE-BENCHMARK.md)。
+smoke、双标签发布和 ACS 2/2 Ready 全部成功，runner/ECI/JIT 自动回收。
+精简后的应用准备层已跨新 runner 命中，完整构建 **8 分 43 秒**，整条交付
+**25 分 08 秒**；成功、失败和前后对比见 [缓存与交付实测](BUILD-CACHE-BENCHMARK.md)。
 自动供给的恢复、权限与首次验收见 [自动供给记录](ACCEPTANCE-AUTOSUPPLY-20261022.md)。
 
-实例升级与镜像交付分开：`0.1.113-cloud.1` 的本人实例维护升级见
-[0.1.113 验收记录](../ACCEPTANCE-0113-20261022.md)；本次 `cloud.3` / `cloud.4` 未切换实例或
-新认领默认，也未补做新的 OAuth/DeviceLink 验收。
+实例升级与镜像交付分开：`cloud.9` 的存量升级、新领取选择和客户端测试包见服务端
+[更新验收](https://github.com/zhuoshaojian/cindy-server/blob/feat/cloud-settings-readonly/docs/cloud-instance/runtime-update-20261022.md)。
+`cloud.1` 的跨上游升级保留在 [0.1.113 验收记录](../ACCEPTANCE-0113-20261022.md)。
+CI 本身不切换实例，本轮没有补做新的 OAuth/DeviceLink 验收。
 历史实例升级与 init 修复见 [2026-10-21 验收](../ACCEPTANCE-CLOUD2-20261021.md)。
 历史镜像、缓存和运行编号保留在对应验收记录，不作为当前发行输入。
 
@@ -57,9 +58,9 @@ CIS 自身的构建/部署与用户实例升级是另外两件事，见
 [`version.json`](version.json) 是提交到 Git 的发行意图。例如：
 
 - 上游版本：`0.1.113`，完整保留 major/minor/patch；普通客户端源码版本不变。
-- 云应用和发行版本：`0.1.113-cloud.4`；镜像标签：`0.1.113-cloud.4-cn-amd64`。
+- 云应用和发行版本：`0.1.113-cloud.9`；镜像标签：`0.1.113-cloud.9-cn-amd64`。
   云构建只在隔离导出目录写组合版本，应用内显示、ASAR、OCI 元数据与交付计划必须一致。
-- 下次云改动：`0.1.113-cloud.5`；切换到 `0.1.114` 后：`0.1.114-cloud.1`。
+- 下次云改动：`0.1.113-cloud.10`；切换到 `0.1.114` 后：`0.1.114-cloud.1`。
 
 同一上游修订必须加 1，新上游修订从 1 开始，禁止上游倒退和同名上游 tag 改 commit。
 镜像仓库统一使用 `cloud-runtime-cn`，每份产物保留两个不可变标签：
@@ -213,9 +214,8 @@ actionlint -config-file deploy/linux-desktop/delivery/actionlint.yaml \
 `design-inventory.test.mjs` 中 `/cloud-settings` 与 `/cloud-settings-trial` 的路由台账缺项，
 对应 router、台账实现和测试与本轮修改前一致，未为此放宽门禁。
 
-历史 init 升级遗漏已修复，证据见对应实例验收记录。每个新候选推广前仍须补齐完整功能、
-真实 OAuth、DeviceLink、各模板的实际缓存命中和本人灰度记录；后续再接可信签名、长期发行目录及 CIS
-统一选择器。当前 GitHub 产物保留 30 天，仅作候选交接，不能作为永久稳定发行目录。
+历史 init 升级遗漏已修复，证据见对应实例验收记录。每次推广按变化范围检查功能、各模板实际缓存命中和本人灰度；涉及授权或远控的变化另需
+真实 OAuth、DeviceLink 验收，不能以普通 smoke 代替。后续再接可信签名、长期发行目录与自动晋级。当前 GitHub 产物保留 30 天，仅作候选交接，不能作为永久稳定发行目录。
 
 官方依据：[GitHub 手动触发条件](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)、
 [ACS CreateImageCache](https://www.alibabacloud.com/help/en/cs/api-acc-2024-04-02-createimagecache)、
@@ -224,7 +224,7 @@ actionlint -config-file deploy/linux-desktop/delivery/actionlint.yaml \
 ### 云内应用版本
 
 `version.json` 的上游版本与云修订号同时决定镜像标签、OCI 标签和 Electron 包版本。
-包内 Cindy 的“关于”与运行期 `app.getVersion()` 显示 `0.1.113-cloud.4` 形式；镜像标签另附区域与架构。
+包内 Cindy 的“关于”与运行期 `app.getVersion()` 显示 `0.1.113-cloud.9` 形式；镜像标签另附区域与架构。
 发布检查读取实际 `app.asar` 的包版本并与发行计划比对，防止镜像已更新而云内仍只显示上游版本。
 普通本地客户端的版本策略不变。
 
@@ -233,6 +233,7 @@ actionlint -config-file deploy/linux-desktop/delivery/actionlint.yaml \
 pnpm 下载 store 使用 BuildKit cache mount；跨 runner 的准备层仅保留安装后的依赖、
 已校验并解压的 Agent、Electron 与构建头文件。Forge 仍需读取的 Electron ZIP 继续保留，
 不重复携带已消费的 Agent 压缩包、apt 索引或 npm
-下载缓存。`v3-prepared` 首次需要填充，后续交付再测恢复耗时；不把首次填充当热缓存。
+下载缓存。`v3-prepared` 已通过全新 runner 恢复验收；先独立解析准备缓存，再并行导出镜像和记录，
+避免并发 solve 重跑准备。首次填充与热交付分别计时，见缓存实测。
 ACS 的不同镜像/网络计划最多并行两个，保留原幂等 token。任一失败后停止领取新计划，
 等待已开始的计划收尾并保存回执；完整集合全部 Ready 才成功。

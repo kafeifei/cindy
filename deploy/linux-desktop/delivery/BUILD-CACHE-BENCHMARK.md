@@ -1,107 +1,116 @@
 # 完整镜像构建缓存与交付实测
 
-2026-10-22，应用准备层已在**全新 fork self-hosted ECI runner** 上复用成功。
-相较优化前同日的真实交付，完整 Dockerfile 构建步骤从 **25 分 46 秒降到 9 分 09 秒**，
-减少 **64.5%**；从 push 到 ACS Ready 的完整交付从
-**50 分 21 秒降到 28 分 13 秒**，减少 **44.0%**。
+2026-10-22，最新 `0.1.113-cloud.9` 已在全新 fork 专属 ECI runner 完成交付。
+完整 Dockerfile 构建为 **8 分 43 秒**，从 push 到 ACS Ready 为 **25 分 08 秒**。
+与最初 `cloud.2` 相比，分别减少 **66.2%**、
+**50.1%**；相较前一轮已命中缓存的 `cloud.4`，
+构建只再缩短 26 秒。以下是单次实测，包含网络和供给波动，不是性能均值。
 
-## 实际运行与计时口径
+## 完整交付计时
 
-| 阶段 | 优化前 cloud.2 | 新缓存首次填充 cloud.3 | 新 runner 热交付 cloud.4 |
-| --- | ---: | ---: | ---: |
-| 检查 job | 8 分 23 秒 | 2 分 43 秒 | 1 分 33 秒 |
-| 构建、启动检查与发布 job | 30 分 50 秒 | 28 分 33 秒 | 12 分 10 秒 |
-| ACS 缓存 job | 5 分 40 秒 | 5 分 46 秒 | 5 分 37 秒 |
-| 队列、供给及阶段衔接 | 5 分 28 秒 | 5 分 50 秒 | 8 分 53 秒 |
-| 完整交付 | 50 分 21 秒 | 42 分 52 秒 | 28 分 13 秒 |
-| 其中：完整 Dockerfile 构建步骤 | 25 分 46 秒 | 23 分 00 秒 | 9 分 09 秒 |
+| 阶段 | 原始 cloud.2 | 旧准备层热交付 cloud.4 | 精简层首次填充 cloud.7 | 精简层热交付 cloud.9 |
+| --- | ---: | ---: | ---: | ---: |
+| 检查 job | 8 分 23 秒 | 1 分 33 秒 | 1 分 31 秒 | 1 分 30 秒 |
+| 构建、启动检查与发布 job | 30 分 50 秒 | 12 分 10 秒 | 15 分 06 秒 | 11 分 37 秒 |
+| ACS 缓存 job | 5 分 40 秒 | 5 分 37 秒 | 6 分 11 秒 | 5 分 35 秒 |
+| 队列、供给及阶段衔接 | 5 分 28 秒 | 8 分 53 秒 | 4 分 17 秒 | 6 分 26 秒 |
+| 完整交付 | 50 分 21 秒 | 28 分 13 秒 | 27 分 05 秒 | 25 分 08 秒 |
+| 其中：完整 Dockerfile 构建步骤 | 25 分 46 秒 | 9 分 09 秒 | 12 分 12 秒 | 8 分 43 秒 |
 
-- 优化前：[运行 39731560933](https://github.com/zhuoshaojian/cindy/actions/runs/39731560933)。
-- 首次填充：[运行 39742409932](https://github.com/zhuoshaojian/cindy/actions/runs/39742409932)，配方 `50a5e0cc39edc142ebfdb143d3952c5de85aa2f2`。
-- 热交付：[运行 39747698558](https://github.com/zhuoshaojian/cindy/actions/runs/39747698558)，配方 `5a17e67e23281acd5388b1e2891421e0ac5ee9b3`。
+对应 Actions：[cloud.2](https://github.com/zhuoshaojian/cindy/actions/runs/39731560933)、
+[cloud.4](https://github.com/zhuoshaojian/cindy/actions/runs/39747698558)、
+[cloud.7](https://github.com/zhuoshaojian/cindy/actions/runs/39756631445)、
+[cloud.9](https://github.com/zhuoshaojian/cindy/actions/runs/39764302125)。
+均由版本提交的 push 自动触发；成功运行没有手工 dispatch、注册作业 runner、推送镜像或补建 ACS 缓存。
 
-三轮均由版本提交的 push 自动触发。新两轮均一次成功，没有手动 dispatch、注册 runner、
-推送镜像或补建 ACS 缓存。完整交付包含队列、ECI 拉镜像/启动、checkout、检查、构建、
-smoke、发布和 ACS Ready；按 GitHub created_at 至最后完成计时。构建步骤包括源码准备、
-Bake、缓存传输、镜像导入及审计。BuildKit 子步骤有并行，不能相加代替墙钟时间。
+完整交付按 GitHub `created_at` 至最后完成计时，包含队列、ECI 启动、checkout、检查、构建、
+smoke、发布和 ACS Ready。构建步骤包括独立的 `prepare-build` 和后续 `full-build`，没有漏掉
+前一个 solve。BuildKit 子步骤会重叠，不能相加当墙钟时间。`cloud.9` 开始前更新了 runner
+控制器，首段队列含旧 Lease 接管等待，仍计入总耗时。
 
-这是实际发行前后对比，各轮云修订不同；`cloud.3` 是新构建图的首次缓存填充，
-不是禁用全部缓存的严格冷测。每种情况各测一次，包含网络和 ECI 供给波动，不是性能均值。
-旧图相同输入的严格冷/热测量保留在页末。
+## 准备层的实际命中
 
-## 应用缓存如何证明命中
+`cloud.7` 与 `cloud.9` 的冻结源码、pnpm 锁、准备脚本、Dockerfile 和基座输入逐项相同。
+冻结源码为 `4eb73c7f68387b79ed91f788392f47709bd45baa`，上游 `v0.1.113`，
+两者导出的基座 image ID 同为 `sha256:69cce7a9697eba1f4e0c70309e827db962a774979f2b81c53143c51ead046f55`。
+云修订在准备阶段之后注入，`cloud.9` 实际重新编译，包内版本不是旧版本。
 
-两轮使用相同的冻结应用源码 `4eb73c7f68387b79ed91f788392f47709bd45baa`、
-上游 `v0.1.113`、pnpm 锁、准备脚本和基座配方；基座来源为
-`89f44a023891a295d6404611a46a5148daf55b20`。
-两份记录的 base image ID 相同，运行时 image ID 不同，包内版本分别为 `cloud.3`、`cloud.4`。
-源码归档、固定输入和准备脚本逐项核对一致，未以旧应用替代新版本。
+- 去掉已消费的 Agent 压缩包、apt 索引和 npm 下载缓存，pnpm 下载 store 留在 cache mount；
+  保留 Forge 打包仍需读取的 Electron ZIP。准备 RUN 的压缩层从 3,049,453,735 bytes 降到
+  2,091,885,804 bytes，减少 31.4%。最终运行时仍约 1.42 GB 压缩体积，这两者不是同一个数字。
+- `cloud.7` 首次填充执行准备 324.1 秒、缓存写回 252.9 秒；这不是禁用所有缓存的严格冷构建。
+- `cloud.9` 先独立解析并导出准备缓存，再并行导出 base/runtime/records。
+  `prepare-build.log` 的准备 RUN 为 `CACHED`，缓存写回 1.0 秒；`full-build.log` 恢复文件层
+  151.9 秒，编译 168.7 秒，运行时导出 145.3 秒。准备 RUN 没有下载/安装命令输出。
+  `CACHED` 仍需下载解压，不代表零耗时。
+- 两轮各用独立 8 vCPU / 32 GiB 原生 amd64 ECI，DinD 为 6 vCPU / 28 GiB；
+  Pod、daemon、BuildKit builder 均不同，Docker 数据是各自 emptyDir，无共享业务 PVC。
+  BuildKit 固定 digest 一致。跨 runner 复用来自 Registry。
+- 检查 job 只安装锁定的六项检查依赖，完整应用依赖由 Docker 构建负责；本轮检查依赖安装 3 秒。
+  checkout 使用 `blob:none` 保留完整历史，源码归档哈希与完整 clone 一致。
 
-构建各用独立的 8 vCPU / 32 GiB 原生 amd64 ECI，DinD 为 6 vCPU / 28 GiB。
-两个 Pod UID、Docker daemon/BuildKit builder 均不同；Docker 数据为各自 emptyDir，
-不挂共享磁盘或业务 PVC，runner/DinD 固定镜像相同。热轮依靠 Registry 缓存。
+## 下一步优化依据
 
-| 步骤 | cloud.3 首次填充 | cloud.4 热交付 |
-| --- | ---: | ---: |
-| Agent/Electron 下载、pnpm 安装、Linux 准备 | 执行 446.7 秒 | RUN 命中；缓存恢复 199.1 秒 |
-| 应用准备缓存写回 | 622.4 秒 | 1.9 秒 |
-| 应用编译与打包 | 303.2 秒 | 158.7 秒，真实重编 |
-| 基座缓存写回 | 178.2 秒 | 1.1 秒 |
-| 最终运行时导出到 Docker | 218.8 秒 | 140.3 秒 |
+本轮已消除重复依赖准备。剩余主要时间来自缓存搬运、应用编译、镜像导出和阶段供给：
 
-热轮准备 RUN 的 `#33` 明确为 `CACHED`；`#39` 对同一结果下载、解压 Registry blobs，
-没有准备脚本的命令输出，耗时 199.1 秒。**CACHED 不等于下载零耗时。**
-首次填充有真实准备执行；不能把同一 Bake 图中 records/runtime 共享结果产生的 CACHED
-当作跨 runner 命中。热轮仍重编并检查实际 `app.asar` 为 `0.1.113-cloud.4`。
+| 剩余环节 | cloud.9 实测 | 下一步验证方向 |
+| --- | ---: | --- |
+| 准备层恢复 | 151.9 秒 | 继续减少准备层中无用文件，不能删掉 Forge 后续会读取的 Electron ZIP |
+| 应用编译 | 168.7 秒 | 区分与云修订无关的产物，先证明版本注入及内容一致，再考虑更细粒度缓存 |
+| 基座导出 | 233.6 秒，与其它 solve 重叠 | 评估用构建元数据和实际运行时首层证明替代单独加载基座；现有审计仍依赖该基座，不能直接删步骤 |
+| 运行时导出 | 145.3 秒 | 比较压缩/导出路径；仍须 smoke 与实际发布为同一 image config 和 digest |
+| 镜像发布 / ACS 创建 | 87 / 236 秒 | 属于交付耗时，不能从构建提速数字里隐藏 |
+| 队列与阶段衔接 | 6 分 26 秒 | 先分离正常供给与控制器换代等待，再测 runner 阶段合并的收益及凭据隔离 |
 
-两份完整 Dockerfile 组合为一个阶段图，应用直接继承基座阶段。
-准备层保留在独立私有 Registry 缓存；云修订号只在后续编译阶段使用。
-构建不再重复下载准备阶段已有的系统库，不再向 Registry 写回编译目录、打包副本和 `/layer`
-重复临时层。修改冻结源码、准备脚本、依赖或基座，仍会使相关缓存失效。
+这些是下一轮实验方向，尚未宣称取得额外加速。子步骤有重叠，不能相加或直接当作可节省时间。
+当前保留独立 job 的凭据边界和完整审计；不复用含发布凭据的作业目录，不引入业务 PVC。
 
-检查 job 只安装锁定的六项检查依赖，原有检查集合保持不变；完整应用依赖由 Docker
-构建负责。依赖安装从优化前 321 秒降到
-热轮 5 秒。checkout 保留完整提交历史，使用 blob:none
-按需取源码；已核对完整 clone 与 partial clone 的冻结源码归档 SHA-256 一致。
+## runner 缓存与磁盘修复
 
-## 发布产物与验收
+工具镜像启用 ECI 自动 ImageCache。实际构建 Pod 命中工具缓存，从创建到三个容器启动约 31 秒。
+这只缓存固定的 runner/DinD 镜像，不包含 JIT、发布凭据、作业目录或构建数据。
 
-仓库统一为 `cloud-runtime-cn`，本轮两个不可变标签：
+中间的 [cloud.8](https://github.com/zhuoshaojian/cindy/actions/runs/39760188928) **失败，不计作成功热测**：
+并行 solve 导入 Registry 缓存后仍重跑准备；随后组装报 `ENOSPC`，未发布运行时，也未进入 ACS job。
+实测手工 ECI ImageCache 虽扩展了根盘，emptyDir 所在系统盘仍约 30 GiB。
+已仅删除本次创建的手工工具缓存，改用自动缓存；实际 root/emptyDir 均约 180 GiB。
+DinD 领取 job 前检查 `/var/lib/docker` 至少有 80 GiB 空闲空间；本轮检查通过。
+不能仅看扩容注解就认定 Docker 已获得空间。差异见
+[阿里云临时存储说明](https://help.aliyun.com/zh/ack/increase-the-capacity-of-the-temporary-storage-space)。
 
-- `0.1.113-cloud.4-cn-amd64`
-- `sha-5a17e67e23281acd5388b1e2891421e0ac5ee9b3-cn-amd64`
+此前 `cloud.5` 因误删 Forge 所需 Electron ZIP 失败；已恢复该 ZIP。`cloud.6` 在构建前取消。
+失败/取消的专属 runner 已回收，未用跳过启动检查或放宽审计来制造成功。
 
-二者匿名读回相同 Registry manifest：`sha256:d7212d98200932f9c3c200745b014cc704505413a77cbd78f543f948ebb3bbca`。
-Image config 为 `sha256:596e324babd40e9916910d5e31aa19186abba282050402645071440b53a10c95`；仍为 2 层，
-未压缩 3,549,233,878 bytes，Registry layers 合计 1,423,693,506 bytes。
-构建、原生 smoke、推送产物与四份构建记录的 SHA-256 已核对一致。
+## 产物与验收边界
 
-- 原生隔离检查通过：Xfce/Plank、Cindy 可见窗口、root-owned 老 HOME、UID 10001 renderer
-  沙箱、无网络、只读根和正常停机；包内应用版本为 `0.1.113-cloud.4`。
-- ACS 2/2 Ready，逐项覆盖目标主容器与实际 init 精确引用。一个是本轮新运行时，另一个是
-  目标清单中已有模板镜像的缓存复用；不是发布两份新云镜像。
-- 两轮共六个 job 均仅申请一次 fork 专属 runner；GitHub 注册、ECI Job/Pod、临时 JIT
-  Secret 已自动回收，供给控制器继续 Ready。
-- ACR 运行时仓库启用不可变标签；两个标签都先查冲突，失败重试只补缺失标签。
-  构建缓存仍是独立私有、可更新仓库，不进入实例镜像清单。
+本轮配方 `5ff5d781fddeb3ecfef7db270ae303e25e7b656e`，统一仓库 `cloud-runtime-cn`，两个不可变标签：
 
-候选和最终缓存回执分别在上述 Actions 的 `cloud-candidate-<run>-1` 与
-`cloud-cache-<run>-1` artifact 中。发布记录保留 `releaseApproved=false`、
-`podMatchVerified=false`；本轮没有操作 CIS、存量实例、新认领默认或主仓/企业 runner。
-OAuth、DeviceLink 和实际业务 Pod 缓存命中不属于本次构建 smoke，未标记为通过。
-验收文档提交不改发行版本，按路径规则不触发交付。
+- `0.1.113-cloud.9-cn-amd64`
+- `sha-5ff5d781fddeb3ecfef7db270ae303e25e7b656e-cn-amd64`
 
-## 剩余耗时与历史基线
+匿名读回同一 manifest `sha256:8d649dba5d0f60826eb79d3b0fc8a62ee11e489607075818c297b271bb8d1bd8`，
+config `sha256:aae2f7822635f5c8002df6d76a4b439ae6f077ee9791238f15c82ff6977f33c1`。
+镜像仍为两层，未压缩 3,549,233,962 bytes，Registry layers 合计 1,423,693,455 bytes。
+原生 smoke、发布产物及四份构建记录的 SHA-256 逐项一致。
 
-热构建仍需恢复约 3.05 GB 的应用准备层、编译新版本、导出/推送约 1.42 GB 的运行时层，
-以及创建 ACS 缓存。缓存解决重复计算和下载，不消除全部网络传输。
-这次构建 runner 的 ECI 镜像拉取约 4 分钟，已计入队列/供给和完整交付总耗时，
-没有从加速统计中删掉。后续优化优先看准备层体积和 runner 工具镜像供给，
-不能跳过构建审计或启动验收来缩短数字。
+- 原生隔离 smoke 通过：Xfce/Plank、Cindy 可见窗口、root-owned 老 HOME、UID 10001 renderer
+  沙箱、无网络、只读根、正常停机；实际 ASAR 版本为 `0.1.113-cloud.9`。
+- ACS 2/2 Ready，覆盖目标主镜像和实际 init 引用；已有模板缓存复用不等于发布两份新运行时。
+- 三个 job 均只申请一次 fork 专属 runner；GitHub 注册、ECI Job/Pod 和 JIT 自动回收，控制器 Ready。
+- 另跑原生客户端双版本投影、实例控制和设置按钮回归：78 项通过。这是自动化回归，不是界面 E2E。
 
-2026-10-21 的旧图受控测量：相同输入、全新 runner，禁用缓存冷测 23 分 47 秒，
-成功导入后的热测 18 分 40 秒，仅基座命中，应用准备重跑。该 Bake-only 口径不包含
-runner、发布和 ACS，不能与上面的完整交付直接比较。其机器记录保持在
-[build-cache-benchmark-20261021.json](build-cache-benchmark-20261021.json)；
-2026-10-22 cloud.2 自动供给与历史限制见 [原验收记录](ACCEPTANCE-AUTOSUPPLY-20261022.md)。
-首次旧热测曾发生 Registry 429 后回退重建，未计入成功轮；新两轮未重试。
+证据在运行的 `cloud-candidate-39764302125-1` 与 `cloud-cache-39764302125-1` artifacts。
+CI 回执仍为 `releaseApproved=false`、`podMatchVerified=false`，CI 不访问业务 PVC 或更新 CIS 准入。
+本人准入、业务 Pod 缓存命中与升级状态见服务端
+[双版本更新验收](https://github.com/zhuoshaojian/cindy-server/blob/feat/cloud-settings-readonly/docs/cloud-instance/runtime-update-20261022.md)。
+本节只记录 CI 交付证据，不将其冒充 OAuth、DeviceLink 或业务实例升级验收。
+后续存量推广、新领取选版与客户端安装包见服务端更新验收记录。
+纯验收文档提交不改变发行版本，不触发交付。
+
+## 更早的测量口径
+
+`cloud.3` 首次填充旧准备层：构建 23 分，完整交付 42 分 52 秒，见
+[运行 39742409932](https://github.com/zhuoshaojian/cindy/actions/runs/39742409932)。
+2026-10-21 旧图的受控冷/热测量使用相同输入、全新 runner：禁用缓存冷测 23 分 47 秒，
+成功导入后的热测 18 分 40 秒，仅基座命中。该 Bake-only 口径不含 runner、发布和 ACS，
+不能与上表直接比较；记录见 [历史测量](build-cache-benchmark-20261021.json)。

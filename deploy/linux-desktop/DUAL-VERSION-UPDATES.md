@@ -65,7 +65,11 @@ init 保持。迁移实例继续使用精确 `initImageUpdates` 审批。两角�
 构建侧不取得业务 PVC；CIS 不负责构建镜像或创建 ACS 缓存。详见
 [候选交付](delivery/README.md) 与 [配置说明](delivery/BOOTSTRAP.md)。
 
-后续再实现稳定发行目录、签名与自动晋级，以及未登记维护的
-历史升级路径和新认领默认的统一目录消费。本次没有通过发布纯 `X.Y.Z` 别名绕过旧扫描器，
+新领取实例已支持从 `maintenanceRuntimeImages` 与 `keyringRuntimeImages` 的交集中
+选择同仓库、地区与架构的最高已准入版本，并排除暂停的候选 digest；没有合格更高版本则
+保留配置基线。已有实例重领/唤醒不重新选版，显式邀请仍使用固定版本。实际核验见
+[更新验收](https://github.com/zhuoshaojian/cindy-server/blob/feat/cloud-settings-readonly/docs/cloud-instance/runtime-update-20261022.md)。
+
+后续再实现稳定发行目录、签名与自动晋级，以及历史路径的统一目录消费。本次没有通过发布纯 `X.Y.Z` 别名绕过旧扫描器，
 也没有把这些后续能力写成已部署。模拟测试、原生 Linux smoke、真实云实例和 DeviceLink
 跨端验收必须分别记录。
