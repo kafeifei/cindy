@@ -184,6 +184,10 @@ class AutosupplyTest(unittest.TestCase):
             with self.subTest(role=role):
                 doc = p.job_manifest(CONFIG, {'role': role, 'runnerName': 'fixture', 'jobId': 31})
                 pod = doc['spec']['template']['spec']
+                annotations = doc['spec']['template']['metadata']['annotations']
+                self.assertEqual(annotations['k8s.aliyun.com/eci-auto-imc'], 'true')
+                self.assertEqual(annotations['k8s.aliyun.com/imc-perfect-match'], 'true')
+                self.assertTrue(all('@sha256:' in v['image'] for v in pod['containers']))
                 privileged = [v['name'] for v in pod['containers'] if v['securityContext'].get('privileged')]
                 self.assertEqual(privileged, ['dind'] if role == 'build' else [])
                 self.assertFalse(pod['automountServiceAccountToken'])

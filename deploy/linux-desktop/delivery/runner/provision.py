@@ -95,6 +95,8 @@ def job_manifest(config, state):
             'spec': {'backoffLimit': 0, 'activeDeadlineSeconds': DEADLINES[role], 'ttlSecondsAfterFinished': 3600,
                      'template': {'metadata': {'labels': {**labels, 'alibabacloud.com/eci': 'true'},
                         'annotations': {'k8s.aliyun.com/eci-extra-ephemeral-storage': '150Gi' if role == 'build' else '100Gi',
-                                        'k8s.aliyun.com/eci-image-cache': 'false',
+                                        'k8s.aliyun.com/eci-image-cache': 'true',
+                                        'k8s.aliyun.com/eci-auto-imc': 'true',
+                                        'k8s.aliyun.com/imc-perfect-match': 'true',
                                         'k8s.aliyun.com/eci-custom-dnsconfig': '{"nameservers":"127.0.0.1","options":"ndots:1,timeout:2,attempts:2"}'}},
                                   'spec': pod}}}

@@ -43,6 +43,10 @@
 - [provision.py](provision.py) 复用已验收的 ECI 模板：check 4 CPU/16 GiB、build 8 CPU/32 GiB、
   cache 1 CPU/2 GiB（均含 sidecar）；磁盘仅 emptyDir。真实镜像与网络由部署配置传入，
   镜像必须锁定 digest。只有 build 的 DinD 提权，控制器和所有 runner 都无特权。
+- 一次性 runner 启用 ECI ImageCache 自动匹配，并要求所有工具镜像精确匹配；
+  不固定易过期的缓存 ID。预热对象只有固定 digest 的 runner/DinD 镜像，
+  不包含作业目录、JIT、发布凭据或 DinD 构建数据。工具缓存与云实例 ACS 缓存独立。
+  未命中时仍可正常拉取，不能将启用注解等同于实际命中；按 Pod 注解和拉取事件记录耗时。
 - Kubernetes ConfigMap 保存每个 GitHub job 的状态与 runner ID，**不存凭据**。注册/JIT/创建 Job
   中途崩溃后可续接；丢失的 JIT 先注销旧身份，启动失败最多尝试 3 次。执行中的 job 不另起替身。
   最多 3 个未完成 job，超过限额保留在 GitHub 队列。超过限额或身份不匹配会记录固定错误码。
