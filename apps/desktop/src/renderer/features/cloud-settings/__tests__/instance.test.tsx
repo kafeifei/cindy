@@ -9,6 +9,7 @@ import { createTrialCloudSettingsClient } from '../trial';
 import type {
   CloudInstanceView,
   CloudMaintenanceEdit,
+  CloudUpgradeOperation,
 } from '../../../../shared/cloudInstanceControl';
 import zhCN from '@/i18n/locales/zh-CN/common.json';
 import zhTW from '@/i18n/locales/zh-TW/common.json';
@@ -44,6 +45,9 @@ async function setup({
   custom = false,
   revision = false,
   focusMaintenance = false,
+  manualUpgrade = false,
+  version = '0.1.108',
+  latestVersion = '0.1.108',
 } = {}) {
   const i18n = createInstance();
   await i18n.init({
@@ -61,9 +65,10 @@ async function setup({
     desiredState: running ? 'running' : 'stopped',
     runtimeState: running ? 'running' : 'stopped',
     ready: running,
-    version: '0.1.108',
+    version,
+    manualUpgrade,
     imageId: 'a'.repeat(64),
-    latestVersion: '0.1.108',
+    latestVersion,
     updateAvailable: revision,
     upgradeState: 'idle',
     observedAtMs: 100,
@@ -100,6 +105,15 @@ async function setup({
   };
   const client = Object.assign(createTrialCloudSettingsClient(), {
     instance: vi.fn(async () => structuredClone(value)),
+    upgrade: vi.fn<() => Promise<CloudUpgradeOperation>>().mockImplementation(async () => {
+      value.upgradeOperation = {
+        operationId: 'user-example',
+        phase: 'requested',
+        active: true,
+        updatedAtMs: 123,
+      };
+      return value.upgradeOperation;
+    }),
     power: vi.fn<(action: 'wake' | 'sleep') => Promise<void>>().mockResolvedValue(undefined),
     maintenance: vi.fn(async (change: CloudMaintenanceEdit) => ({
       ...value.maintenance!,
@@ -125,7 +139,7 @@ async function setup({
     </I18nextProvider>
   );
   const rendered = render(tree());
-  await screen.findByText('0.1.108');
+  await screen.findByText(version);
   return { client, value, connect, changed, i18n, ...rendered, tree };
 }
 it('shows overview and explicit wake while offline without opening runtime settings', async () => {
@@ -271,3 +285,96 @@ it('maintenance shortcut scrolls to the policy after loading, without changing i
     HTMLElement.prototype.scrollIntoView = original;
   }
 });
+
+it('requests an upgrade with auto-update disabled and preserves schedules without a modal', async () => {
+  const f = await setup({
+    running: true,
+    revision: true,
+    manualUpgrade: true,
+    version: '0.1.108-cloud.2-cn-amd64',
+    latestVersion: '0.1.108-cloud.10-cn-amd64',
+  });
+  f.value.maintenance!.autoUpdate = false;
+  fireEvent.click(screen.getByRole('button', { name: '刷新状态' }));
+  await waitFor(() =>
+    expect(screen.getByRole('switch').getAttribute('aria-checked')).toBe('false'),
+  );
+  expect(screen.getByText('0.1.108-cloud.10-cn-amd64')).toBeTruthy();
+  const button = screen.getByRole('button', { name: '立即升级' });
+  fireEvent.click(button);
+  fireEvent.click(button);
+  await screen.findByText('升级已排队，等待任务空闲。');
+  expect(f.client.upgrade).toHaveBeenCalledOnce();
+  expect(f.client.power).not.toHaveBeenCalled();
+  expect(f.client.maintenance).not.toHaveBeenCalled();
+  expect(mock.confirm).not.toHaveBeenCalled();
+  expect(screen.getByRole('button', { name: '休眠' }).hasAttribute('disabled')).toBe(true);
+});
+it.each(['stopped', 'no-release', 'old-server', 'draft', 'held', 'resource-change'])(
+  'cannot submit an upgrade while %s',
+  async (kind) => {
+    const f = await setup({
+      running: kind !== 'stopped',
+      revision: kind !== 'no-release',
+      manualUpgrade: kind !== 'old-server',
+    });
+    if (kind === 'draft') fireEvent.click(screen.getByRole('switch'));
+    if (kind === 'held' || kind === 'resource-change') {
+      if (kind === 'held')
+        f.value.upgradeOperation = {
+          operationId: 'user-held',
+          phase: 'recovery-hold',
+          active: true,
+          updatedAtMs: 100,
+        };
+      else f.value.resourceChanging = true;
+      fireEvent.click(screen.getByRole('button', { name: '刷新状态' }));
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: '休眠' }).hasAttribute('disabled')).toBe(true),
+      );
+    }
+    const button = screen.queryByRole('button', { name: '立即升级' });
+    if (button) {
+      expect(button.hasAttribute('disabled')).toBe(true);
+      fireEvent.click(button);
+    }
+    expect(f.client.upgrade).not.toHaveBeenCalled();
+  },
+);
+it('does not resubmit an uncertain request and recovers persisted progress on explicit refresh', async () => {
+  const f = await setup({ running: true, revision: true, manualUpgrade: true });
+  f.client.upgrade.mockRejectedValueOnce(Error('CLOUD_SETTINGS_SAVE_UNCONFIRMED'));
+  fireEvent.click(screen.getByRole('button', { name: '立即升级' }));
+  await screen.findByText('尚未确认升级结果，请先刷新状态。请勿重复提交。');
+  fireEvent.click(screen.getByRole('button', { name: '立即升级' }));
+  expect(f.client.upgrade).toHaveBeenCalledOnce();
+  f.value.upgradeOperation = {
+    operationId: 'user-example',
+    phase: 'backup-running',
+    active: true,
+    updatedAtMs: 200,
+  };
+  fireEvent.click(screen.getByRole('button', { name: '刷新状态' }));
+  await screen.findByText('正在备份云实例…');
+  expect(screen.queryByRole('alert')).toBeNull();
+  f.value.upgradeOperation = { ...f.value.upgradeOperation, phase: 'completed', active: false };
+  f.value.version = '0.1.108-cloud.10-cn-amd64';
+  f.value.latestVersion = null;
+  f.value.updateAvailable = false;
+  fireEvent.click(screen.getByRole('button', { name: '刷新状态' }));
+  await screen.findByText('云实例升级完成。');
+  expect(screen.getByText('0.1.108-cloud.10-cn-amd64')).toBeTruthy();
+  expect(screen.getByText('暂无可用更新')).toBeTruthy();
+  expect(screen.getByRole('button', { name: '立即升级' }).hasAttribute('disabled')).toBe(true);
+});
+it.each(['zh-CN', 'zh-TW', 'en', 'ja', 'ko'])(
+  'localizes the immediate upgrade action and queue in %s',
+  async (language) => {
+    const f = await setup({ running: true, revision: true, manualUpgrade: true, language });
+    const strings = resources[language as keyof typeof resources].cloudSettings.instance;
+    fireEvent.click(screen.getByRole('button', { name: strings.upgradeNow }));
+    await screen.findByText(strings.upgradeQueued);
+    expect(document.body.textContent).not.toContain('cloudSettings.');
+    expect(f.client.upgrade).toHaveBeenCalledOnce();
+  },
+);

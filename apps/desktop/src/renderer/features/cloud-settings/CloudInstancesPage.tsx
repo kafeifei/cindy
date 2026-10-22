@@ -342,7 +342,7 @@ export function CloudInstancesPage({
                                 ? instance.latestVersion
                                 : t('cloudSettings.instance.revisionAvailable')
                               : t(
-                                  `cloudSettings.instance.${instance.latestVersion ? 'noUpdate' : 'unknown'}`,
+                                  `cloudSettings.instance.${instance.manualUpgrade || instance.latestVersion ? 'noUpdate' : 'unknown'}`,
                                 )}
                           </dd>
                         </div>
@@ -358,6 +358,7 @@ export function CloudInstancesPage({
                               !instance.ready ||
                               instance.desiredState !== 'running' ||
                               instance.upgradeState === 'verifying' ||
+                              !!instance.upgradeOperation?.active ||
                               !canOpenDesktop?.(instance)
                             }
                             onClick={() => onOpenDesktop(instance)}

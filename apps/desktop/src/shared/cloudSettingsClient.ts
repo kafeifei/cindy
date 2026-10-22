@@ -71,6 +71,10 @@ export interface CloudSettingsRendererApi {
   instanceRead(input: {
     deviceId: string;
   }): Promise<import('./cloudInstanceControl').CloudInstanceView>;
+  instanceUpgrade(input: {
+    deviceId: string;
+    requestId: string;
+  }): Promise<import('./cloudInstanceControl').CloudUpgradeOperation>;
   instancePower(input: { deviceId: string; action: 'wake' | 'sleep' }): Promise<void>;
   instancePolicy(input: {
     deviceId: string;
@@ -93,6 +97,7 @@ export const CLOUD_CLIENT_CHANNELS = {
   instanceInitialize: 'cloud-settings-client:instance-initialize',
   instanceRead: 'cloud-settings-client:instance-read',
   instancePower: 'cloud-settings-client:instance-power',
+  instanceUpgrade: 'cloud-settings-client:instance-upgrade',
   instancePolicy: 'cloud-settings-client:instance-policy',
   open: 'cloud-settings-client:open',
   read: 'cloud-settings-client:read',

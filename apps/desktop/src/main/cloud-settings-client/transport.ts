@@ -65,7 +65,8 @@ export function createCloudClientHttp(fetcher: typeof fetch): CloudClientHttp {
           throw new CloudClientError(
             response.status === 404 || response.status === 501
               ? 'CLOUD_SETTINGS_UNSUPPORTED'
-              : response.status === 409 && method === 'PATCH'
+              : response.status === 409 &&
+                  (method === 'PATCH' || /^\/instances\/[^/]+\/maintenance\/upgrade$/u.test(path))
                 ? 'CLOUD_SETTINGS_CONFLICT'
                 : response.status === 401 || response.status === 403 || response.status === 409
                   ? 'CLOUD_SETTINGS_SCOPE_CHANGED'

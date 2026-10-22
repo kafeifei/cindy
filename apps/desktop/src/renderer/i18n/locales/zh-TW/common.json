@@ -15719,6 +15719,17 @@
     "mcpScope": "僅儲存至 {{name}}。沿用本機客戶端的 Token 與請求標頭驗證；目前沒有通用的 MCP 瀏覽器 OAuth。",
     "mcpSecretHint": "舊憑證保留在雲端實例。輸入新值後儲存；留空不變更，移除須另行操作。",
     "instance": {
+      "upgradeNow": "立即升級",
+      "upgradeDescription": "無需等待維護時間。會等待任務閒置，停機備份後升級，定時任務保留。",
+      "upgradeSaveFirst": "請先儲存或放棄維護設定的修改。",
+      "upgradeQueued": "升級已排入佇列，等待任務閒置。",
+      "upgradeBackup": "正在備份雲端實例…",
+      "upgradeInProgress": "正在升級雲端實例…",
+      "upgradeComplete": "雲端實例升級完成。",
+      "upgradeHeld": "升級已暫停，等待復原處理。",
+      "upgradeDeferred": "本次升級未執行，請重新整理狀態後查看。",
+      "upgradeUnavailable": "目前無法升級，請重新整理狀態後查看可用版本。",
+      "upgradeUnconfirmed": "尚未確認升級結果，請先重新整理狀態。請勿重複提交。",
       "title": "雲端執行個體",
       "refresh": "重新整理狀態",
       "wake": "喚醒",
@@ -15784,7 +15795,7 @@
         "asleep": "已休眠",
         "starting": "正在啟動或等待就緒",
         "stopping": "正在休眠",
-        "upgrading": "正在驗證升級",
+        "upgrading": "正在升級",
         "error": "執行個體異常"
       }
     },

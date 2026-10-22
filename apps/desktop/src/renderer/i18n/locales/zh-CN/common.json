@@ -15719,6 +15719,17 @@
     "mcpScope": "只保存到 {{name}}。沿用本地客户端的 Token 和请求头鉴权；当前没有通用的 MCP 浏览器 OAuth。",
     "mcpSecretHint": "旧凭证保留在云实例。输入新值后保存；留空不改动，移除需单独操作。",
     "instance": {
+      "upgradeNow": "立即升级",
+      "upgradeDescription": "无需等待维护时间。会等待任务空闲，停机备份后升级，定时任务保留。",
+      "upgradeSaveFirst": "请先保存或放弃维护设置的修改。",
+      "upgradeQueued": "升级已排队，等待任务空闲。",
+      "upgradeBackup": "正在备份云实例…",
+      "upgradeInProgress": "正在升级云实例…",
+      "upgradeComplete": "云实例升级完成。",
+      "upgradeHeld": "升级已暂停，等待恢复处理。",
+      "upgradeDeferred": "本次升级未执行，请刷新状态后查看。",
+      "upgradeUnavailable": "当前无法升级，请刷新状态后查看可用版本。",
+      "upgradeUnconfirmed": "尚未确认升级结果，请先刷新状态。请勿重复提交。",
       "title": "云实例",
       "refresh": "刷新状态",
       "wake": "唤醒",
@@ -15784,7 +15795,7 @@
         "asleep": "已休眠",
         "starting": "正在启动或等待就绪",
         "stopping": "正在休眠",
-        "upgrading": "正在验证升级",
+        "upgrading": "正在升级",
         "error": "实例异常"
       }
     },

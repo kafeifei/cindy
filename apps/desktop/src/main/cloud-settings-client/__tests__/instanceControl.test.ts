@@ -231,3 +231,113 @@ describe('CIS instance controls', () => {
     expect(parse()).toBe(true);
   });
 });
+
+describe('owner-requested native upgrades', () => {
+  const requestId = '33333333-3333-4333-8333-333333333333';
+  const path = '/instances/instance-a/maintenance/upgrade';
+  const operation = {
+    operationId: 'user-example',
+    phase: 'requested',
+    active: true,
+    updatedAtMs: 123,
+  };
+  function upgradeFixture() {
+    const f = fixture();
+    f.target.status.desiredState = 'running';
+    f.target.status.runtimeState = 'running';
+    f.target.status.readiness.ready = true;
+    f.policy.autoUpdate = false;
+    const status = {
+      instanceId: 'instance-a',
+      manualUpgrade: true,
+      updateAvailable: true,
+      latestReleaseTag: '0.1.108-cloud.10-cn-amd64',
+      operation: null as typeof operation | null,
+    };
+    const original = f.request.getMockImplementation()!;
+    f.request.mockImplementation(async (...args) =>
+      args[1] === path ? (args[2] === 'GET' ? status : { operation }) : original(...args),
+    );
+    return { ...f, status };
+  }
+  it('uses the owner maintenance queue without setting a target, policy or runtime command', async () => {
+    const f = upgradeFixture();
+    const handlers = cloudSettingsClientHandlers(createCloudSettingsService(f.deps));
+    expect(await handlers.instanceUpgrade(f.caller, { deviceId: 'cloud-a', requestId })).toEqual(
+      operation,
+    );
+    expect(f.request.mock.calls.map((c) => [c[1], c[2], c[3]])).toEqual([
+      ['/instance-login/api/manage/instances', 'GET', undefined],
+      [path, 'GET', undefined],
+      [path, 'POST', { requestId }],
+    ]);
+    expect(f.policy.autoUpdate).toBe(false);
+  });
+  it('returns an existing active request without another POST', async () => {
+    const f = upgradeFixture();
+    f.status.operation = operation;
+    expect(await f.control.upgrade(f.caller, 'cloud-a', requestId)).toEqual(operation);
+    expect(f.request.mock.calls.every((c) => c[2] === 'GET')).toBe(true);
+  });
+  it.each(['stopped', 'no-release', 'unsupported', 'wrong-instance', 'verifying'])(
+    'blocks %s before submission',
+    async (kind) => {
+      const f = upgradeFixture();
+      if (kind === 'stopped') f.target.status.desiredState = 'stopped';
+      if (kind === 'no-release') f.status.updateAvailable = false;
+      if (kind === 'unsupported') f.status.manualUpgrade = false;
+      if (kind === 'wrong-instance') f.status.instanceId = 'other';
+      if (kind === 'verifying') f.target.status.upgrade.state = 'verifying';
+      await expect(f.control.upgrade(f.caller, 'cloud-a', requestId)).rejects.toThrow(
+        'CLOUD_SETTINGS_',
+      );
+      expect(f.request.mock.calls.every((c) => c[2] === 'GET')).toBe(true);
+    },
+  );
+  it('does not retry a POST whose response was lost', async () => {
+    const f = upgradeFixture(),
+      original = f.request.getMockImplementation()!;
+    f.request.mockImplementation(async (...args) => {
+      if (args[2] === 'POST') throw Error('private-network-detail');
+      return original(...args);
+    });
+    await expect(f.control.upgrade(f.caller, 'cloud-a', requestId)).rejects.toThrow(
+      'SAVE_UNCONFIRMED',
+    );
+    expect(f.request.mock.calls.filter((c) => c[2] === 'POST')).toHaveLength(1);
+  });
+  it.each(['image', 'instanceId', 'owner', 'force', 'backupPassed'])(
+    'rejects renderer %s overrides',
+    async (field) => {
+      const f = upgradeFixture(),
+        handlers = cloudSettingsClientHandlers(createCloudSettingsService(f.deps));
+      await expect(
+        handlers.instanceUpgrade(f.caller, { deviceId: 'cloud-a', requestId, [field]: 'extra' }),
+      ).rejects.toThrow('INVALID_PARAMS');
+      expect(f.request).not.toHaveBeenCalled();
+    },
+  );
+  it('rejects invalid idempotency IDs before network access', async () => {
+    const f = upgradeFixture(),
+      handlers = cloudSettingsClientHandlers(createCloudSettingsService(f.deps));
+    await expect(
+      handlers.instanceUpgrade(f.caller, { deviceId: 'cloud-a', requestId: 'invalid' }),
+    ).rejects.toThrow('INVALID_PARAMS');
+    expect(f.request).not.toHaveBeenCalled();
+  });
+  it.each(['owner', 'window'])('drops upgrade responses after %s changes', async (kind) => {
+    const f = upgradeFixture(),
+      original = f.request.getMockImplementation()!;
+    f.request.mockImplementation(async (...args) => {
+      if (args[1] === path && args[2] === 'GET') {
+        if (kind === 'owner') f.revoke();
+        else f.control.invalidate(f.caller.id);
+      }
+      return original(...args);
+    });
+    await expect(f.control.upgrade(f.caller, 'cloud-a', requestId)).rejects.toThrow(
+      'SCOPE_CHANGED',
+    );
+    expect(f.request.mock.calls.every((c) => c[2] === 'GET')).toBe(true);
+  });
+});

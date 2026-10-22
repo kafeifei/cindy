@@ -135,3 +135,30 @@ describe('native CIS settings client using existing settingsWeb commands', () =>
     expect(f.history.filter((c) => c.kind === 'update')).toHaveLength(0);
   });
 });
+
+it('keeps the same request ID after a lost upgrade response, without automatic replay or Host connection', async () => {
+  const f = setup();
+  const receipt = {
+    operationId: 'user-example',
+    phase: 'requested',
+    active: true,
+    updatedAtMs: 123,
+  };
+  f.bridge.instanceUpgrade = vi
+    .fn()
+    .mockRejectedValueOnce(Error('[CLOUD_SETTINGS_SAVE_UNCONFIRMED] unconfirmed'))
+    .mockResolvedValue(receipt);
+  await expect(f.client.upgrade!()).rejects.toThrow('SAVE_UNCONFIRMED');
+  expect(f.bridge.instanceUpgrade).toHaveBeenCalledOnce();
+  expect(await f.client.upgrade!()).toEqual(receipt);
+  const calls = vi.mocked(f.bridge.instanceUpgrade).mock.calls;
+  expect(calls[0][0]).toEqual(calls[1][0]);
+  expect(calls[0][0]).toEqual({
+    deviceId: 'cloud-a',
+    requestId: expect.stringMatching(/^[a-f0-9-]{36}$/),
+  });
+  expect(f.request).not.toHaveBeenCalled();
+  f.revokeUi();
+  await expect(f.client.upgrade!()).rejects.toThrow('SCOPE_CHANGED');
+  expect(f.bridge.instanceUpgrade).toHaveBeenCalledTimes(2);
+});

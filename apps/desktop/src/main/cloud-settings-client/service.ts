@@ -321,6 +321,7 @@ export function createCloudSettingsService(deps: {
     instanceInitialize: onboarding.initialize,
     instanceRead: instances.read,
     instancePower: instances.power,
+    instanceUpgrade: instances.upgrade,
     instancePolicy: instances.policy,
     async open(caller: CloudClientCaller, deviceId: string): Promise<CloudClientOpen> {
       if (sessions.size + opening.size >= 32 || opening.has(caller.id))

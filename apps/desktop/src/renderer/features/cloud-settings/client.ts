@@ -1,5 +1,7 @@
 import {
   cloudInstanceViewSchema,
+  cloudUpgradeOperationSchema,
+  type CloudUpgradeOperation,
   cloudMaintenanceViewSchema,
   type CloudInstanceView,
   type CloudMaintenanceEdit,
@@ -31,6 +33,7 @@ import { extractIpcError } from '@/utils/ipcError';
 
 export interface CloudSettingsClient {
   instance?(): Promise<CloudInstanceView>;
+  upgrade?(): Promise<CloudUpgradeOperation>;
   power?(action: 'wake' | 'sleep'): Promise<void>;
   maintenance?(change: CloudMaintenanceEdit): Promise<CloudMaintenanceView>;
   plugins?(command: CloudPluginCommand): Promise<CloudPluginResult>;
@@ -71,6 +74,7 @@ export function createCloudSettingsClient(
   let closed = false,
     writing = false,
     generation = 0;
+  let upgradeRequestId: string | undefined;
   let session: CloudClientOpen | undefined,
     connecting: Promise<CloudSettingsCapabilities> | undefined;
   const check = () => {
@@ -174,6 +178,15 @@ export function createCloudSettingsClient(
       );
       if (value.deviceId !== deviceId) throw new Error('CLOUD_SETTINGS_SCOPE_CHANGED');
       return value;
+    },
+    async upgrade() {
+      check();
+      upgradeRequestId ??= crypto.randomUUID();
+      const operation = cloudUpgradeOperationSchema.parse(
+        await call(() => bridge.instanceUpgrade({ deviceId, requestId: upgradeRequestId! })),
+      );
+      upgradeRequestId = undefined;
+      return operation;
     },
     power: (action) => call(() => bridge.instancePower({ deviceId, action })),
     maintenance: async (change) =>

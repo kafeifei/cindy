@@ -1,5 +1,8 @@
 import { z } from 'zod';
-import { cloudInstanceViewSchema } from '../../shared/cloudInstanceControl';
+import {
+  cloudInstanceViewSchema,
+  cloudUpgradeStatusSchema,
+} from '../../shared/cloudInstanceControl';
 import { CloudClientError } from './transport';
 export const cloudOwnedInstancesSchema = z.object({
   instances: z
@@ -9,6 +12,11 @@ export const cloudOwnedInstancesSchema = z.object({
         deviceId: z.string().min(1).max(160),
         customLabel: z.string().max(512).nullable(),
         nameSequence: z.number().int().nonnegative(),
+        maintenanceUpgrade: cloudUpgradeStatusSchema.optional(),
+        resourceChange: z
+          .object({ phase: z.string().max(64) })
+          .nullable()
+          .optional(),
         status: z.object({
           instanceId: z.string(),
           deviceId: z.string(),
@@ -22,6 +30,7 @@ export const cloudOwnedInstancesSchema = z.object({
           loginRequired: z.boolean().optional(),
           ownership: z.object({ orgSlug: z.string().min(1).max(256).nullable() }).optional(),
           observedAtMs: z.number().nullable().optional(),
+          updatedAtMs: z.number().optional(),
         }),
       }),
     )
@@ -53,6 +62,9 @@ export function parseOwnedInstances(raw: unknown): CloudOwnedInstance[] {
 }
 export function projectCloudInstance(target: CloudOwnedInstance) {
   const status = target.status;
+  const upgrade = target.maintenanceUpgrade;
+  if (upgrade && upgrade.instanceId !== target.instanceId)
+    throw new CloudClientError('CLOUD_SETTINGS_INVALID_RESPONSE');
   const tag = status.image.split('@')[0]!.split('/').at(-1)!.split(':').slice(1).join(':');
   return cloudInstanceViewSchema.parse({
     instanceId: target.instanceId,
@@ -65,8 +77,17 @@ export function projectCloudInstance(target: CloudOwnedInstance) {
     loginRequired: status.loginRequired === true,
     version: tag || null,
     imageId: /@sha256:([a-f0-9]{64})$/u.exec(status.image)?.[1] ?? null,
-    updateAvailable: status.updateAvailable,
-    latestVersion: status.latestReleaseTag,
+    updateAvailable: upgrade?.manualUpgrade ? upgrade.updateAvailable : status.updateAvailable,
+    latestVersion: upgrade?.manualUpgrade ? upgrade.latestReleaseTag : status.latestReleaseTag,
+    ...(upgrade
+      ? { manualUpgrade: upgrade.manualUpgrade, upgradeOperation: upgrade.operation }
+      : {}),
+    resourceChanging:
+      !!target.resourceChange &&
+      (target.resourceChange.phase !== 'applied' ||
+        (!status.loginRequired &&
+          status.updatedAtMs !== undefined &&
+          (status.observedAtMs == null || status.observedAtMs < status.updatedAtMs))),
     upgradeState: status.upgrade.state,
     observedAtMs: status.observedAtMs ?? null,
     maintenance: null,

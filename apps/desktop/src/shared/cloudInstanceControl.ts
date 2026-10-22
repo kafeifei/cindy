@@ -105,6 +105,22 @@ export const cloudMaintenanceViewSchema = z.object({
     .max(32),
 });
 export type CloudMaintenanceView = z.infer<typeof cloudMaintenanceViewSchema>;
+// CIS owner upgrade projection. Image references and backup details stay in Main/CIS.
+export const cloudUpgradeOperationSchema = z.object({
+  operationId: z.string().min(1).max(128),
+  phase: z.string().min(1).max(64),
+  active: z.boolean(),
+  updatedAtMs: z.number().finite(),
+});
+export type CloudUpgradeOperation = z.infer<typeof cloudUpgradeOperationSchema>;
+export const cloudUpgradeStatusSchema = z.object({
+  instanceId: z.string().min(1).max(128),
+  latestReleaseTag: z.string().max(256).nullable(),
+  updateAvailable: z.boolean(),
+  manualUpgrade: z.boolean(),
+  operation: cloudUpgradeOperationSchema.nullable(),
+});
+export const cloudUpgradeReceiptSchema = z.object({ operation: cloudUpgradeOperationSchema });
 export const cloudInstanceViewSchema = z
   .object({
     instanceId: z.string().min(1).max(128),
@@ -122,6 +138,10 @@ export const cloudInstanceViewSchema = z
     upgradeState: z.enum(['idle', 'verifying', 'rolled-back']),
     observedAtMs: z.number().nullable(),
     maintenance: cloudMaintenanceViewSchema.nullable(),
+    // Absent on older CIS: do not infer permission from a registry tag.
+    manualUpgrade: z.boolean().optional(),
+    upgradeOperation: cloudUpgradeOperationSchema.nullable().optional(),
+    resourceChanging: z.boolean().optional(),
   })
   .strict();
 export type CloudInstanceView = z.infer<typeof cloudInstanceViewSchema>;
@@ -133,4 +153,8 @@ export const cloudInstancePowerSchema = cloudInstanceTargetSchema
   .strict();
 export const cloudInstancePolicySchema = cloudInstanceTargetSchema
   .extend({ change: cloudMaintenanceEditSchema })
+  .strict();
+
+export const cloudInstanceUpgradeSchema = cloudInstanceTargetSchema
+  .extend({ requestId: z.string().uuid() })
   .strict();

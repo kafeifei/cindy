@@ -103,6 +103,12 @@ it('registers the closed bridge once and rejects untrusted IPC before network ac
   expect(mock.handle).toHaveBeenCalledTimes(Object.keys(CLOUD_CLIENT_CHANNELS).length);
   event.trusted = false;
   await expect(call('open', { deviceId: 'cloud-a' })).rejects.toThrow('PERMISSION_DENIED');
+  await expect(
+    call('instanceUpgrade', {
+      deviceId: 'cloud-a',
+      requestId: '33333333-3333-4333-8333-333333333333',
+    }),
+  ).rejects.toThrow('PERMISSION_DENIED');
   expect(mock.fetch).not.toHaveBeenCalled();
 });
 it.each(['signed-out', 'local', 'mismatch', 'boundary'])(

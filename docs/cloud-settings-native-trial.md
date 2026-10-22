@@ -1,14 +1,15 @@
 # 原生云实例设置与隔离 Dev 客户端
 
 本分支基于上游 `v0.1.108`，客户端基线为 `d4b39020bf083d79b352fcb56ea5a4941432fb39`。
-本文记录截至 2026-10-20 的实现与验收边界。工作分支包含原生设置、隔离 Dev 发行包和
+本文记录截至 2026-10-22 的实现与验收边界。工作分支包含原生设置、隔离 Dev 发行包和
 Linux 运行时修复；已经发布的 Linux 镜像只使用构建时冻结的源码子集，不能把整个分支
 视为已经全量部署。镜像构建入口及来源记录见本仓
 [`deploy/linux-desktop/README.md`](../deploy/linux-desktop/README.md)。
 
 配套服务端使用 [`zhuoshaojian/cindy-server` 的 `feat/cloud-settings-readonly`](https://github.com/zhuoshaojian/cindy-server/tree/feat/cloud-settings-readonly)，
 本分支为 [`zhuoshaojian/cindy` 的 `feat/cloud-settings-native-client`](https://github.com/zhuoshaojian/cindy/tree/feat/cloud-settings-native-client)。
-云实例镜像的配套 CI/CD 尚未实现；当前先完成独立构建与本地隔离验收，不把分支提交当作发布记录。
+云实例镜像已接入 fork 专属 self-hosted runner 的构建、发布及 ACS 缓存流水线，见
+[`交付说明`](../deploy/linux-desktop/delivery/README.md)。分支提交不等于客户端安装包或云镜像已部署。
 
 ## 接入路径与身份
 
@@ -32,14 +33,14 @@ CIS 通过 `@cindy/auth-verify` 校验普通用户 Bearer，逐请求核对实�
 
 ## 现有协议的复用
 
-| 路由 | 用途 |
-| --- | --- |
-| `POST /client/instances/:instanceId/settings/sessions` | 创建短期设置上下文 |
-| `POST .../sessions/:sessionId/heartbeat` | 续租 |
-| `POST .../sessions/:sessionId/requests` | 原有 SettingsWebCommand |
-| `GET .../sessions/:sessionId/requests/:requestId` | 查询原请求，可沿用 resultWait |
-| `GET .../sessions/:sessionId/authorizations` | 恢复本会话发起的授权状态 |
-| `DELETE .../sessions/:sessionId` | 撤销并回收本会话操作 |
+| 路由                                                   | 用途                          |
+| ------------------------------------------------------ | ----------------------------- |
+| `POST /client/instances/:instanceId/settings/sessions` | 创建短期设置上下文            |
+| `POST .../sessions/:sessionId/heartbeat`               | 续租                          |
+| `POST .../sessions/:sessionId/requests`                | 原有 SettingsWebCommand       |
+| `GET .../sessions/:sessionId/requests/:requestId`      | 查询原请求，可沿用 resultWait |
+| `GET .../sessions/:sessionId/authorizations`           | 恢复本会话发起的授权状态      |
+| `DELETE .../sessions/:sessionId`                       | 撤销并回收本会话操作          |
 
 客户端直接引用既有 `settingsWeb.ts` / `settingsManagement.ts` 业务 wire，不新增 Host
 resource 或第二套配置执行器。读取按分类并沿用 `readBatch`/`remainingDomains`；缺少能力时
@@ -71,6 +72,15 @@ OpenAI 等 loopback 授权由 Main 先监听 Host 指定的本机回环地址、
   可见页面转换状态每 5 秒、稳定状态每 30 秒读取，禁止同实例重复写入。
 - 云版本、可用更新与本机版本分别显示。自动更新及维护时段显式保存，携带 revision 与
   defaultsRevision，保留任务保护策略。开启开关不等于立即升级。
+- 版本信息旁的“立即升级”复用 CIS 所有者 `GET/POST /instances/:instanceId/maintenance/upgrade`，
+  只提交请求 UUID，不允许客户端选择镜像或跳过备份。可在维护窗口外、自动更新关闭时申请；
+  不修改自动更新选择和定时任务。CIS 等待任务保护检查通过后执行停机备份及升级。
+- 直接消费实例清单中的 `maintenanceUpgrade`：保留完整上游/云修订/区域/架构版本，显示持久化
+  队列、备份、升级、完成或恢复占用状态。已有活动操作、停机、资源变更和未保存的维护草稿期间
+  禁止重复申请；响应不明时要求先刷新，不自动重放。旧 CIS 缺少能力字段时保留版本与停启功能，
+  不展示主动升级按钮，不回退到绕过维护的升级接口。
+- 新增 IPC 仅供当前登录账号的本机可信 Renderer，经 Main 访问 CIS，不加入 DeviceLink 通用
+  invoke 白名单，也不通过 SSH 执行升级。该入口不依赖云端 Host 在线设置会话。
 - 维护时区使用可搜索 IANA 选择器；维护方式字段固定宽度，菜单不因选项文字长短收缩。
   自定义时段支持每周日期、跨午夜和重叠校验，不提供修改定时任务的入口。
 
@@ -102,3 +112,20 @@ GitHub Copilot 真实授权按用户要求跳过。实际隔离客户端验证�
 
 Linux 输入与授权浏览器修复另有隔离 X11 回归；它不代表 DeviceLink 跨端端到端输入验收。
 本次整理源码不执行部署或修改实例状态。
+
+## 2026-10-22 原生主动升级验收
+
+- 客户端定向单测：316 项通过（含 IPC/所有权、请求幂等、五语按钮交互、关闭/刷新恢复、
+  旧服务兼容、版本完整投影及 Electron 安全回归）；Desktop 类型检查通过。
+- CIS 现有实现：82 项通过；在本机临时 PostgreSQL 容器运行版本选择、主动升级接口、
+  持久队列与扫描器测试，测试结束清理容器。服务端代码和配置未修改。
+- 双版本：`0.1.108-cloud.2 → cloud.10` 按整数比较；`0.1.108-cloud.99 → 0.1.109-cloud.1`
+  按上游版本优先；禁止回退到同上游旧正式版、跨区域/架构、未准入候选与同版本异摘要。
+  历史非标准标签只沿用 CIS 的精确映射，不在客户端猜修订号。
+- 云端应用版本构建校验：1 项通过，应用显示 `0.1.108-cloud.2`，镜像标签包含
+  `0.1.108-cloud.2-cn-amd64`；上游不匹配、缺少云修订和不合法格式拒绝。
+- 五语 key 一致性、术语门禁通过（保留仓库既有告警）。新增 UI 复用原生 Button 与语义主题
+  token，Light/Dark 均实现；本轮组件交互通过 jsdom 验证，未进行双主题实机目检。
+- 本轮未重打/安装 Desktop 包，未触发真实实例升级，不将组件和接口测试称为新版原生包的
+  生产端到端验收。先前网页真实升级证据见
+  [`cloud.2 验收记录`](../deploy/linux-desktop/ACCEPTANCE-CLOUD2-20261021.md)。

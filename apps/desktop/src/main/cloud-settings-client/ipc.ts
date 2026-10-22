@@ -3,6 +3,7 @@ import {
   cloudInstanceTargetSchema,
   cloudInstancePowerSchema,
   cloudInstancePolicySchema,
+  cloudInstanceUpgradeSchema,
 } from '../../shared/cloudInstanceControl';
 import {
   cloudClientHandleSchema,
@@ -42,6 +43,9 @@ export function cloudSettingsClientHandlers(
       service.instanceInitialize(c, v.deviceId),
     ),
     instanceRead: handler(cloudInstanceTargetSchema, (c, v) => service.instanceRead(c, v.deviceId)),
+    instanceUpgrade: handler(cloudInstanceUpgradeSchema, (c, v) =>
+      service.instanceUpgrade(c, v.deviceId, v.requestId),
+    ),
     instancePower: handler(cloudInstancePowerSchema, (c, v) =>
       service.instancePower(c, v.deviceId, v.action),
     ),

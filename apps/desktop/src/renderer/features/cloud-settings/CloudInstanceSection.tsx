@@ -14,7 +14,12 @@ import {
 } from '../../../shared/cloudInstanceControl';
 import type { CloudSettingsClient } from './client';
 import { CloudTimezoneSelect } from './CloudTimezoneSelect';
-import { stableInstanceState as stableState, instanceStatus } from './instanceState';
+import {
+  stableInstanceState as stableState,
+  instanceStatus,
+  canRequestUpgrade,
+  upgradeProgressKey,
+} from './instanceState';
 
 const card =
   'flex flex-col gap-4 rounded-xl border border-[var(--settings-theme-card-border)] bg-[var(--settings-theme-card-bg)] p-5';
@@ -188,6 +193,43 @@ export function CloudInstanceSection({
       }
     }
   };
+  const upgrade = async () => {
+    if (
+      inFlight.current ||
+      blocked.current ||
+      uncertain.current ||
+      dirty.current ||
+      !view ||
+      !canRequestUpgrade(view) ||
+      !client.upgrade
+    )
+      return;
+    inFlight.current = true;
+    setBusy(true);
+    setMessage(undefined);
+    setError(undefined);
+    try {
+      const operation = await client.upgrade();
+      if (!alive.current) return;
+      setView((before) => before && { ...before, upgradeOperation: operation });
+    } catch (cause) {
+      if (alive.current) {
+        uncertain.current = true;
+        setError(
+          cause instanceof Error &&
+            ['CLOUD_SETTINGS_CONFLICT', 'CLOUD_SETTINGS_UNSUPPORTED'].includes(cause.message)
+            ? 'upgradeUnavailable'
+            : 'upgradeUnconfirmed',
+        );
+      }
+    } finally {
+      inFlight.current = false;
+      if (alive.current) {
+        setBusy(false);
+        await refresh();
+      }
+    }
+  };
   const save = async () => {
     if (inFlight.current || blocked.current || uncertain.current || !draft || !client.maintenance)
       return;
@@ -242,7 +284,18 @@ export function CloudInstanceSection({
     ),
   }));
   const policy = view?.maintenance;
-  const disabled = busy || (!!error && ['readFailed', 'unconfirmed', 'conflict'].includes(error));
+  const disabled =
+    busy ||
+    !!view?.upgradeOperation?.active ||
+    !!view?.resourceChanging ||
+    (!!error &&
+      [
+        'readFailed',
+        'unconfirmed',
+        'conflict',
+        'upgradeUnavailable',
+        'upgradeUnconfirmed',
+      ].includes(error));
   const status = view ? instanceStatus(view) : 'starting';
   return (
     <div className="flex flex-col gap-6" data-testid="cloud-instance-overview">
@@ -297,9 +350,30 @@ export function CloudInstanceSection({
                   ? view.latestVersion && view.latestVersion !== view.version
                     ? view.latestVersion
                     : tr('revisionAvailable')
-                  : tr(view.latestVersion ? 'noUpdate' : 'unknown')}
+                  : tr(view.manualUpgrade || view.latestVersion ? 'noUpdate' : 'unknown')}
               </span>
             </Row>
+            {view.upgradeOperation && (
+              <p role="status" className={description}>
+                {tr(upgradeProgressKey(view.upgradeOperation.phase))}
+              </p>
+            )}
+            {view.manualUpgrade && (
+              <Row
+                title={tr('upgradeNow')}
+                detail={tr(dirty.current ? 'upgradeSaveFirst' : 'upgradeDescription')}
+              >
+                <Button
+                  variant="primary"
+                  disabled={
+                    disabled || dirty.current || !canRequestUpgrade(view) || !client.upgrade
+                  }
+                  onClick={() => void upgrade()}
+                >
+                  {tr(view.upgradeOperation?.active ? 'state.upgrading' : 'upgradeNow')}
+                </Button>
+              </Row>
+            )}
           </div>
           <section
             ref={maintenanceTarget}

@@ -15773,6 +15773,17 @@
     "mcpScope": "Saved only on {{name}}. Uses the client’s existing token and header authentication; generic MCP browser OAuth is not available.",
     "mcpSecretHint": "Saved credentials stay on the cloud instance. Enter a replacement to save; blank inputs keep existing values. Remove credentials separately.",
     "instance": {
+      "upgradeNow": "Upgrade now",
+      "upgradeDescription": "No need to wait for the maintenance window. The instance waits for idle tasks, stops for a backup, then upgrades. Scheduled tasks are preserved.",
+      "upgradeSaveFirst": "Save or discard your maintenance changes first.",
+      "upgradeQueued": "Upgrade queued, waiting for tasks to become idle.",
+      "upgradeBackup": "Backing up the cloud instance…",
+      "upgradeInProgress": "Upgrading the cloud instance…",
+      "upgradeComplete": "Cloud instance upgrade complete.",
+      "upgradeHeld": "Upgrade paused, awaiting recovery.",
+      "upgradeDeferred": "This upgrade did not run. Refresh the status for details.",
+      "upgradeUnavailable": "Upgrade is currently unavailable. Refresh the status to check available versions.",
+      "upgradeUnconfirmed": "The upgrade result is not confirmed. Refresh the status before submitting again.",
       "title": "Cloud instance",
       "refresh": "Refresh status",
       "wake": "Wake",
@@ -15838,7 +15849,7 @@
         "asleep": "Asleep",
         "starting": "Starting or waiting to be ready",
         "stopping": "Going to sleep",
-        "upgrading": "Verifying upgrade",
+        "upgrading": "Upgrading",
         "error": "Instance error"
       }
     },

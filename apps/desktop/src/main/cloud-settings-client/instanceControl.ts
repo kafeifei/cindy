@@ -6,6 +6,8 @@ import {
 import type { z } from 'zod';
 import {
   cloudMaintenanceEditSchema,
+  cloudUpgradeStatusSchema,
+  cloudUpgradeReceiptSchema,
   cloudMaintenanceViewSchema,
   type CloudMaintenanceEdit,
   type CloudInstanceView,
@@ -90,6 +92,43 @@ export function createCloudInstanceControl(deps: {
             throw error;
         }
         return { ...projectCloudInstance(target), maintenance };
+      });
+    },
+    upgrade(caller: CloudClientCaller, deviceId: string, requestId: string) {
+      return perform(caller, deviceId, true, async (call, target) => {
+        const path = `${maintenancePath(target.instanceId)}/upgrade`;
+        const current = parse(cloudUpgradeStatusSchema, await call(path));
+        if (current.instanceId !== target.instanceId)
+          throw new CloudClientError('CLOUD_SETTINGS_SCOPE_CHANGED');
+        // Read back an existing request; never launch a parallel upgrade.
+        if (current.operation?.active) return current.operation;
+        if (!current.manualUpgrade) throw new CloudClientError('CLOUD_SETTINGS_UNSUPPORTED');
+        if (
+          !current.updateAvailable ||
+          target.status.desiredState !== 'running' ||
+          target.status.runtimeState !== 'running' ||
+          target.status.loginRequired ||
+          target.status.upgrade.state === 'verifying' ||
+          projectCloudInstance(target).resourceChanging
+        )
+          throw new CloudClientError('CLOUD_SETTINGS_CONFLICT');
+        try {
+          // Only the owner request ID is sent. CIS selects the qualified version
+          // and runs its existing task protection, backup and maintenance queue.
+          return parse(cloudUpgradeReceiptSchema, await call(path, 'POST', { requestId }))
+            .operation;
+        } catch (error) {
+          if (
+            error instanceof CloudClientError &&
+            [
+              'CLOUD_SETTINGS_SCOPE_CHANGED',
+              'CLOUD_SETTINGS_CONFLICT',
+              'CLOUD_SETTINGS_UNSUPPORTED',
+            ].includes(error.code)
+          )
+            throw error;
+          throw new CloudClientError('CLOUD_SETTINGS_SAVE_UNCONFIRMED');
+        }
       });
     },
     power(caller: CloudClientCaller, deviceId: string, action: 'wake' | 'sleep') {

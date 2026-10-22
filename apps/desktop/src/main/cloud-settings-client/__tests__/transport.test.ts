@@ -165,3 +165,25 @@ it('maps a maintenance PATCH conflict without treating it as a changed login', a
   ).rejects.toThrow('CLOUD_SETTINGS_CONFLICT');
   expect(fetcher).toHaveBeenCalledTimes(1);
 });
+
+it('maps owner upgrade conflicts without claiming the account changed or leaking error details', async () => {
+  const fetcher = vi
+    .fn<typeof fetch>()
+    .mockResolvedValue(
+      Response.json(
+        { error: { code: 'NO_RELEASE_AVAILABLE', message: 'private' } },
+        { status: 409 },
+      ),
+    );
+  await expect(
+    createCloudClientHttp(fetcher).request(
+      owner,
+      '/instances/owned/maintenance/upgrade',
+      'POST',
+      {},
+      signal(),
+      () => {},
+    ),
+  ).rejects.toThrow(/^CLOUD_SETTINGS_CONFLICT$/);
+  expect(fetcher).toHaveBeenCalledOnce();
+});
