@@ -60,8 +60,13 @@ def prepare(output, revision):
     recipe = output / 'recipe-export/deploy/linux-desktop'
     freeze = json.loads((recipe / 'source-freeze.json').read_text())
     manifest = json.loads((recipe / 'runtime-desktop-xfce/source-manifest.json').read_text())
-    if freeze['packagingAllowed'] is not True or freeze['upstream'] != 'v0.1.108':
+    from delivery.versioning import load as load_version
+    version = load_version(recipe / 'delivery/version.json')
+    if freeze['packagingAllowed'] is not True or freeze['upstream'] != 'v' + version['upstreamVersion']:
         raise ValueError('SOURCE_NOT_QUALIFIED')
+    if git('rev-parse', freeze['upstream'] + '^{commit}').decode().strip() != version['upstreamCommit']:
+        raise ValueError('UPSTREAM_TAG_MISMATCH')
+    git('merge-base', '--is-ancestor', version['upstreamCommit'], freeze['commit'])
     source = context / 'source'
     export(freeze['commit'], source)
     for path, expected in freeze['includedPatch'].items():
@@ -73,7 +78,7 @@ def prepare(output, revision):
     recipe.rename(context / 'recipe')
     recipe = context / 'recipe'
     inputs = {'recipeCommit': revision, 'sourceCommit': freeze['commit'],
-              'runtimeFixCommit': manifest['clientRuntimeFixCommit'],
+              'runtimeFixCommit': manifest['clientRuntimeFixCommit'] if freeze['includedPatch'] else freeze['commit'],
               'patches': freeze['includedPatch'], 'region': 'cn', 'platform': 'linux/amd64',
               'lockSha256': digest((source / 'pnpm-lock.yaml').read_bytes()),
               'recipeFiles': {p.relative_to(recipe).as_posix(): digest(p.read_bytes())
@@ -98,9 +103,11 @@ def run_build(output, name, args, cwd):
         raise RuntimeError(f'{name} failed; see {output / (name + ".log")}')
 
 def bake_plan(output, tag, revision, entrypoint_sha, no_cache, cloud_revision=None,
-              base_revision=None, cache_repository=None):
+              base_revision=None, cache_repository=None, upstream_version=None):
     """Connect both Dockerfiles without publishing an intermediate base image."""
     common = {'CINDY_SOURCE_COMMIT': revision, 'SOURCE_DATE_EPOCH': '1789344000'}
+    if upstream_version is not None:
+        common['CINDY_UPSTREAM_VERSION'] = upstream_version
     if cloud_revision is not None:
         common['CINDY_CLOUD_REVISION'] = str(cloud_revision)
     base = {'context': 'base-recipe', 'dockerfile': 'runtime-base/Dockerfile',
@@ -161,12 +168,13 @@ def main():
     flags = ['--no-cache'] if args.no_cache else []
     build = ['docker', 'buildx', 'build', '--platform', 'linux/amd64', '--progress=plain', *flags]
     common = ['--build-arg', 'CINDY_SOURCE_COMMIT=' + revision, '--build-arg', 'SOURCE_DATE_EPOCH=1789344000',
-              '--build-arg', 'CINDY_CLOUD_REVISION=' + str(version['cloudRevision'])]
+              '--build-arg', 'CINDY_CLOUD_REVISION=' + str(version['cloudRevision']),
+              '--build-arg', 'CINDY_UPSTREAM_VERSION=' + version['upstreamVersion']]
     entrypoint_sha = digest((context / 'recipe/runtime-desktop-xfce/cindy-linux-desktop').read_bytes())
     if args.builder:
         plan = output / 'docker-bake.json'
         plan.write_text(json.dumps(bake_plan(output, args.tag, revision, entrypoint_sha, args.no_cache,
-            version['cloudRevision'], inputs['baseRecipeCommit'], args.cache_repository), indent=2) + '\n')
+            version['cloudRevision'], inputs['baseRecipeCommit'], args.cache_repository, version['upstreamVersion']), indent=2) + '\n')
         run_build(output, 'full-build', ['docker', 'buildx', 'bake', '--builder', args.builder,
                   '--allow=fs.write=' + str(output),
                   '--progress=plain', '-f', str(plan), '--metadata-file', str(output / 'build-metadata.json'),

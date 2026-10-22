@@ -11,7 +11,7 @@ release checks. Ordinary desktop builds do not enable these overlays.
 
 | Material | Purpose |
 | --- | --- |
-| [SOURCE-BUILD.md](SOURCE-BUILD.md), [R4 acceptance](ACCEPTANCE-NATIVE-INPUT-20261020.md) | Complete source-build entry and the R4 native input qualification |
+| [SOURCE-BUILD.md](SOURCE-BUILD.md), [0.1.113 acceptance](ACCEPTANCE-0113-20261022.md) | Complete source-build entry and current qualification status |
 | [Clipboard and recovery follow-up](ACCEPTANCE-CLIPBOARD-RECOVERY-20261020.md) | R7 source-build and Mac clipboard acceptance, rollout results, and explicit phone-test limits |
 | [Candidate delivery](delivery/README.md) | Fork-only self-hosted source build, isolated smoke, candidate publication and ACS cache preparation |
 | [Dual-version updates](DUAL-VERSION-UPDATES.md), [cloud.2 acceptance](ACCEPTANCE-CLOUD2-20261021.md) | Implemented CIS selection and owner-requested upgrades, application version display, live acceptance and remaining promotion work |

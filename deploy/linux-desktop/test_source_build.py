@@ -86,9 +86,12 @@ class BuildGraphTest(unittest.TestCase):
 
     def test_registry_cache_survives_runner_replacement_without_overlapping_writers(self):
         targets = build.bake_plan(Path('/records'), 'example:unique', 'app-commit', 'sha', False,
-            2, 'base-commit', 'registry.example.com/cindy/build-cache')['target']
+            2, 'base-commit', 'registry.example.com/cindy/build-cache', '0.1.113')['target']
         self.assertEqual(targets['base']['args']['CINDY_SOURCE_COMMIT'], 'base-commit')
         self.assertEqual(targets['runtime']['args']['CINDY_SOURCE_COMMIT'], 'app-commit')
+        self.assertEqual(targets['runtime']['args']['CINDY_UPSTREAM_VERSION'], '0.1.113')
+        self.assertEqual(targets['records']['args']['CINDY_UPSTREAM_VERSION'], '0.1.113')
+        self.assertNotIn('CINDY_UPSTREAM_VERSION', targets['base']['args'])
         exports = [t['cache-to'][0] for t in targets.values() if 'cache-to' in t]
         self.assertEqual(len(exports), 2)
         self.assertEqual(len(set(exports)), 2)

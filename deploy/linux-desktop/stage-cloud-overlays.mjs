@@ -11,10 +11,10 @@ import { transformCloudWindowSource, targets as windowTargets } from './runtime-
 import { transformCloudActivitySource, targets as activityTargets } from './runtime-activity/overlay.mjs';
 import { transformMaintenanceSource, cloudMaintenancePlugin, targets as maintenanceTargets } from './runtime-maintenance/overlay.mjs';
 
-const APP_VERSION = cloudAppVersion(process.env.APP_VERSION, '0.1.108');
-const root = '/workspace/source', recipe = '/workspace/recipe', records = [];
+const root = path.resolve(process.argv[2] || '/workspace/source'), recipe = path.resolve(process.argv[3] || '/workspace/recipe'), records = [];
 const freeze = JSON.parse(fs.readFileSync(recipe + '/source-freeze.json'));
-if (freeze.packagingAllowed !== true || freeze.upstream !== 'v0.1.108') throw Error('SOURCE_NOT_QUALIFIED');
+if (freeze.packagingAllowed !== true || freeze.upstream !== `v${process.env.CINDY_UPSTREAM_VERSION}`) throw Error('SOURCE_NOT_QUALIFIED');
+const APP_VERSION = cloudAppVersion(process.env.APP_VERSION, process.env.CINDY_UPSTREAM_VERSION);
 const sha = (s) => createHash('sha256').update(s).digest('hex');
 const guidanceTargets = [
   'apps/desktop/src/main/maker-host/runtime-configs.ts',

@@ -1,9 +1,10 @@
 # Complete CN source build
 
-The [R4 native input acceptance record](ACCEPTANCE-NATIVE-INPUT-20261020.md) identifies
-the current qualified candidate, its build inputs, environments, one-instance
-rollout and limitations. The earlier [R2 record](ACCEPTANCE-20261020.md) includes
-the real OpenAI OAuth acceptance and the input gap that R4 resolves.
+The current source target is **0.1.113-cloud.1**. The build selects the complete
+merged client commit in `source-freeze.json`; it no longer overlays whole files
+from v0.1.108. See [the 0.1.113 acceptance record](ACCEPTANCE-0113-20261022.md)
+for the actual qualification status. Earlier acceptance records prove earlier
+artifacts only; they do not qualify this release.
 
 Use the `feat/cloud-settings-native-client` branch of `zhuoshaojian/cindy`.
 Required host tools: Git with full branch history, Python >= 3.12, and Docker
@@ -16,7 +17,7 @@ From the repository root, with a committed, clean `deploy/linux-desktop/`:
 
 ```sh
 python3 deploy/linux-desktop/build-image.py \
-  --tag cindy-runtime-cn:0.1.108-source-candidate-unique \
+  --tag cindy-runtime-cn:0.1.113-source-candidate-unique \
   --output /absolute/private/cache/cindy-source-build-unique
 ```
 
@@ -39,8 +40,13 @@ is mounted into build stages. Use a full clone; frozen commits must be present.
 
 - `delivery/version.json` records the complete upstream version, upstream commit and
   independent cloud revision; these become image labels and build records.
-- `source-freeze.json` selects v0.1.108 and explicit hash-checked patches from the recorded
-  runtime commit. Current native-settings UI changes are a separate client output.
+- `source-freeze.json` selects the complete merged client commit, which must contain
+  the upstream commit recorded in `delivery/version.json`. The builder checks both
+  the exact upstream tag and ancestry. `includedPatch` is empty for v0.1.113;
+  native settings and cloud runtime fixes come from the same source commit.
+- The upstream version and cloud revision are build arguments shared by the
+  application, image labels and release records. The pinned dependency base has
+  its own source identity, so an application version bump retains its build cache.
 - `runtime-base/Dockerfile` fixes the OS digest, snapshot dates, package versions
   and external checksums. Its `runtime-base-slim` target removes only the three
   duplicate Chromium packages; all agent development tools are retained.
