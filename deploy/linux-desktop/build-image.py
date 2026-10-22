@@ -13,7 +13,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 BASE_INPUTS = ('runtime-base/Dockerfile', 'runtime-base/packages.lock',
-               'runtime-base/base_lock.py', 'runtime-fonts/stage-emoji-font.py')
+               'runtime-base/base_lock.py', 'runtime-fonts/stage-emoji-font.py',
+               'normalize-timestamps.py')
 
 def stage_recipe_contexts(context):
     """Keep unrelated docs/delivery metadata out of expensive filesystem inputs."""
@@ -58,8 +59,8 @@ def registry_cache(repository):
     # No tag, digest, URL credentials, or Buildx CSV options in the input.
     if not re.fullmatch(r'[a-z0-9][a-z0-9.-]+(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)+', repository):
         raise ValueError('INVALID_BUILD_CACHE_REPOSITORY')
-    return {'base': repository + ':fork-cloud-settings-cn-amd64-v1-base',
-            'prepared': repository + ':fork-cloud-settings-cn-amd64-v3-prepared'}
+    return {'base': repository + ':fork-cloud-settings-cn-amd64-v2-base',
+            'prepared': repository + ':fork-cloud-settings-cn-amd64-v4-prepared'}
 
 def git(*args):
     return subprocess.check_output(['git', *args], cwd=REPO)
@@ -137,9 +138,9 @@ def bake_plan(output, tag, revision, entrypoint_sha, no_cache, cloud_revision=No
                       'CINDY_ENTRYPOINT_SHA256': entrypoint_sha},
              'platforms': ['linux/amd64'], 'no-cache': no_cache}
     base = {**graph, 'target': 'runtime-base-slim',
-            'output': [f'type=docker,name={tag}-base,rewrite-timestamp=true']}
+            'output': [f'type=docker,name={tag}-base,rewrite-timestamp=false']}
     runtime = {**graph, 'target': 'runtime',
-               'output': [f'type=docker,name={tag},rewrite-timestamp=true']}
+               'output': [f'type=docker,name={tag},rewrite-timestamp=false']}
     records = {**graph, 'target': 'build-records',
                'output': ['type=local,dest=' + str(output / 'records')]}
     targets = {'base': base, 'runtime': runtime, 'records': records}
@@ -223,14 +224,14 @@ def main():
         return
     run_build(output, 'base-build', build + ['-f', 'runtime-base/Dockerfile',
               '--build-arg', 'CINDY_SOURCE_COMMIT=' + inputs['baseRecipeCommit'], '--build-arg', 'SOURCE_DATE_EPOCH=1789344000',
-              '--target', 'runtime-base-slim', '--output', f'type=docker,name={base_tag},rewrite-timestamp=true', '.'], context / 'base-recipe')
+              '--target', 'runtime-base-slim', '--output', f'type=docker,name={base_tag},rewrite-timestamp=false', '.'], context / 'base-recipe')
     base = json.loads(docker('image', 'inspect', base_tag))[0]
     (output / 'base-image.json').write_text(json.dumps(base, indent=2) + '\n')
     runtime_args = ['-f', 'recipe/Dockerfile', *common, '--build-arg', 'BASE_IMAGE=' + base_tag,
                     '--build-arg', 'CINDY_RUNTIME_VERSION=' + args.tag.rsplit(':', 1)[1],
                     '--build-arg', 'CINDY_ENTRYPOINT_SHA256=' + digest((context / 'recipe/runtime-desktop-xfce/cindy-linux-desktop').read_bytes())]
     run_build(output, 'runtime-build', build + runtime_args + ['--target', 'runtime', '--output',
-              f'type=docker,name={args.tag},rewrite-timestamp=true', '.'], context)
+              f'type=docker,name={args.tag},rewrite-timestamp=false', '.'], context)
     if json.loads(docker('image', 'inspect', base_tag))[0]['Id'] != base['Id']:
         raise RuntimeError('BASE_IMAGE_CHANGED')
     info = json.loads(docker('image', 'inspect', args.tag))[0]

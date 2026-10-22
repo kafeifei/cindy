@@ -171,15 +171,20 @@ Kubernetes RRSA，不借用用户的控制台 Cookie。私有 ACR 拉取须预�
 `Dockerfile.combined`：基座与应用直接引用同一个阶段，不再经 `target:base` 跨构建图接入。
 基座依赖仍从固定 OS、包锁、校验值完整构建，不继承历史 Cindy 成品镜像。
 
-Registry 缓存使用两个独立标签、单写入者：基座 `v1-base / mode=max`，应用准备层
-`v3-prepared / mode=min`。后者保留已准备的 Agent/Electron、pnpm 依赖、Linux 打包环境，
+Registry 缓存使用两个独立标签、单写入者：基座 `v2-base / mode=max`，应用准备层
+`v4-prepared / mode=min`。后者保留已准备的 Agent/Electron、pnpm 依赖、Linux 打包环境，
 使用冻结应用源码与准备脚本作为输入；云修订号、发布 commit 和说明文档不在这一步参与。
 每版仍编译应用、组装最终层，但不再上传编译目录、打包副本、`/layer` 等重复临时层。
 这些私有缓存不是实例镜像，不进入 CIS 或 ACS 镜像清单。
 
-基座只读取 Dockerfile、包锁、包校验器和字体安装器，记录其最后变更 commit。
+基座只读取 Dockerfile、包锁、包校验器、字体安装器和时间戳归一化工具，记录其最后变更 commit。
 完整发行身份在应用打包与独立 records 阶段绑定。命中缓存也必须执行发布审计、
 原生隔离启动/停机检查及两个标签的 digest 校验。构建阶段不重复下载准备阶段已有的系统库。
+
+基座先在独立 `/rootfs` 中把较新的 mtime 限制为 `SOURCE_DATE_EPOCH`，再缓存为单层；
+应用组装的 `/layer` 做同样处理。旧 mtime、字节、权限与软硬链接保持不变，导出时不再
+重新扫描并改写全部层。归一化工具拒绝 `/` 和符号链接根，不处理运行中实例或用户 HOME。
+新的缓存代次首次需要填充；热构建耗时必须由随后全新 runner 实测，不能拿本机重复构建代替。
 
 首次构建、输入变更或缓存被清理时按完整 Dockerfile 重建。`--no-cache` 禁止导入旧缓存，
 仍可导出新缓存；导出失败不忽略。普通 cache mount 不跨 runner 持久化；这里缓存的是

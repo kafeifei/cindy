@@ -28,7 +28,9 @@ COPY build-recipe/ /workspace/recipe/
 ARG CINDY_CLOUD_REVISION
 ENV APP_VERSION=${CINDY_UPSTREAM_VERSION}-cloud.${CINDY_CLOUD_REVISION}
 RUN /bin/sh /workspace/recipe/build-runtime.sh
+ARG SOURCE_DATE_EPOCH
 RUN python3 /workspace/recipe/assemble-runtime.py /workspace/artifact /layer \
+    && python3 -I /workspace/recipe/normalize-timestamps.py /layer \
     && python3 /workspace/recipe/audit-runtime-layer.py /layer > /workspace/artifact/runtime-layer-audit.json
 
 FROM scratch AS build-records

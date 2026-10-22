@@ -1,6 +1,7 @@
 import importlib.util
 import hashlib
 import json
+import os
 import shlex
 import shutil
 import subprocess
@@ -19,6 +20,45 @@ build_spec.loader.exec_module(build)
 agent_spec = importlib.util.spec_from_file_location('stage_agents', HERE / 'stage-runtime-agents.py')
 agents = importlib.util.module_from_spec(agent_spec)
 agent_spec.loader.exec_module(agents)
+
+timestamp_spec = importlib.util.spec_from_file_location('timestamps', HERE / 'normalize-timestamps.py')
+timestamps = importlib.util.module_from_spec(timestamp_spec)
+timestamp_spec.loader.exec_module(timestamps)
+
+class TimestampTest(unittest.TestCase):
+    # Cache optimization moves BuildKit's export clamp into a staging step.
+    # Existing layer tests do not cover timestamps or links. Unit-tier minimal
+    # fixture: new/old mtimes + an external symlink; bytes/permissions/targets
+    # must survive, and a second pass must change nothing.
+    def test_clamp_preserves_payload_permissions_links_and_older_times(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / 'layer'; root.mkdir()
+            outside = Path(folder) / 'outside'; outside.write_bytes(b'outside')
+            file = root / 'file'; file.write_bytes(b'payload'); file.chmod(0o751)
+            old = root / 'old'; old.write_bytes(b'old')
+            hard = root / 'hard'; os.link(file, hard)
+            link = root / 'symlink'; link.symlink_to(outside)
+            for p in (root, file, hard, link, outside):
+                os.utime(p, ns=(2_000_000_000_123456789, 2_000_000_000_123456789), follow_symlinks=False)
+            os.utime(old, ns=(1_000_000_000, 1_000_000_000))
+            before = outside.stat()
+            self.assertGreater(timestamps.normalize(root, 1789344000), 0)
+            self.assertEqual(file.read_bytes(), b'payload')
+            self.assertEqual(file.stat().st_mode & 0o7777, 0o751)
+            self.assertEqual(file.stat().st_ino, hard.stat().st_ino)
+            self.assertEqual(file.stat().st_mtime_ns, 1789344000_000000000)
+            self.assertEqual(link.readlink(), outside)
+            self.assertEqual(link.lstat().st_mtime_ns, 1789344000_000000000)
+            self.assertEqual(outside.stat().st_mtime_ns, before.st_mtime_ns)
+            self.assertEqual(old.stat().st_mtime_ns, 1_000_000_000)
+            self.assertEqual(timestamps.normalize(root, 1789344000), 0)
+
+    def test_rejects_live_root_and_link_root_before_mutation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            link = Path(folder) / 'link'; link.symlink_to(folder)
+            for root in (Path('/'), link):
+                with self.assertRaisesRegex(ValueError, 'STAGED_DIRECTORY_REQUIRED'):
+                    timestamps.normalize(root, 1789344000)
 
 class AgentStagingTest(unittest.TestCase):
     def setUp(self):

@@ -177,9 +177,17 @@ PY
 rm -rf /var/lib/apt/lists/* /var/cache/apt/*.bin /tmp/* /root/.cache
 EOF
 
+# Cache timestamp canonicalization before flattening. The private /rootfs tree
+# avoids traversing build-time /proc, /sys, /dev or following absolute symlinks.
+FROM snapshot AS normalized-slim
+COPY --from=trimmed / /rootfs/
+ARG SOURCE_DATE_EPOCH
+RUN --mount=type=bind,source=normalize-timestamps.py,target=/normalize-timestamps.py \
+    python3 -I /normalize-timestamps.py /rootfs
+
 FROM scratch AS runtime-base-slim
 ARG CINDY_SOURCE_COMMIT
-COPY --from=trimmed / /
+COPY --from=normalized-slim /rootfs/ /
 ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     NODE_VERSION=24.19.0 YARN_VERSION=1.22.22 LANG=zh_CN.UTF-8 LANGUAGE=zh_CN:zh
 LABEL io.cindy.base-recipe-commit=${CINDY_SOURCE_COMMIT} \
