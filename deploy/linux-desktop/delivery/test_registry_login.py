@@ -126,9 +126,9 @@ class WorkflowRunnerBoundaryTest(unittest.TestCase):
         root = Path(__file__).resolve().parents[3]
         workflow = (root / '.github/workflows/cloud-image-delivery.yml').read_text()
         self.assertEqual(set(re.findall(r'^    runs-on: (.+)$', workflow, re.M)), {
-            '[self-hosted, Linux, X64, cindy-fork-cloud-check]',
-            '[self-hosted, Linux, X64, cindy-fork-cloud-build]',
-            '[self-hosted, Linux, X64, cindy-fork-cloud-cache]'})
+            "[self-hosted, Linux, X64, cindy-fork-cloud-check, 'cindy-fork-run-${{ github.run_id }}-${{ github.run_attempt }}']",
+            "[self-hosted, Linux, X64, cindy-fork-cloud-build, 'cindy-fork-run-${{ github.run_id }}-${{ github.run_attempt }}']",
+            "[self-hosted, Linux, X64, cindy-fork-cloud-cache, 'cindy-fork-run-${{ github.run_id }}-${{ github.run_attempt }}']"})
         triggers = workflow.split('\npermissions:')[0]
         self.assertNotIn('pull_request', triggers)
         verify = workflow.split('  verify:')[1].split('    steps:')[0]

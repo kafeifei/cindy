@@ -291,8 +291,8 @@ runner **只注册到 fork 仓库 `https://github.com/zhuoshaojian/cindy`**，�
 不借用主仓、企业或已有 GitLab Runner。标签本身不是授权边界；核对注册 URL、仓库归属、
 短期注册/JIT token 和每个实例的单次 job 生命周期。创建 token/runner 的凭据不交给构建
 进程，runner 不挂业务凭据。只接收指定 fork 分支的 push/dispatch；本工作流不监听 PR，
-不把外部 PR 自动送入该 VPC 运行池。若需要持续自动供给，应在独立 namespace 配置
-按需创建与回收，不用长期在线、共享数据的机器代替。
+不把外部 PR 自动送入该 VPC 运行池。持续自动供给使用 [队列控制器](runner/README.md#自动供给控制器)，
+在独立 namespace 按需创建与回收；不使用长期在线、共享数据的执行机器。
 
 准备完成后核对 runner 架构、Docker daemon 架构和磁盘；再打开交付开关，让本次受信任
 运行完成完整构建、原生 smoke、推送和缓存 Ready。记录 workflow URL、recipe commit、

@@ -24,7 +24,7 @@ jobs:
       github.repository == 'zhuoshaojian/cindy' &&
       github.ref == 'refs/heads/feat/cloud-settings-native-client' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-    runs-on: [self-hosted, Linux, X64, cindy-fork-cloud-check]
+    runs-on: [self-hosted, Linux, X64, cindy-fork-cloud-check, 'cindy-fork-run-${{ github.run_id }}-${{ github.run_attempt }}']
     timeout-minutes: 30
     env:
       XDT_SKIP_AGENT_BIN_INSTALL: '1'
@@ -73,7 +73,7 @@ jobs:
       github.event_name != 'pull_request' &&
       vars.CLOUD_IMAGE_DELIVERY_ENABLED == 'true' &&
       (needs.verify.outputs.changed == 'true' || github.event_name == 'workflow_dispatch')
-    runs-on: [self-hosted, Linux, X64, cindy-fork-cloud-build]
+    runs-on: [self-hosted, Linux, X64, cindy-fork-cloud-build, 'cindy-fork-run-${{ github.run_id }}-${{ github.run_attempt }}']
     environment: cloud-image-candidate-cn
     outputs:
       artifact_id: ${{ steps.records.outputs.artifact-id }}
@@ -171,7 +171,7 @@ jobs:
   cache:
     needs: candidate
     if: vars.CLOUD_IMAGE_CACHE_ENABLED == 'true'
-    runs-on: [self-hosted, Linux, X64, cindy-fork-cloud-cache]
+    runs-on: [self-hosted, Linux, X64, cindy-fork-cloud-cache, 'cindy-fork-run-${{ github.run_id }}-${{ github.run_attempt }}']
     environment: cloud-image-cache-cn
     timeout-minutes: 45
     permissions:

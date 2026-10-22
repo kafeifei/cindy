@@ -1,0 +1,9 @@
+{
+  "repository": "zhuoshaojian/cindy",
+  "branch": "feat/cloud-settings-native-client",
+  "namespace": "cindy-fork-runners",
+  "runnerImage": "registry.example.com/public/actions/cindy-fork-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "dindImage": "registry.example.com/public/library/docker@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "sniForwardIp": "192.0.2.10",
+  "dnsUpstreams": "192.0.2.53,192.0.2.54"
+}

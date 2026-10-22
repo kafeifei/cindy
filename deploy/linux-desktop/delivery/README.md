@@ -58,7 +58,8 @@ CLI 校验固定安装包后以普通用户装入 job 临时目录，不需要 O
 GitLab runner、共享 DNS、云实例或新认领默认。
 
 此运行完成的是候选交付。产品验收、Pod 实际缓存命中、灰度及稳定通道晋级仍独立进行；
-runner 的队列自动供给控制器也尚未接入，不能把一次性注册写成持续弹性运行池。
+runner 的队列供给与回收现由 [专属控制器](runner/README.md#自动供给控制器) 实现；
+持续部署与真实 push 交付结果须以运行记录为准，不能用单测替代。
 配置与证据边界见 [接入手册](BOOTSTRAP.md)。
 
 ## 双版本：上游完整版本 + 云修订
@@ -150,7 +151,8 @@ Kubernetes RRSA，不借用用户的控制台 Cookie。私有 ACR 拉取须预�
 
 所有 job 都使用 **repository-scoped、仅注册到 `https://github.com/zhuoshaojian/cindy`**
 的临时 self-hosted runner。三个运行池标签分别为 `cindy-fork-cloud-check`、
-`cindy-fork-cloud-build`、`cindy-fork-cloud-cache`，均包含 `self-hosted, Linux, X64`。
+`cindy-fork-cloud-build`、`cindy-fork-cloud-cache`，均包含 `self-hosted, Linux, X64`，
+并绑定 `cindy-fork-run-<run_id>-<run_attempt>`；控制器按队列创建且完成后回收。
 检查与缓存池不需要 Docker 特权；只有构建池使用独立 DinD。不得注册组织/企业级 runner，
 不改主仓、企业运行池或现有 GitLab Runner。标签是调度标记，不是访问控制；运行池的
 注册层级与 Environment 分支规则也须核验。

@@ -8,7 +8,7 @@
   名称每次唯一，仅分配当前 job 的 `cindy-fork-cloud-check`、`cindy-fork-cloud-build` 或
   `cindy-fork-cloud-cache` 标签，不注册组织或企业。
 - JIT 配置通过短期 Kubernetes Secret 只读挂载到 `/run/cindy-jit/config`。控制端的 GitHub
-  PAT 不进入 Pod，JIT 值不放在命令参数或日志中；官方 listener 消费并清除
+  PAT 不进入作业 Pod，JIT 值不放在命令参数或日志中；官方 listener 消费并清除
   `ACTIONS_RUNNER_INPUT_JITCONFIG` 后才启动 job。确认 listener 启动后删除 Secret。
 - 每个 Pod 只运行一个 job。工作目录、HOME 写入层和 `/ci` 都是本次作业的临时空间，
   不挂业务 PVC、宿主 socket 或 ServiceAccount token。runner 以 UID/GID 1001 运行，
@@ -29,5 +29,62 @@
 其他域名仍走 DNS 上游，GitHub TLS 仍由客户端端到端验证；这不是 HTTP 代理或集群 DNS
 配置。构建容器网络需独立检查，不能假定嵌套 Docker 自动继承 Pod DNS。
 
-不把这里的一次性启动等同于常驻弹性控制器。首次交付通过后，可由专用控制组件按队列
-供给相同模板；创建 token 的凭据与 job 身份仍必须隔离。
+## 自动供给控制器
+
+[controller.py](controller.py) 每 30 秒读取该 fork 的 `cloud-image-delivery.yml` 队列。
+只接受上述分支的 push / workflow_dispatch，以及 verify、candidate、cache 三个明确 job；
+仓库、来源仓库、分支、workflow 路径、commit 与标签都要匹配。每个 job 额外要求
+`cindy-fork-run-<run_id>-<run_attempt>` 标签，避免别的运行抢占它的 runner。
+不会触发、取消或重跑 workflow，不接受 PR，也不访问组织/企业 runner API。
+
+- 小型控制进程在 ACK 的独立 `cindy-fork-runners` namespace 常驻；执行 job 仍是临时 ECI。
+  无入站 Service/webhook，只需出站访问 GitHub。单副本 Recreate + Kubernetes Lease
+  防止控制器滚动或故障期间双写；每次外部写操作前续租并校验持有者。
+- [provision.py](provision.py) 复用已验收的 ECI 模板：check 4 CPU/16 GiB、build 8 CPU/32 GiB、
+  cache 1 CPU/2 GiB（均含 sidecar）；磁盘仅 emptyDir。真实镜像与网络由部署配置传入，
+  镜像必须锁定 digest。只有 build 的 DinD 提权，控制器和所有 runner 都无特权。
+- Kubernetes ConfigMap 保存每个 GitHub job 的状态与 runner ID，**不存凭据**。注册/JIT/创建 Job
+  中途崩溃后可续接；丢失的 JIT 先注销旧身份，启动失败最多尝试 3 次。执行中的 job 不另起替身。
+  最多 3 个未完成 job，超过限额保留在 GitHub 队列。超过限额或身份不匹配会记录固定错误码。
+- JIT 在 GitHub 显示 job 已开始后删除。正常完成等待 listener/DinD 退出；取消或未退出时最多
+  等待 120 秒再清理。删除校验管理标签及 UID，不碰非本控制器资源；先确认 Job/Pod 回收再注销 runner。
+  每个 Job 有独立最大时长与 TTL；控制器暂时不可用时，ECI 也会被 deadline 停止。
+- 完成回执保留 7 天，再由控制器删除。GitHub job 日志/artifact 继续按 workflow 保留。
+  失联时不推断任务完成、不因 API 查询失败删除运行中的作业；下一轮重试。注册凭据失效须轮换 Secret。
+
+### 部署与维护
+
+复制 [controller.example.json](controller.example.json) 到仓库外私有配置，填入已经验收的
+runner/DinD digest、SNI 目标与 DNS 上游。不要将真实网络配置提交到仓库。
+
+控制器凭据单独放在 `cindy-fork-autosupply-github` Secret 的 `token` 键；建议使用只授权
+`zhuoshaojian/cindy` 的 fine-grained PAT，权限为 **Actions: read、Administration: write**。
+已有管理凭据可以由 operator 明确选用，但不能宣称它因此变成了最小权限 token。
+控制器只调用仓库级 API；令牌仅挂载到控制容器，不进入 runner、DNS/DinD、Git、日志或 artifact。
+ACR/ACS 发布 AK 仍只由各自 GitHub Environment 注入各自 job，不交给控制器。
+
+```sh
+# 操作前确保当前 kubectl context 是目标 ACK；不要使用业务命名空间。
+# 从仓库外受保护文件读取 token，不将值放在命令参数中。
+kubectl -n cindy-fork-runners create secret generic cindy-fork-autosupply-github \
+  --from-file=token=/private/path/github-token
+python3 deploy/linux-desktop/delivery/runner/render.py --config /private/path/controller.json \
+  > /private/path/controller-manifest.json
+kubectl apply -f /private/path/controller-manifest.json
+kubectl -n cindy-fork-runners rollout status deployment/cindy-fork-autosupply
+```
+
+[render.py](render.py) 输出源码/配置哈希命名的 immutable ConfigMap、Deployment、ServiceAccount
+和**仅该 namespace**的 Role/RoleBinding。SA 只准管理 Job、JIT Secret、状态 ConfigMap 与 Lease；
+不授予实例、PVC、集群级或其它命名空间权限。SA token 显式只挂给 controller，DNS sidecar 不挂。
+部署源码变动后重新渲染/apply，旧 Lease 最多等待 180 秒即可接管；不会丢失已启动 job。
+
+暂停新供给可将 Deployment 缩为 0；已有 ECI 按自身时限退出，恢复控制器后补清理。
+故障时查看 controller 的 `controller_cycle_failed` / `reconcile_failed` 固定错误码及
+`cfr-state-*` 回执；不要输出 Secret。修复根因后若 3 次启动已用尽，在 GitHub 重跑失败运行，
+新 job ID 会获得新身份，不修改旧回执或重用旧 JIT。
+
+生产入口回归见 [test_autosupply.py](../test_autosupply.py)：重复轮询、重启续接、失落 JIT、
+取消回收、重试上限、Lease 排他和凭据隔离；纯内存单测，单文件约 0.1 秒。
+官方契约：[仓库级 JIT](https://docs.github.com/en/rest/actions/self-hosted-runners#create-configuration-for-a-just-in-time-runner-for-a-repository)、
+[workflow job 查询](https://docs.github.com/en/rest/actions/workflow-jobs#list-jobs-for-a-workflow-run)。
