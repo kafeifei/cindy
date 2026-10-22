@@ -171,7 +171,7 @@ Kubernetes RRSA，不借用用户的控制台 Cookie。私有 ACR 拉取须预�
 基座依赖仍从固定 OS、包锁、校验值完整构建，不继承历史 Cindy 成品镜像。
 
 Registry 缓存使用两个独立标签、单写入者：基座 `v1-base / mode=max`，应用准备层
-`v2-prepared / mode=min`。后者保留 Agent/Electron 下载、pnpm 依赖、Linux 打包环境，
+`v3-prepared / mode=min`。后者保留已准备的 Agent/Electron、pnpm 依赖、Linux 打包环境，
 使用冻结应用源码与准备脚本作为输入；云修订号、发布 commit 和说明文档不在这一步参与。
 每版仍编译应用、组装最终层，但不再上传编译目录、打包副本、`/layer` 等重复临时层。
 这些私有缓存不是实例镜像，不进入 CIS 或 ACS 镜像清单。
@@ -231,7 +231,8 @@ actionlint -config-file deploy/linux-desktop/delivery/actionlint.yaml \
 ### 应用准备层与多网络缓存
 
 pnpm 下载 store 使用 BuildKit cache mount；跨 runner 的准备层仅保留安装后的依赖、
-已校验并解压的 Agent、Electron 与构建头文件，仅保留 Forge 仍需读取的 Electron ZIP，不重复携带已消费的 Agent 压缩包、apt 索引或 npm
+已校验并解压的 Agent、Electron 与构建头文件。Forge 仍需读取的 Electron ZIP 继续保留，
+不重复携带已消费的 Agent 压缩包、apt 索引或 npm
 下载缓存。`v3-prepared` 首次需要填充，后续交付再测恢复耗时；不把首次填充当热缓存。
 ACS 的不同镜像/网络计划最多并行两个，保留原幂等 token。任一失败后停止领取新计划，
 等待已开始的计划收尾并保存回执；完整集合全部 Ready 才成功。

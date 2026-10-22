@@ -198,10 +198,18 @@ def main():
         plan = output / 'docker-bake.json'
         plan.write_text(json.dumps(bake_plan(output, args.tag, revision, entrypoint_sha, args.no_cache,
             version['cloudRevision'], inputs['baseRecipeCommit'], args.cache_repository, version['upstreamVersion']), indent=2) + '\n')
-        run_build(output, 'full-build', ['docker', 'buildx', 'bake', '--builder', args.builder,
-                  '--allow=fs.write=' + str(output),
-                  '--progress=plain', '-f', str(plan), '--metadata-file', str(output / 'build-metadata.json'),
-                  'base', 'runtime', 'records', *(['prepared'] if args.cache_repository else [])], context)
+        command = ['docker', 'buildx', 'bake', '--builder', args.builder,
+                   '--allow=fs.write=' + str(output), '--progress=plain', '-f', str(plan)]
+        # Resolve/import preparation once before parallel image exporters. A
+        # single solve reuses the remote chain on a fresh builder; simultaneous
+        # base/prepared/runtime solves have missed it even with identical inputs.
+        # Explicit cold builds retain no-cache for the entire graph.
+        if args.cache_repository and not args.no_cache:
+            run_build(output, 'prepare-build', command + ['--metadata-file',
+                str(output / 'prepare-metadata.json'), 'prepared'], context)
+        run_build(output, 'full-build', command + ['--metadata-file',
+                  str(output / 'build-metadata.json'), 'base', 'runtime', 'records',
+                  *(['prepared'] if args.cache_repository and args.no_cache else [])], context)
         base = json.loads(docker('image', 'inspect', base_tag))[0]
         info = json.loads(docker('image', 'inspect', args.tag))[0]
         (output / 'base-image.json').write_text(json.dumps(base, indent=2) + '\n')

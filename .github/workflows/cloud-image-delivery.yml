@@ -172,6 +172,9 @@ jobs:
             ${{ runner.temp }}/native-smoke.json
             ${{ runner.temp }}/cloud-build/result.json
             ${{ runner.temp }}/cloud-build/full-build.log
+            ${{ runner.temp }}/cloud-build/prepare-build.log
+            ${{ runner.temp }}/cloud-build/prepare-metadata.json
+            ${{ runner.temp }}/cloud-build/build-inputs.json
             ${{ runner.temp }}/cloud-build/build-metadata.json
             ${{ runner.temp }}/cloud-build/records/*.json
           if-no-files-found: error
