@@ -119,15 +119,39 @@ manifest：`sha256:b85b36920a40f5e00aa5ec399d348c059ca1d5ebd18f7c83ad368924cb36f
 [更新验收](https://github.com/zhuoshaojian/cindy-server/blob/feat/cloud-settings-readonly/docs/cloud-instance/runtime-update-20261022.md)。
 纯验收文档提交不改变发行版本，不触发交付。
 
-## 下一轮：缓存通过 VPC 读取
+## VPC 缓存实测：cloud.16
 
-在 cloud.15 runner 内对同一缓存层抽取 16 MiB，公网与 VPC 的 manifest、层 digest 和
-抽样 SHA-256 完全一致。公网 0.392 秒（40.77 MiB/s），VPC 0.252 秒（63.44 MiB/s）；
-VPC 路径实际重定向至 OSS 内网。**这是单次小样本连通性检查，不能代替整层恢复或完整交付。**
+[cloud.16 / 39819852125](https://github.com/zhuoshaojian/cindy/actions/runs/39819852125)
+已完整交付，使用同一私有仓库的 VPC 端点，运行时公开双标签保持不变。
+三份日志再次确认准备层未重跑，完整构建 7 分 27 秒，原生 smoke、四份记录哈希、
+双标签读回和 ACS 2/2 Ready 全部通过。基座 image ID 与 cloud.15 相同。
 
-后续通过已有 `CLOUD_IMAGE_BUILD_CACHE_REPOSITORY` 选择同一仓库的 VPC 端点；运行时发布
-仓库、双标签和缓存内容不变。下一轮仍从 push 计时，包含原生 smoke、发布和 ACS Ready。
-原生模块重编与编译本身也有波动，本次保留原验收和构建规则，不以跳过检查换取数字。
+| 缓存恢复 | cloud.15 公网 | cloud.16 VPC |
+| --- | ---: | ---: |
+| 2.09 GB 层下载 | 203.7 秒 | 21.0 秒 |
+| 895 MB 层下载 | 249.6 秒 | 10.4 秒 |
+| 完整准备层恢复（含解压） | 333.5 秒 | 76.6 秒 |
+| 断网读取检查 | 8.6 秒 | 8.5 秒 |
+| 完整 Dockerfile 构建 | 13 分 15 秒 | 7 分 27 秒 |
+
+切换前在同一 runner 对同一层做了 16 MiB 抽样：manifest、层 digest 和抽样 SHA-256
+一致，VPC 下载实际转到 OSS 内网。上表为后续整层日志，不能用抽样速率代替。
+应用编译为 234.2 秒，运行时导出 78.4 秒；没有缓存最终版本产物或跳过重新编译。
+
+首个构建尝试在拉取固定 Dockerfile frontend 时遇到 `connection reset by peer`，
+尚未进入准备层恢复、未发布镜像。只手工重试失败 job，已通过的 verify 复用。
+原始 push 17:07:01.203075 UTC，ACS Ready 步骤完成 17:32:31，全部 job 完成 17:32:41：
+**push 到 ACS Ready 25 分 30 秒，全部收尾 25 分 40 秒，仍未达到 20 分钟。**
+首次失败 103 秒、成功构建/验收/发布 job 660 秒，均保留计入；重试 API 为已通过 verify
+生成的继承结果使用原 runner 与原起止时间，不把它重复计为执行了一次。
+
+证据为 `cloud-candidate-39819852125-1`（失败）、`cloud-candidate-39819852125-2` 与
+`cloud-cache-39819852125-2`。四个实际 runner 均回收，没有修改云实例。
+
+后续修正只对明确的构建输入元数据连接中断在同一 runner 内自动重试一次，保留首次日志及
+attempts 记录；鉴权、校验和编译错误仍阻断。生产入口最小回归先红后绿，源码构建专项
+14 项（0.265 秒）、交付专项 50 项通过。下一次新版本 push 继续核对完整无人介入时长，
+不能把本轮手工重试后的执行时间替代原始计时。
 
 ## 更早的基线与失败记录
 
