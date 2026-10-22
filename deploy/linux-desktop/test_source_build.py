@@ -144,8 +144,15 @@ class BuildGraphTest(unittest.TestCase):
         # Force physical restoration through a separate, unexported target.
         self.assertNotIn('cache-to', targets['materialize'])
         self.assertEqual(targets['materialize']['target'], 'prepared-materialized')
-        self.assertEqual(targets['materialize']['cache-from'],
-            [targets['prepared']['cache-from'][1]])
+        self.assertEqual(targets['materialize']['cache-from'], targets['prepared']['cache-from'])
+        # No target may merge the overlapping max/min parent histories. After
+        # hydration, downstream targets use the local snapshot, not new imports.
+        self.assertEqual(len(targets['prepared']['cache-from']), 1)
+        self.assertTrue(targets['prepared']['cache-from'][0].endswith('-v4-prepared'))
+        self.assertEqual(len(targets['base']['cache-from']), 1)
+        self.assertTrue(targets['base']['cache-from'][0].endswith('-v2-base'))
+        self.assertEqual(targets['runtime']['cache-from'], [])
+        self.assertEqual(targets['records']['cache-from'], [])
 
     def test_cold_rebuild_does_not_import_cache_or_accept_injected_options(self):
         targets = build.bake_plan(Path('/records'), 'example:unique', 'commit', 'sha', True,

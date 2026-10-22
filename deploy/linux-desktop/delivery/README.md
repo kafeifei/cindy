@@ -19,11 +19,12 @@ Runner、DinD、BuildKit 是构建工具，不是云实例需要安装的额外�
 | 产品验收与晋级 | 记录明确的 pending 状态 | 完整 OAuth、DeviceLink、Pod 实际缓存命中、灰度、签名信任及稳定通道准入尚未自动化 |
 | CIS 自动更新 | [双版本选择与主动升级](../DUAL-VERSION-UPDATES.md) | 已登记维护实例支持双版本；网页和原生客户端均已接入主动升级。新领取按已准入列表选择同仓库、地区与架构的最高版本；稳定目录与自动晋级待接入 |
 
-最新已验收的自动交付为 `0.1.113-cloud.9`，运行 [39764302125](https://github.com/zhuoshaojian/cindy/actions/runs/39764302125)
+最新已验收的自动交付为 `0.1.113-cloud.12`，运行 [39788846736](https://github.com/zhuoshaojian/cindy/actions/runs/39788846736)
 由版本提交的 **push** 自动触发：三个 job 自动获得一次性 runner，完整构建、原生隔离
 smoke、双标签发布和 ACS 2/2 Ready 全部成功，runner/ECI/JIT 自动回收。
-精简后的应用准备层已跨新 runner 命中，完整构建 **8 分 43 秒**，整条交付
-**25 分 08 秒**；成功、失败和前后对比见 [缓存与交付实测](BUILD-CACHE-BENCHMARK.md)。
+该轮应用准备层经实际挂载读取后命中，完整构建 **7 分 12 秒**，push 到 ACS Ready
+**21 分 06 秒**，全部 job 收尾 **21 分 19 秒**，尚未达到 20 分钟。`cloud.13` 复测在准备阶段再次执行下载，已取消；
+现已拆开缓存导入范围，连续命中仍待后续实测。成功、失败和前后对比见 [缓存与交付实测](BUILD-CACHE-BENCHMARK.md)。
 自动供给的恢复、权限与首次验收见 [自动供给记录](ACCEPTANCE-AUTOSUPPLY-20261022.md)。
 
 实例升级与镜像交付分开：`cloud.9` 的存量升级、新领取选择和客户端测试包见服务端
@@ -189,6 +190,8 @@ Registry 缓存使用两个独立标签、单写入者：基座 `v2-base / mode=
 应用组装的 `/layer` 做同样处理。旧 mtime、字节、权限与软硬链接保持不变，导出时不再
 重新扫描并改写全部层。归一化工具拒绝 `/` 和符号链接根，不处理运行中实例或用户 HOME。
 新的缓存代次首次需要填充；热构建耗时必须由随后全新 runner 实测，不能拿本机重复构建代替。
+基座导出只导入基座缓存，准备阶段只导入准备缓存，避免混入重叠祖先的两套历史。
+后续 runtime/records 仅使用已经恢复的本地快照，不再重新导入 Registry 缓存。
 准备缓存解析后，单独执行不导出缓存的 `prepared-materialized` 目标，在断网环境实际读取
 Electron、Codex 和依赖目录，再启动并行导出。`cacheonly` 的元数据命中不能代替文件层恢复；
 验收必须同时检查 `prepare-build.log`、`materialize-build.log` 与 `full-build.log`，确认安装
@@ -246,7 +249,7 @@ actionlint -config-file deploy/linux-desktop/delivery/actionlint.yaml \
 pnpm 下载 store 使用 BuildKit cache mount；跨 runner 的准备层仅保留安装后的依赖、
 已校验并解压的 Agent、Electron 与构建头文件。Forge 仍需读取的 Electron ZIP 继续保留，
 不重复携带已消费的 Agent 压缩包、apt 索引或 npm
-下载缓存。`v3-prepared` 已通过全新 runner 恢复验收；先独立解析准备缓存，再并行导出镜像和记录，
-避免并发 solve 重跑准备。首次填充与热交付分别计时，见缓存实测。
+下载缓存。当前为 `v4-prepared`；先解析缓存，再实际挂载读取准备层，最后并行导出镜像和记录。
+只看到元数据 `CACHED` 不算完成恢复；三份日志必须共同证明没有重跑准备 RUN。首次填充与热交付分别计时，见缓存实测。
 ACS 的不同镜像/网络计划最多并行两个，保留原幂等 token。任一失败后停止领取新计划，
 等待已开始的计划收尾并保存回执；完整集合全部 Ready 才成功。

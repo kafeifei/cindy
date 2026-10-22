@@ -150,13 +150,17 @@ def bake_plan(output, tag, revision, entrypoint_sha, no_cache, cloud_revision=No
         targets['prepared'] = prepared
         targets['materialize'] = {**graph, 'target': 'prepared-materialized',
                                   'output': ['type=cacheonly']}
-        imports = [] if no_cache else ['type=registry,ref=' + ref for ref in refs.values()]
+        # The base max history and prepared min chain describe overlapping
+        # ancestors. Importing both can select a different parent and re-run
+        # preparation even when the complete prepared result exists remotely.
+        # Hydrate only the prepared chain first. Runtime/records then consume
+        # that local snapshot; only the base exporter imports its max history.
         for target in targets.values():
-            target['cache-from'] = list(imports)
-        # Resolve the prepared chain alone, then mount it before concurrent
-        # exporters import the separate max base history. Never export the probe.
-        targets['materialize']['cache-from'] = ([] if no_cache else
-            ['type=registry,ref=' + refs['prepared']])
+            target['cache-from'] = []
+        if not no_cache:
+            base['cache-from'] = ['type=registry,ref=' + refs['base']]
+            prepared['cache-from'] = ['type=registry,ref=' + refs['prepared']]
+            targets['materialize']['cache-from'] = list(prepared['cache-from'])
         # Base history rarely changes; preserve its existing max cache. Export
         # only the prepared filesystem chain for the application. Packaging
         # scratch and /layer duplicate the final bytes and are rebuilt per version.
