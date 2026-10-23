@@ -3,6 +3,7 @@ import importlib.util
 import json
 import subprocess
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -89,6 +90,45 @@ class PublishTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'PUBLISHED_CONFIG_MISMATCH'):
             publish_tags(refs, image_id, inspect=lambda _: None, execute=lambda *a: None,
                          push_repository=private)
+
+    def test_parallel_preflight_finishes_before_any_publish(self):
+        # Unit boundary: concurrent public/VPC reads must not publish early.
+        # Existing sequential fixtures cannot expose a late conflict/error.
+        # Four reads rendezvous without sleeps; even the last failure blocks writes.
+        repo = 'fixture.cn-shanghai.cr.aliyuncs.com/public/runtime'
+        private = 'fixture-vpc.cn-shanghai.cr.aliyuncs.com/public/runtime'
+        refs = [repo + ':version', repo + ':sha']
+        image_id = 'sha256:' + 'a'*64
+        for failure in [None, 'conflict', 'transport']:
+            with self.subTest(failure=failure):
+                barrier = threading.Barrier(4, timeout=2)
+                lock = threading.Lock()
+                complete, state, writes = set(), {}, []
+                def inspect(ref):
+                    with lock:
+                        preflight = len(complete) < 4
+                    if preflight:
+                        barrier.wait()
+                        with lock:
+                            complete.add(ref)
+                        if ref == private + ':sha':
+                            if failure == 'transport':
+                                raise ValueError('REGISTRY_INSPECTION_FAILED')
+                            if failure == 'conflict':
+                                return {'config': {'digest': 'sha256:' + 'b'*64}}
+                    return state.get(ref.replace(private, repo))
+                def execute(*args):
+                    self.assertEqual(len(complete), 4)
+                    writes.append(args)
+                    if args[1] == 'push':
+                        state[args[2].replace(private, repo)] = {'config': {'digest': image_id}}
+                if failure:
+                    with self.assertRaisesRegex(ValueError, 'CONFLICT|INSPECTION_FAILED'):
+                        publish_tags(refs, image_id, inspect=inspect, execute=execute, push_repository=private)
+                    self.assertEqual(writes, [])
+                else:
+                    publish_tags(refs, image_id, inspect=inspect, execute=execute, push_repository=private)
+                    self.assertEqual(set(state), set(refs))
 
     def test_existing_identical_image_is_not_pushed_twice(self):
         executed = []

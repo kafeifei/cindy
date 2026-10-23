@@ -4,17 +4,25 @@ import argparse
 import hashlib
 import json
 import subprocess
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from versioning import REPOSITORY, image_tag, validate, cloud_version, source_tag, validate_push_repository
 
 
 def run(*args):
-    return subprocess.check_output(args, text=True).strip()
+    started = time.monotonic()
+    result = subprocess.check_output(args, text=True).strip()
+    if args[:2] == ('docker', 'push'):
+        print(json.dumps({'operation': 'push', 'seconds': round(time.monotonic() - started, 3)}), flush=True)
+    return result
 
 
 def registry_manifest(reference):
+    started = time.monotonic()
     result = subprocess.run(['docker', 'buildx', 'imagetools', 'inspect', '--raw', reference],
                             text=True, capture_output=True, timeout=60)
+    print(json.dumps({'operation': 'inspect', 'seconds': round(time.monotonic() - started, 3)}), flush=True)
     if result.returncode:
         # Authentication, timeout and DNS failures must never mean "tag absent".
         if ('manifest unknown' in result.stderr.lower() or 'MANIFEST_UNKNOWN' in result.stderr
@@ -85,8 +93,12 @@ def publish_tags(references, image_id, inspect=registry_manifest, execute=run, p
     # Check both endpoints before any write. The optional route cannot change
     # the instance, region, repository, tag or canonical public read-back.
     transports = [transport_reference(ref, push_repository) for ref in references]
-    for reference in dict.fromkeys([*references, *transports]):
-        existing = inspect(reference)
+    checks = list(dict.fromkeys([*references, *transports]))
+    # These reads are independent. Finish all checks before any tag can be
+    # written; a slow or failed endpoint must not become permission to publish.
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        existing_tags = list(pool.map(inspect, checks))
+    for existing in existing_tags:
         if existing is not None and existing.get('config', {}).get('digest') != image_id:
             raise ValueError('IMMUTABLE_TAG_CONFLICT')
     for reference in references:

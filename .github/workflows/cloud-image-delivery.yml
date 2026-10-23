@@ -42,14 +42,39 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          # Keep history for provenance, but materialize only test inputs.
-          # checkout uses blob:none automatically with sparse-checkout.
+          # Keep history for provenance; fetch only the real regression inputs.
+          # Missing inputs fail the existing tests instead of skipping coverage.
+          sparse-checkout-cone-mode: false
           sparse-checkout: |
-            deploy/linux-desktop
-            .github/workflows
-            apps/desktop/src
-            packages
-            tools
+            /deploy/linux-desktop/
+            /.github/workflows/cloud-image-delivery.yml
+            /package.json
+            /tools/shared/
+            /tools/codex-package/
+            /packages/maker-core/src/session.ts
+            /packages/maker-scheduler/src/engine/scheduler.ts
+            /apps/desktop/package.json
+            /apps/desktop/src/main/bootstrap-electron.ts
+            /apps/desktop/src/main/lifecycle.ts
+            /apps/desktop/src/main/updateService.ts
+            /apps/desktop/src/main/relaunchBusyActivityIpc.ts
+            /apps/desktop/src/main/maker-host/runtime-configs.ts
+            /apps/desktop/src/main/maker-host/pi-host.ts
+            /apps/desktop/src/main/maker-host/*.md
+            /apps/desktop/src/main/maker-ipc/register.ts
+            /apps/desktop/src/main/maker-ipc/agent-input-coordinator.ts
+            /apps/desktop/src/main/instance-runtime/status.ts
+            /apps/desktop/src/main/remote-desktop/inputHost.ts
+            /apps/desktop/src/main/remote-desktop/inputOwnership.ts
+            /apps/desktop/src/main/cindy-brain/cindySlot.ts
+            /apps/desktop/src/main/cindy-brain/pipeDispatcher.ts
+            /apps/desktop/src/main/host-settings/helper.ts
+            /apps/desktop/src/preload/preload.ts
+            /apps/desktop/src/renderer/components/settings/
+            /apps/desktop/src/renderer/components/title-bar/WindowControls.tsx
+            /apps/desktop/src/renderer/hooks/useUpdateNotice.ts
+            /apps/desktop/src/renderer/lib/tabLabels.ts
+            /apps/desktop/src/renderer/i18n/locales/
           persist-credentials: false
       - name: Use Node bundled in the pinned fork runner
         run: bash deploy/linux-desktop/delivery/use-runner-node.sh

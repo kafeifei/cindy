@@ -6,7 +6,29 @@
 依赖准备层延续此前命中，新增 Electron 原生缓存首次跨 runner 复用，构建缓存和镜像上传
 均实际走同仓 VPC 端点。本次热缓存交付达到 20 分钟目标，不是冷构建耗时或每轮性能保证。
 
-## 最新完整热交付：cloud.21
+## 连续复测：cloud.22 / cloud.23
+
+两轮均从新 runner 自动执行，只有版本号变化，无人工重试。以下计时从原始 push 开始：
+
+| 指标 | [cloud.22](https://github.com/zhuoshaojian/cindy/actions/runs/39889100535) | [cloud.23](https://github.com/zhuoshaojian/cindy/actions/runs/39891027932) |
+| --- | ---: | ---: |
+| push → ACS Ready | 19 分 41 秒 | 20 分 23 秒 |
+| push → 全部 job 收尾 | 19 分 51 秒 | 20 分 36 秒 |
+| 完整构建 | 459 秒 | 457 秒 |
+| 发布 | 121 秒 | 123 秒 |
+| ACS 准备 | 268 秒 | 267 秒 |
+| 原生缓存恢复/校验 | 3.8 秒 | 3.8 秒 |
+
+**连续低于 20 分钟尚未通过**。两轮依赖/原生缓存、桌面 smoke、五份记录哈希、公开双标签
+与 ACS 2/2 Ready 均通过。六个 ECI Pod 的事件均为 `SuccessfulHitImageCache`；
+从 serverless provisioning 事件到容器启动分别约 13–20 秒，不是冷拉工具镜像。
+第二轮增加约 44 秒来自检查、job 收尾和队列衔接等累计波动，不能归因于发布骤慢。
+
+下一轮保持构建图和凭据边界，缩小 verify 的真实源码检出范围，并并行读取发布前
+四个端点/标签。所有查询完成且通过才允许写标签；增加只含操作类型和秒数的发布计时。
+检出裁剪在独立目录执行相同 Node/Python 集合，没有降低测试覆盖；结果待真实交付复测。
+
+## 已完成热交付：cloud.21
 
 [39838127957](https://github.com/zhuoshaojian/cindy/actions/runs/39838127957)，配方
 `6c67ba213ea837907c0030e07e7632616d883e2b`，相对 cloud.20 **只递增版本号**。
