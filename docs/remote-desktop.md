@@ -248,6 +248,14 @@ WebRTC carries a video track and an ordered input DataChannel. Capture runs in
 a dedicated sandboxed renderer with a narrow preload and exact Main-side host
 identity checks. The main application renderer does not receive capture frames
 or the capture bridge. Main destroys the capture host when its authority ends.
+
+If eight input batches are still awaiting the capture renderer's Main IPC replies,
+the next valid batch releases held input and drops further input until that release
+settles. Video, the lease, control requests and viewing heartbeats stay alive;
+malformed input still ends the session. This recovery must be installed on the
+controlled computer, including a cloud desktop; updating only the viewer cannot
+change an older host's behavior.
+
 The phone runs a dedicated trusted inline WebView document; the untrusted HTML
 preview's restrictions are unchanged. The mobile presentation module requests scene rotation and a playback audio session
 for system picture in picture. This requires a new native mobile build. Voice
