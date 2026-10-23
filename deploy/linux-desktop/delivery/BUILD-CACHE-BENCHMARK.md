@@ -1,10 +1,66 @@
 # 完整镜像构建缓存与交付实测
 
-2026-10-23（北京时间），`0.1.113-cloud.21` 在全新 fork 专属 ECI runner 上完成自动交付：
-**原始 push → ACS Ready 17 分 47 秒，全部 job 收尾 17 分 58 秒**。包含供给、排队、
-完整构建、原生 smoke、发布与缓存等待；没有人工重试，也没有重置计时起点。
-依赖准备层延续此前命中，新增 Electron 原生缓存首次跨 runner 复用，构建缓存和镜像上传
-均实际走同仓 VPC 端点。本次热缓存交付达到 20 分钟目标，不是冷构建耗时或每轮性能保证。
+计时从原始 push 开始，包含供给、排队、完整构建、原生 smoke、发布与 ACS 等待；
+另列全部 job 收尾时间，不扣除排队或重新选择计时起点。以下为全新 fork 专属 ECI runner
+使用持久构建缓存的热交付，不是全冷构建耗时。业务实例、CIS 准入和新认领默认不在本轮范围。
+
+## 最新结论：cloud.25 / cloud.26 连续通过
+
+2026-10-23，两轮均由 fork 分支 push 自动触发，在新 ECI runner 上首次 attempt 完成，
+无人工重试。**原始 push 到 ACS Ready、全部 job 收尾均连续低于 20 分钟。**
+
+| 指标 | [cloud.25](https://github.com/zhuoshaojian/cindy/actions/runs/39896165389) | [cloud.26](https://github.com/zhuoshaojian/cindy/actions/runs/39897868056) |
+| --- | ---: | ---: |
+| push → ACS Ready | **17 分 45 秒** | **17 分 37 秒** |
+| push → 全部 job 收尾 | **17 分 54 秒** | **17 分 48 秒** |
+| 完整构建 | 446 秒 | 492 秒 |
+| 应用编译与打包 | 203.9 秒 | 209.0 秒 |
+| 原生缓存恢复/校验 | 3.7 秒 | 3.8 秒 |
+| 发布 | 14 秒 | 19 秒 |
+| ACS 准备 | 237 秒 | 236 秒 |
+| Actions 创建后的供给、排队与衔接 | 191 秒 | 132 秒 |
+
+应用源码、完整 Dockerfile 构建图和资源规格相同，各版仍重新打包组合版本。
+cloud.26 另外补齐了部分双标签发布失败后的精确 manifest 复用，不改变正常首次发布路径，
+也不进入应用构建输入。两轮依赖/原生缓存均连续命中，下载恢复后的断网读取、最终包
+SQLite/PTY、桌面 smoke 和正常停机全部通过，没有删减验收步骤。
+
+六个入口 Pod 均有 `SuccessfulHitImageCache` 事件，供给至容器启动约 13–26 秒，
+未见入口镜像冷拉。构建缓存和镜像上传均实际走同仓 VPC；发布阶段由 cloud.24 的
+142 秒降至 14–19 秒，两轮 layer push 均为 6.1 秒。仍有完整构建和队列波动，
+这两次连续样本证明本轮目标通过，不构成冷构建或未来每轮的耗时保证。
+
+cloud.26 配方为 `e8efe7365d6956ef9b4592b985fdaaad9fbfd28b`，原始 push
+`2026-10-23T03:58:54.270092Z`，ACS 步骤结束 `04:16:31Z`，最后 job `04:16:42Z`。
+两层镜像的五份记录 SHA、smoke/config、BuildKit exporter 与公开双标签的 digest 均一致；
+两轮 ACS 都为实际计划内的 2/2 Ready。cloud.26 manifest 为
+`sha256:a8095d087dc79726453fba9a0efa9aed01028717e54de78a713b287777c82ec0`。
+证据在两轮各自的 `cloud-candidate-<run>-1` 与 `cloud-cache-<run>-1` artifacts。
+
+本轮只交付镜像和缓存，未操作云实例、业务 PVC、CIS 准入或新认领默认。
+`releaseApproved=false`、`podMatchVerified=false` 保留；没有将隔离 smoke 当成真实
+OAuth、DeviceLink 或业务 Pod 缓存命中验收。此前超时与首次填充失败记录继续保留在下文。
+
+## 复用已测 BuildKit 结果：cloud.25
+
+[39896165389](https://github.com/zhuoshaojian/cindy/actions/runs/39896165389)，配方
+`79c3aa8dc2f1ae75b9c66300b2a57bce2dcfad3e`。原始 push 为 2026-10-23
+03:39:18.457250 UTC，ACS 步骤完成于 03:57:03，全部 job 完成于 03:57:12：
+**17 分 45 秒 / 17 分 54 秒**，首次 attempt 自动完成。
+
+- 完整构建 446 秒，应用编译/打包 203.9 秒；依赖安装和原生预编没有重新执行，
+  打包副本的原生模块缓存恢复/校验为 3.7 秒。准备文件系统仍实际恢复并通过断网读取检查。
+- smoke 后发布从 cloud.24 的 142 秒降到 **14 秒**。同一 BuildKit 结果按 digest 经
+  VPC 上传，日志中的 layer push 为 6.1 秒；最终 config 与已测镜像、公开双标签和
+  exporter 的 manifest digest 全部一致。没有发布另一份产品镜像，也没有跳过原生 smoke。
+- 三个入口 Pod 均记录 `SuccessfulHitImageCache`；从 serverless provisioning 到容器启动
+  约 17–26 秒，包含 ECI 创建时间，不能当作纯镜像拉取耗时。本轮未出现入口冷拉。
+- ACS 准备 237 秒；Actions 创建后的队列、供给与 job 衔接共 191 秒，完整统计未扣除。
+- 两层镜像、五份记录 SHA-256、最终包 SQLite/PTY、隔离桌面/老 HOME/沙箱/停机检查、
+  公开双标签和 ACS 2/2 Ready 均通过。构建缓存与上传实际走 VPC。
+
+证据在 `cloud-candidate-39896165389-1` 与 `cloud-cache-39896165389-1` artifacts。
+本轮达标，随后 cloud.26 连续复测结果见本文顶部。
 
 ## 连续复测：cloud.22 / cloud.23
 
@@ -19,14 +75,14 @@
 | ACS 准备 | 268 秒 | 267 秒 |
 | 原生缓存恢复/校验 | 3.8 秒 | 3.8 秒 |
 
-**连续低于 20 分钟尚未通过**。两轮依赖/原生缓存、桌面 smoke、五份记录哈希、公开双标签
+**这组连续低于 20 分钟的验收未通过**。两轮依赖/原生缓存、桌面 smoke、五份记录哈希、公开双标签
 与 ACS 2/2 Ready 均通过。六个 ECI Pod 的事件均为 `SuccessfulHitImageCache`；
 从 serverless provisioning 事件到容器启动分别约 13–20 秒，不是冷拉工具镜像。
 第二轮增加约 44 秒来自检查、job 收尾和队列衔接等累计波动，不能归因于发布骤慢。
 
-下一轮保持构建图和凭据边界，缩小 verify 的真实源码检出范围，并并行读取发布前
+随后保持构建图和凭据边界，缩小 verify 的真实源码检出范围，并并行读取发布前
 四个端点/标签。所有查询完成且通过才允许写标签；增加只含操作类型和秒数的发布计时。
-检出裁剪在独立目录执行相同 Node/Python 集合，没有降低测试覆盖；结果待真实交付复测。
+检出裁剪在独立目录执行相同 Node/Python 集合，没有降低测试覆盖；真实结果见 cloud.24。
 
 ## 检出与上传分解：cloud.24
 
@@ -40,7 +96,7 @@ push → ACS Ready **20 分 36 秒**，全部 job **20 分 45 秒**；性能目�
 约 0.2–0.4 秒。并行查询不是主要收益。后续改为 smoke 通过后复用同一 BuildKit 结果，
 按 digest 经 VPC 上传，再验证 config ID 与已测镜像一致，最后写双标签。
 本机隔离小样板已证明 Docker 加载与 image exporter 的 config/manifest 相同；
-完整云镜像效果仍需下一轮确认。没有修改云实例、CIS 或新认领默认。
+完整云镜像的真实结果见 cloud.25。没有修改云实例、CIS 或新认领默认。
 
 ## 已完成热交付：cloud.21
 
