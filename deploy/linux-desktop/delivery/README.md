@@ -78,6 +78,7 @@ CIS 自身的构建/部署与用户实例升级是另外两件事，见
 到双标签。这样复用 BuildKit 的压缩层，避免 Docker load 后再由 daemon 重压缩上传。
 不增加产品仓库或产品镜像，完整 Dockerfile、隔离验收和 CIS 准入边界保留。
 失败时保存 `publish-build.log` / `publish-metadata.json`；不同产物不会得到版本标签。
+若已有一个标签，重试直接复用其精确 manifest 补齐另一个，不重新导出等价但压缩摘要不同的层。
 本地无 BuildKit 记录的旧调用仍使用 Docker push；CI 显式传 `--reuse-buildkit-export`。
 导出及标签复制语义见 [Docker image exporter](https://docs.docker.com/build/exporters/image-registry/)
 与 [imagetools create](https://docs.docker.com/reference/cli/docker/buildx/imagetools/create/)。

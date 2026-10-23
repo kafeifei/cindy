@@ -166,6 +166,14 @@ class PublishTest(unittest.TestCase):
                     writes.clear(); uploads.clear()
                     publish_tags(refs, image_id, inspect=state.get, execute=execute, export_tested=upload)
                     self.assertEqual((writes, uploads), ([], []))
+                    # A partial pair must keep its original manifest even if a
+                    # later exporter could encode the same config differently.
+                    del state[refs[1]]
+                    publish_tags(refs, image_id, inspect=state.get, execute=execute,
+                                 export_tested=upload, existing_source=lambda ref, _: source)
+                    self.assertEqual(uploads, [])
+                    self.assertEqual(len(writes), 1)
+                    self.assertEqual(state[refs[0]], state[refs[1]])
 
     def test_existing_identical_image_is_not_pushed_twice(self):
         executed = []

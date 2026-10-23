@@ -92,7 +92,14 @@ def publish(reference, image_id, inspect=registry_manifest, execute=run, push_re
     return remote
 
 
-def publish_tags(references, image_id, inspect=registry_manifest, execute=run, push_repository=None, export_tested=None):
+def existing_manifest_source(reference, push_repository):
+    raw = subprocess.check_output(['docker', 'buildx', 'imagetools', 'inspect', '--raw', reference])
+    repository = transport_reference(reference, push_repository).rsplit(':', 1)[0]
+    return repository + '@sha256:' + hashlib.sha256(raw).hexdigest()
+
+
+def publish_tags(references, image_id, inspect=registry_manifest, execute=run, push_repository=None,
+                 export_tested=None, existing_source=existing_manifest_source):
     # Inspect every tag before the first write: a source-tag conflict must not
     # leave a newly published version pointing to an unpaired release.
     # Check both endpoints before any write. The optional route cannot change
@@ -110,7 +117,11 @@ def publish_tags(references, image_id, inspect=registry_manifest, execute=run, p
     if export_tested and any(existing_tags[checks.index(ref)] is None for ref in references):
         # The exporter uploads no version tag. Only the tested config digest may
         # be copied into the immutable version/source tags below.
-        source = export_tested()
+        present = next((ref for ref in references if existing_tags[checks.index(ref)] is not None), None)
+        # Resume a partially published pair from its exact existing manifest.
+        # Equivalent configs may have different compressed-layer digests; a
+        # new export must not give the missing alias a different manifest.
+        source = existing_source(present, push_repository) if present else export_tested()
         repository = transports[0].rsplit(':', 1)[0]
         if not re.fullmatch(re.escape(repository) + r'@sha256:[a-f0-9]{64}', source):
             raise ValueError('EXPORTED_REFERENCE_MISMATCH')
