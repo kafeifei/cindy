@@ -4,6 +4,8 @@
   "cloudParent": "c4f09bad16248f8012157c6a1661b1f181b7486d",
   "packagingAllowed": true,
   "formalPromotionAllowed": false,
-  "includedPatch": {},
+  "includedPatch": {
+    "apps/desktop/src/renderer/features/remote-desktop/captureHost.ts": "10e277fd4da682ebf96a03b1267e44f008d15393af9890f6825b8dab2ec94f72"
+  },
   "scope": "own-instance-0113-upgrade-canary"
 }

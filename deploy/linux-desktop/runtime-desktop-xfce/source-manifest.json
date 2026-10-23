@@ -61,5 +61,5 @@
   },
   "qualification": "Isolated Linux, native X11 input; not DeviceLink end-to-end",
   "clientSourceSnapshotCommit": "1b1ca95cc63d820e9cad2fdfda3d425097073d62",
-  "clientRuntimeFixCommit": "80c313a857a6ca97207e79d79d2bfa7fc2790142"
+  "clientRuntimeFixCommit": "aea2f91c12aad7e3f9ce02362be7b26c1c763cde"
 }

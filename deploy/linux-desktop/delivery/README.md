@@ -20,6 +20,13 @@ Runner、DinD、BuildKit 是构建工具，不是云实例需要安装的额外�
 | CIS 自动更新 | [双版本选择与主动升级](../DUAL-VERSION-UPDATES.md) | 已登记维护实例支持双版本；网页和原生客户端均已接入主动升级。新领取按已准入列表选择同仓库、地区与架构的最高版本；稳定目录与自动晋级待接入 |
 
 最新已验收的自动交付产物为 `0.1.113-cloud.26`，运行 [39897868056](https://github.com/zhuoshaojian/cindy/actions/runs/39897868056)。
+当前配方申请 `0.1.113-cloud.27`，用于本人实例的远程桌面输入积压修复验收。
+基础源码仍固定为 `source-freeze.json` 中的 `4eb73c7f`；`includedPatch` 仅替换
+`captureHost.ts`，从 `aea2f91c` 读取并校验 SHA-256。有效输入积压时释放按键、丢弃
+过载输入并保留会话，不再直接停止桌面。构建记录中的 `runtimeFixCommit` 与 `patches`
+共同标识该修复，不能只凭基础 `sourceCommit` 判断是否包含补丁。完成流水线不等于
+已部署或通过本人实测，不改变其他实例或新领取的准入策略。
+
 `cloud.25 / cloud.26` 原始 push 到 ACS Ready 分别为 **17 分 45 秒 / 17 分 37 秒**，
 全部 job 收尾分别为 **17 分 54 秒 / 17 分 48 秒**：新 runner 连续两轮低于 20 分钟，
 包含供给、排队、完整构建、隔离 smoke、发布与缓存等待，无人工重试。

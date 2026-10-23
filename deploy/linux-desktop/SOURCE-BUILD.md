@@ -45,8 +45,11 @@ are supported and fetch the frozen source bytes on demand. Frozen commits must b
   independent cloud revision; these become image labels and build records.
 - `source-freeze.json` selects the complete merged client commit, which must contain
   the upstream commit recorded in `delivery/version.json`. The builder checks both
-  the exact upstream tag and ancestry. `includedPatch` is empty for v0.1.113;
-  native settings and cloud runtime fixes come from the same source commit.
+  the exact upstream tag and ancestry. `includedPatch` pins selected replacements
+  from `runtime-desktop-xfce/source-manifest.json`'s `clientRuntimeFixCommit` by
+  SHA-256. Cloud revision 27 replaces only `captureHost.ts` for input-overload
+  recovery; the remaining application source stays at the frozen commit. Build
+  records bind both the frozen source and the exact runtime patch.
 - The upstream version and cloud revision are build arguments shared by the
   application, image labels and release records. The pinned dependency base has
   its own source identity, so an application version bump retains its build cache.
