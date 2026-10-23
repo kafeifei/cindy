@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import re
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -71,14 +72,18 @@ def transport_reference(reference, push_repository):
     return validate_push_repository(repository, push_repository) + ':' + tag
 
 
-def publish(reference, image_id, inspect=registry_manifest, execute=run, push_repository=None):
+def publish(reference, image_id, inspect=registry_manifest, execute=run, push_repository=None, source=None):
     transport = transport_reference(reference, push_repository)
     existing = inspect(reference)
     if existing is not None and existing.get('config', {}).get('digest') != image_id:
         raise ValueError('IMMUTABLE_TAG_CONFLICT')
     if existing is None:
-        execute('docker', 'tag', image_id, transport)
-        execute('docker', 'push', transport)
+        if source is None:
+            execute('docker', 'tag', image_id, transport)
+            execute('docker', 'push', transport)
+        else:
+            execute('docker', 'buildx', 'imagetools', 'create', '--prefer-index=false',
+                    '--tag', transport, source)
     remote = inspect(reference)
     if not remote or remote.get('config', {}).get('digest') != image_id:
         raise ValueError('PUBLISHED_CONFIG_MISMATCH')
@@ -87,7 +92,7 @@ def publish(reference, image_id, inspect=registry_manifest, execute=run, push_re
     return remote
 
 
-def publish_tags(references, image_id, inspect=registry_manifest, execute=run, push_repository=None):
+def publish_tags(references, image_id, inspect=registry_manifest, execute=run, push_repository=None, export_tested=None):
     # Inspect every tag before the first write: a source-tag conflict must not
     # leave a newly published version pointing to an unpaired release.
     # Check both endpoints before any write. The optional route cannot change
@@ -101,8 +106,56 @@ def publish_tags(references, image_id, inspect=registry_manifest, execute=run, p
     for existing in existing_tags:
         if existing is not None and existing.get('config', {}).get('digest') != image_id:
             raise ValueError('IMMUTABLE_TAG_CONFLICT')
+    source = None
+    if export_tested and any(existing_tags[checks.index(ref)] is None for ref in references):
+        # The exporter uploads no version tag. Only the tested config digest may
+        # be copied into the immutable version/source tags below.
+        source = export_tested()
+        repository = transports[0].rsplit(':', 1)[0]
+        if not re.fullmatch(re.escape(repository) + r'@sha256:[a-f0-9]{64}', source):
+            raise ValueError('EXPORTED_REFERENCE_MISMATCH')
+        exported = inspect(source)
+        if not exported or exported.get('config', {}).get('digest') != image_id:
+            raise ValueError('EXPORTED_CONFIG_MISMATCH')
     for reference in references:
-        publish(reference, image_id, inspect=inspect, execute=execute, push_repository=push_repository)
+        publish(reference, image_id, inspect=inspect, execute=execute, push_repository=push_repository, source=source)
+
+
+def export_tested_image(build, image_id, repository):
+    """Reuse this job's compressed BuildKit result after smoke, without tag writes."""
+    result = json.loads((build / 'result.json').read_text())
+    if result.get('imageId') != image_id or not re.fullmatch(r'[a-zA-Z0-9_.-]+', result.get('builder', '')):
+        raise ValueError('TESTED_BUILDER_REQUIRED')
+    metadata = json.loads((build / 'build-metadata.json').read_text())
+    if metadata['runtime'].get('containerimage.config.digest') != image_id:
+        raise ValueError('TESTED_EXPORT_MISMATCH')
+    graph = json.loads((build / 'docker-bake.json').read_text())
+    runtime = graph['target']['runtime']
+    # No cache import/export, application changes, or timestamp rewriting.
+    # Even if the local cache is lost, different bytes cannot receive a tag:
+    # compare the exported config and remote digest to the tested image below.
+    runtime['cache-from'] = []
+    runtime['no-cache'] = False
+    runtime.pop('cache-to', None)
+    runtime['attest'] = ['type=provenance,disabled=true']
+    runtime['output'] = ['type=image,name=' + repository
+        + ',push=true,push-by-digest=true,oci-mediatypes=false,rewrite-timestamp=false']
+    output = build / 'publish-bake.json'
+    output.write_text(json.dumps({'target': {'runtime': runtime}}, indent=2) + '\n')
+    receipt = build / 'publish-metadata.json'
+    started = time.monotonic()
+    with (build / 'publish-build.log').open('w') as log:
+        subprocess.run(['docker', 'buildx', 'bake', '--builder', result['builder'], '--progress=plain',
+                        '-f', str(output), '--metadata-file', str(receipt), 'runtime'],
+                       cwd=build / 'context', stdout=log, stderr=subprocess.STDOUT, check=True)
+    print(json.dumps({'operation': 'export-push', 'seconds': round(time.monotonic() - started, 3)}), flush=True)
+    exported = json.loads(receipt.read_text())['runtime']
+    if exported.get('containerimage.config.digest') != image_id:
+        raise ValueError('EXPORTED_CONFIG_MISMATCH')
+    digest = exported.get('containerimage.digest', '')
+    if not re.fullmatch(r'sha256:[a-f0-9]{64}', digest):
+        raise ValueError('EXPORTED_DIGEST_MISSING')
+    return repository + '@' + digest
 
 
 if __name__ == '__main__':
@@ -113,6 +166,8 @@ if __name__ == '__main__':
     parser.add_argument('--repository', required=True)
     parser.add_argument('--push-repository', help='Optional same-repository ACR VPC transport')
     parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--reuse-buildkit-export', action='store_true',
+                        help='Upload the tested BuildKit result by digest before writing version tags')
     args = parser.parse_args()
     if not REPOSITORY.fullmatch(args.repository):
         raise ValueError('INVALID_REPOSITORY')
@@ -127,7 +182,9 @@ if __name__ == '__main__':
     alias = args.repository + ':' + source_tag(plan['recipeCommit'])
     if plan.get('sourceTag') != source_tag(plan['recipeCommit']):
         raise ValueError('SOURCE_TAG_MISMATCH')
-    publish_tags([reference, alias], image_id, push_repository=args.push_repository)
+    transport = validate_push_repository(args.repository, args.push_repository)
+    exporter = (lambda: export_tested_image(args.build.resolve(), image_id, transport)) if args.reuse_buildkit_export else None
+    publish_tags([reference, alias], image_id, push_repository=args.push_repository, export_tested=exporter)
     raw = subprocess.check_output(['docker', 'buildx', 'imagetools', 'inspect', '--raw', reference])
     # imagetools prints the manifest bytes, without parsing or reformatting.
     digest = 'sha256:' + hashlib.sha256(raw).hexdigest()

@@ -130,6 +130,43 @@ class PublishTest(unittest.TestCase):
                     publish_tags(refs, image_id, inspect=inspect, execute=execute, push_repository=private)
                     self.assertEqual(set(state), set(refs))
 
+    def test_digest_upload_cannot_tag_unverified_bytes_or_bypass_conflict(self):
+        # Unit publish boundary: changing the upload transport must preserve the
+        # tested config and both immutable tags. The old docker-push fixtures do
+        # not cover an uploaded digest with different bytes or another repository.
+        repo = 'registry.example.com/cindy'
+        refs = [repo + ':version', repo + ':sha']
+        source = repo + '@sha256:' + 'b'*64
+        image_id = 'sha256:' + 'a'*64
+        for failure in [None, 'conflict', 'config', 'reference', 'transport']:
+            with self.subTest(failure=failure):
+                state, writes, uploads = {}, [], []
+                if failure == 'conflict':
+                    state[refs[1]] = {'config': {'digest': 'sha256:' + 'c'*64}}
+                def upload():
+                    uploads.append(True)
+                    if failure == 'transport':
+                        raise ValueError('EXPORT_FAILED')
+                    state[source] = {'config': {'digest': 'sha256:' + 'c'*64 if failure == 'config' else image_id}}
+                    return source.replace('registry.example.com', 'other.example.com') if failure == 'reference' else source
+                def execute(*args):
+                    writes.append(args)
+                    self.assertEqual(args[:5], ('docker', 'buildx', 'imagetools', 'create', '--prefer-index=false'))
+                    self.assertEqual(args[-1], source)
+                    state[args[-2]] = state[source]
+                if failure:
+                    with self.assertRaisesRegex(ValueError, 'CONFLICT|MISMATCH|EXPORT_FAILED'):
+                        publish_tags(refs, image_id, inspect=state.get, execute=execute, export_tested=upload)
+                    self.assertEqual(writes, [])
+                    if failure == 'conflict': self.assertEqual(uploads, [])
+                else:
+                    publish_tags(refs, image_id, inspect=state.get, execute=execute, export_tested=upload)
+                    self.assertEqual(len(uploads), 1)
+                    self.assertEqual([state[r] for r in refs], [state[source], state[source]])
+                    writes.clear(); uploads.clear()
+                    publish_tags(refs, image_id, inspect=state.get, execute=execute, export_tested=upload)
+                    self.assertEqual((writes, uploads), ([], []))
+
     def test_existing_identical_image_is_not_pushed_twice(self):
         executed = []
         record = {'config': {'digest': 'sha256:'+'a'*64}}

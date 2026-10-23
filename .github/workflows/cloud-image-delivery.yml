@@ -197,7 +197,7 @@ jobs:
           python3 deploy/linux-desktop/delivery/publish.py --plan "$RUNNER_TEMP/delivery-plan.json" \
             --build "$RUNNER_TEMP/cloud-build" --smoke "$RUNNER_TEMP/native-smoke.json" \
             --repository "$IMAGE_REPOSITORY" --push-repository "${IMAGE_PUSH_REPOSITORY:-$IMAGE_REPOSITORY}" \
-            --output "$RUNNER_TEMP/candidate.json"
+            --reuse-buildkit-export --output "$RUNNER_TEMP/candidate.json"
       - name: Upload credential-free candidate records
         if: always()
         id: records
@@ -217,6 +217,8 @@ jobs:
             ${{ runner.temp }}/cloud-build/*-attempt-*.log
             ${{ runner.temp }}/cloud-build/build-inputs.json
             ${{ runner.temp }}/cloud-build/build-metadata.json
+            ${{ runner.temp }}/cloud-build/publish-metadata.json
+            ${{ runner.temp }}/cloud-build/publish-build.log
             ${{ runner.temp }}/cloud-build/records/*.json
           if-no-files-found: error
           retention-days: 30

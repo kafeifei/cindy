@@ -73,6 +73,14 @@ CIS 自身的构建/部署与用户实例升级是另外两件事，见
 `0.1.113-cloud.N-cn-amd64` 与 `sha-<完整配方 commit>-cn-amd64`，二者必须读回同一 manifest digest。
 先并行检查两个标签在公开与 VPC 端点均无冲突，全部通过才发布；中断后可补齐缺失标签，
 不覆盖已有不同产物。发布日志只记录操作类型与耗时，便于区分查询和上传开销。
+原生 smoke 完成后，CI 使用同一 BuildKit 结果经 VPC 按 digest 上传，不先创建版本标签；
+导出前后的 config digest 与本地已测 image ID 必须相同，远端再次核对后才复制同一 manifest
+到双标签。这样复用 BuildKit 的压缩层，避免 Docker load 后再由 daemon 重压缩上传。
+不增加产品仓库或产品镜像，完整 Dockerfile、隔离验收和 CIS 准入边界保留。
+失败时保存 `publish-build.log` / `publish-metadata.json`；不同产物不会得到版本标签。
+本地无 BuildKit 记录的旧调用仍使用 Docker push；CI 显式传 `--reuse-buildkit-export`。
+导出及标签复制语义见 [Docker image exporter](https://docs.docker.com/build/exporters/image-registry/)
+与 [imagetools create](https://docs.docker.com/reference/cli/docker/buildx/imagetools/create/)。
 `candidate` 只表示验收清单中的阶段，现有 job / Environment 名不决定镜像仓库；
 通过验收后消费原 digest，不重建第二份“正式镜像”。旧仓库中的已发布版本不搬运、不重标。
 

@@ -28,6 +28,20 @@
 四个端点/标签。所有查询完成且通过才允许写标签；增加只含操作类型和秒数的发布计时。
 检出裁剪在独立目录执行相同 Node/Python 集合，没有降低测试覆盖；结果待真实交付复测。
 
+## 检出与上传分解：cloud.24
+
+[39894159981](https://github.com/zhuoshaojian/cindy/actions/runs/39894159981)，一次自动完成，
+push → ACS Ready **20 分 36 秒**，全部 job **20 分 45 秒**；性能目标仍未通过。
+完整构建 476 秒、发布 142 秒。verify 检出从上一轮 42 秒降到 11 秒，实际回归输入由
+约 1.1 万文件降至 491，原 Node/Python 测试集合不变；依赖下载本轮从 2 秒涨到 19 秒。
+入口镜像继续真实命中，因此不把总耗时回升归因于 ECI 冷拉镜像。
+
+分项日志显示，首次 Docker push 140.041 秒，第二个标签 0.402 秒，单次 manifest 查询
+约 0.2–0.4 秒。并行查询不是主要收益。后续改为 smoke 通过后复用同一 BuildKit 结果，
+按 digest 经 VPC 上传，再验证 config ID 与已测镜像一致，最后写双标签。
+本机隔离小样板已证明 Docker 加载与 image exporter 的 config/manifest 相同；
+完整云镜像效果仍需下一轮确认。没有修改云实例、CIS 或新认领默认。
+
 ## 已完成热交付：cloud.21
 
 [39838127957](https://github.com/zhuoshaojian/cindy/actions/runs/39838127957)，配方
